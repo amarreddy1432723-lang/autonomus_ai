@@ -4,9 +4,9 @@ export function getServiceUrl(path: string): string {
     return path;
   }
   
-  const AUTH_URL = 'http://localhost:8001';
-  const GOALS_URL = 'http://localhost:8002';
-  const AGENT_URL = 'http://localhost:8003';
+  const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL || 'http://localhost:8001';
+  const GOALS_URL = process.env.NEXT_PUBLIC_GOALS_URL || 'http://localhost:8002';
+  const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8003';
 
   if (
     path.startsWith('/api/v1/auth') ||
