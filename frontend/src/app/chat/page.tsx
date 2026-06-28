@@ -39,7 +39,7 @@ export default function ChatPage() {
 
     try {
       const allMessages = [...messages, userMsg];
-      const response = await fetch('http://localhost:8003/api/v1/agents/chat', {
+      const response = await fetch('/api/v1/agents/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
