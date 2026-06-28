@@ -6,7 +6,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.runnables import RunnableConfig
 
-from .config import settings
+from .llm_router import get_chat_llm
 from .memory_agent import retrieve_context
 from .tools import web_search, read_file, memory_read
 from services.shared.security import wrap_input_xml, sanitize_user_input
@@ -19,11 +19,8 @@ class AgentState(TypedDict):
     memories: str
 
 def get_llm() -> BaseChatModel:
-    if settings.OPENAI_API_KEY == "mock-openai-key-for-local-dev-only" or not settings.OPENAI_API_KEY:
-        from .mock_llm import MockChatOpenAI
-        return MockChatOpenAI()
-    from langchain_openai import ChatOpenAI
-    return ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=settings.OPENAI_API_KEY)
+    """Backward-compatible shim — delegates to llm_router."""
+    return get_chat_llm(role="reasoning")
 
 # 1. Intent Classification Node
 def intent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -79,7 +76,7 @@ def context_node(state: AgentState, config: RunnableConfig) -> dict:
 
 # 3. Reasoning Node
 def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
-    llm = get_llm()
+    llm = get_chat_llm(role="reasoning")
     
     # Bind tools to model
     tools = [web_search, read_file, memory_read]

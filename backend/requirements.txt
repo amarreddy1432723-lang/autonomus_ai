@@ -16,3 +16,10 @@ langchain-core==0.3.15
 langgraph==0.2.39
 openai==1.52.2
 langchain-openai==0.2.3
+
+# ── Optional LLM Providers — install only what you need ──────
+# pip install langchain-anthropic        # Claude models
+# pip install langchain-google-genai     # Gemini chat + embeddings
+# pip install langchain-groq             # Groq hosted inference (fast, free tier)
+# pip install langchain-ollama           # Local Ollama models
+# pip install sentence-transformers      # Local HuggingFace embeddings

@@ -2,81 +2,17 @@ import json
 import math
 from uuid import UUID, uuid4
 from datetime import datetime
-from openai import OpenAI
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from services.shared.database import SessionLocal
 from services.shared.models import Memory
 from .config import settings
-
-def get_openai_client() -> OpenAI:
-    return OpenAI(api_key=settings.OPENAI_API_KEY)
+from .llm_router import get_embedding_vector, get_chat_llm
 
 def get_embedding(text: str) -> list[float]:
-    if settings.OPENAI_API_KEY == "mock-openai-key-for-local-dev-only" or not settings.OPENAI_API_KEY:
-        import random
-        text_lower = text.lower()
-        
-        # Deterministic hash to avoid python process-level hash randomization
-        det_hash = sum(ord(c) * (i + 1) for i, c in enumerate(text_lower))
-        
-        # Check for keyword semantic matching to align specific queries and memories
-        keywords = ["dog", "rex", "rust", "pants"]
-        matched_kw = None
-        for kw in keywords:
-            if kw in text_lower:
-                matched_kw = kw
-                break
-                
-        if matched_kw:
-            kw_hash = sum(ord(c) * (i + 1) for i, c in enumerate(matched_kw))
-            random.seed(kw_hash)
-            return [random.uniform(-1.0, 1.0) for _ in range(1536)]
-            
-        if "shirts" in text_lower:
-            # Semantic similarity of ~0.89 for shirts to allow clustering but avoid deduplication on save
-            random.seed(12345)
-            base_vector = [random.uniform(-0.2, 0.2) for _ in range(1536)]
-            random.seed(det_hash)
-            perturbation = [random.uniform(-0.10, 0.10) for _ in range(1536)]
-            return [x + y for x, y in zip(base_vector, perturbation)]
-            
-        # If it is a preference query
-        if "prefers" in text_lower or "webhosting" in text_lower:
-            # Base seed to align preference vectors semantically
-            random.seed(42)
-            base_vector = [random.uniform(-0.2, 0.2) for _ in range(1536)]
-            
-            # Opposing clouds get different perturbations to fall into conflict threshold (0.7 - 0.92)
-            if "gcp" in text_lower:
-                random.seed(98765)
-                perturbation = [random.uniform(-0.10, 0.10) for _ in range(1536)]
-            elif "render" in text_lower:
-                random.seed(54321)
-                perturbation = [random.uniform(-0.10, 0.10) for _ in range(1536)]
-            else:
-                # AWS and exact match preferences get small perturbation (similarity > 0.95)
-                random.seed(det_hash)
-                perturbation = [random.uniform(-0.01, 0.01) for _ in range(1536)]
-                
-            return [x + y for x, y in zip(base_vector, perturbation)]
-            
-        import random
-        random.seed(det_hash)
-        return [random.uniform(-1.0, 1.0) for _ in range(1536)]
-        
-    try:
-        client = get_openai_client()
-        response = client.embeddings.create(
-            input=text,
-            model="text-embedding-3-small"
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"Error getting OpenAI embedding: {e}")
-        import random
-        random.seed(hash(text))
-        return [random.uniform(-1.0, 1.0) for _ in range(1536)]
+    """Delegate to the provider-agnostic llm_router embedding function."""
+    return get_embedding_vector(text)
+
 
 def cosine_distance_py(v1: list[float], v2: list[float]) -> float:
     if v1 is None or v2 is None:
@@ -351,7 +287,8 @@ def compress_memories(db: Session, user_id: UUID) -> int:
 
 def extract_memories(user_id: UUID, chat_history: str) -> list[dict]:
     """Analyze chat history to extract structured user facts or preferences, saving them to DB."""
-    if settings.OPENAI_API_KEY == "mock-openai-key-for-local-dev-only" or not settings.OPENAI_API_KEY:
+    is_mock = settings.LLM_PROVIDER.lower() in ("", "mock")
+    if is_mock:
         extracted = []
         if "my name is" in chat_history.lower():
             name = chat_history.split("my name is")[-1].strip().split()[0].strip(".,!?")
@@ -366,7 +303,8 @@ def extract_memories(user_id: UUID, chat_history: str) -> list[dict]:
         return extracted
 
     try:
-        client = get_openai_client()
+        from langchain_core.messages import SystemMessage, HumanMessage
+        llm = get_chat_llm(role="extraction")
         system_prompt = (
             "You are an expert memory processor. Analyze the conversation history between the user and AI. "
             "Extract new, stable facts, preferences, decisions, or skills about the user. "
@@ -375,19 +313,22 @@ def extract_memories(user_id: UUID, chat_history: str) -> list[dict]:
             "Format the output as a JSON array of objects: [{\"content\": \"...\", \"type\": \"...\", \"importance\": 5}]. "
             "If no stable information is extracted, return an empty array []."
         )
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Extract memory from this conversation:\n{chat_history}"}
-            ],
-            response_format={"type": "json_object"}
-        )
-        
-        raw_data = json.loads(response.choices[0].message.content)
+
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Extract memory from this conversation:\n{chat_history}")
+        ])
+
+        raw_text = response.content.strip()
+        # Strip markdown code fences if present
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+
+        raw_data = json.loads(raw_text)
         memories = raw_data if isinstance(raw_data, list) else raw_data.get("memories", [])
-        
+
         saved = []
         for mem in memories:
             content = mem.get("content")

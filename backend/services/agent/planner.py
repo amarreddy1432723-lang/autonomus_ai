@@ -3,7 +3,7 @@ from uuid import UUID
 from typing import List, Dict, Any
 from datetime import datetime
 from langchain_core.messages import SystemMessage, HumanMessage
-from .brain import get_llm
+from .llm_router import get_chat_llm
 from .config import settings
 
 def decompose_goal(user_id: UUID, goal_title: str, goal_desc: str, goal_deadline: datetime = None) -> List[Dict[str, Any]]:
@@ -11,10 +11,8 @@ def decompose_goal(user_id: UUID, goal_title: str, goal_desc: str, goal_deadline
     Decomposes a user goal into a list of structured, executable tasks.
     Calculates PERT estimates, runs CPM, and computes priority scores.
     """
-    llm = get_llm()
-    
-    # Check if we are running in mock mode
-    is_mock = (settings.OPENAI_API_KEY == "mock-openai-key-for-local-dev-only" or not settings.OPENAI_API_KEY)
+    llm = get_chat_llm(role="planning")
+    is_mock = settings.LLM_PROVIDER.lower() in ("", "mock")
     
     if is_mock:
         # Standard mock decomposition based on keywords
