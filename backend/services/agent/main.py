@@ -1,17 +1,64 @@
 import json
-from fastapi import FastAPI, Depends, HTTPException, status
+import os
+import jwt
+from uuid import UUID
+from fastapi import FastAPI, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
+from contextlib import asynccontextmanager
 
 from .config import settings
+from services.shared.database import get_db
+from services.shared.models import Memory
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
+from .schemas import MemoryResponse
 
-app = FastAPI(title="my-ai Agent Service", version="1.0.0")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
+JWT_ALGORITHM = "HS256"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from services.shared.database import SessionLocal, verify_default_user
+    db = SessionLocal()
+    try:
+        verify_default_user(db)
+    finally:
+        db.close()
+    yield
+
+app = FastAPI(title="my-ai Agent Service", version="1.0.0", lifespan=lifespan)
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
+
+def get_current_user_id(
+    authorization: str | None = Header(None), 
+    x_user_id: str | None = Header(None, alias="x-user-id")
+) -> UUID:
+    # 1. Try Authorization header
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split("Bearer ")[1].strip()
+        try:
+            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            user_id_str = payload.get("sub")
+            if user_id_str:
+                return UUID(user_id_str)
+        except Exception:
+            pass
+            
+    # 2. Try X-User-Id fallback
+    if x_user_id:
+        try:
+            return UUID(x_user_id)
+        except ValueError:
+            pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication credentials missing or invalid."
+    )
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"
@@ -99,3 +146,46 @@ def trigger_memory_compression(request: CompressRequest):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+@app.get("/api/v1/memories", response_model=List[MemoryResponse])
+def get_memories(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return db.query(Memory).filter(Memory.user_id == user_id).all()
+
+@app.get("/api/v1/memories/search")
+def search_memories(query: str, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .llm_router import get_embedding_vector
+    from .memory_agent import cosine_distance_py
+    
+    try:
+        query_vec = get_embedding_vector(query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate query embedding: {e}")
+        
+    memories = db.query(Memory).filter(Memory.user_id == user_id).all()
+    
+    results = []
+    for m in memories:
+        if m.vector:
+            m_vec = m.vector
+            if isinstance(m_vec, str):
+                import json
+                try:
+                    m_vec = json.loads(m_vec)
+                except Exception:
+                    continue
+            distance = cosine_distance_py(query_vec, m_vec)
+            similarity = 1.0 - distance
+            results.append({
+                "id": m.id,
+                "content": m.content,
+                "type": m.type,
+                "importance": m.importance,
+                "confidence": m.confidence,
+                "similarity": similarity,
+                "created_at": m.created_at,
+                "tags": m.tags or []
+            })
+            
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:10]
+

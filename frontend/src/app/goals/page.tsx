@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
@@ -8,7 +8,13 @@ import styles from './Goals.module.css';
 import { Target, Calendar, ArrowRight, MessageSquare, Plus } from 'lucide-react';
 
 export default function GoalsPage() {
-  const { data: goals } = useQuery({
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [deadline, setDeadline] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const { data: goals, refetch } = useQuery({
     queryKey: ['goals-list'],
     queryFn: async () => {
       try {
@@ -47,12 +53,39 @@ export default function GoalsPage() {
     }
   });
 
+  const handleCreateGoal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || submitting) return;
+
+    setSubmitting(true);
+    try {
+      await apiRequest('/api/v1/goals', {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          description,
+          deadline: deadline ? new Date(deadline).toISOString() : undefined
+        })
+      });
+      setIsModalOpen(false);
+      setTitle('');
+      setDescription('');
+      setDeadline('');
+      refetch();
+    } catch (err) {
+      console.error("Failed to create goal:", err);
+      alert("Error: Failed to create goal. Check backend connectivity.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <AppShell>
       <div className={styles.container}>
         <div className={styles.header}>
           <h1 className={styles.title}>Goals & Milestones</h1>
-          <button className={styles.btnNew}>
+          <button className={styles.btnNew} onClick={() => setIsModalOpen(true)}>
             <Plus size={16} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
             New Goal
           </button>
@@ -124,6 +157,54 @@ export default function GoalsPage() {
           })}
         </div>
       </div>
+
+      {isModalOpen && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalContent}>
+            <h2 className={styles.modalTitle}>Create New Goal</h2>
+            <form onSubmit={handleCreateGoal} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+              <div className={styles.formGroup}>
+                <label htmlFor="goal-title">Goal Title</label>
+                <input 
+                  id="goal-title"
+                  type="text" 
+                  placeholder="e.g. Build a mobile app, Learn Kubernetes..." 
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  required
+                />
+              </div>
+              <div className={styles.formGroup}>
+                <label htmlFor="goal-desc">Description</label>
+                <textarea 
+                  id="goal-desc"
+                  placeholder="Describe details, success criteria, milestones..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+              </div>
+              <div className={styles.formGroup}>
+                <label htmlFor="goal-deadline">Deadline</label>
+                <input 
+                  id="goal-deadline"
+                  type="date"
+                  value={deadline}
+                  onChange={(e) => setDeadline(e.target.value)}
+                />
+              </div>
+              <div className={styles.modalActions}>
+                <button type="button" className={styles.btnCancel} onClick={() => setIsModalOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className={styles.btnSubmit} disabled={submitting}>
+                  {submitting ? 'Creating Plan...' : 'Create & Plan Goal'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
+

@@ -11,7 +11,19 @@ from services.shared.rate_limiter import RateLimitHeaderMiddleware
 from .schemas import UserRegister, UserLogin, TokenResponse, UserResponse, IntegrationCreate, IntegrationResponse
 from .auth import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 
-app = FastAPI(title="my-ai Auth Service", version="1.0.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from services.shared.database import SessionLocal, verify_default_user
+    db = SessionLocal()
+    try:
+        verify_default_user(db)
+    finally:
+        db.close()
+    yield
+
+app = FastAPI(title="my-ai Auth Service", version="1.0.0", lifespan=lifespan)
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 

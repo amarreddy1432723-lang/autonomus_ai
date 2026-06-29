@@ -17,28 +17,48 @@ from services.goals.schemas import (
     ApprovalResponse, ApprovalResolve, ScheduleCreate, ScheduleResponse, GraphQLQuery
 )
 
-app = FastAPI(title="my-ai Goals Service", version="1.0.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from services.shared.database import SessionLocal, verify_default_user
+    db = SessionLocal()
+    try:
+        verify_default_user(db)
+    finally:
+        db.close()
+    yield
+
+app = FastAPI(title="my-ai Goals Service", version="1.0.0", lifespan=lifespan)
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
-def get_current_user_id(authorization: str = Header(...)) -> UUID:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization credentials format. Use 'Bearer <token>'"
-        )
-    token = authorization.split("Bearer ")[1].strip()
-    try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        user_id_str = payload.get("sub")
-        if not user_id_str:
-            raise HTTPException(status_code=401, detail="Subject missing from token payload")
-        return UUID(user_id_str)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication validation failed: {e}"
-        )
+def get_current_user_id(
+    authorization: str | None = Header(None), 
+    x_user_id: str | None = Header(None, alias="x-user-id")
+) -> UUID:
+    # 1. Try Authorization header
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split("Bearer ")[1].strip()
+        try:
+            payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+            user_id_str = payload.get("sub")
+            if user_id_str:
+                return UUID(user_id_str)
+        except Exception:
+            pass
+            
+    # 2. Try X-User-Id fallback
+    if x_user_id:
+        try:
+            return UUID(x_user_id)
+        except ValueError:
+            pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication credentials missing or invalid."
+    )
 
 @app.post("/api/v1/goals", response_model=GoalResponse, status_code=201)
 def create_goal(goal_in: GoalCreate, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
