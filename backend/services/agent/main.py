@@ -8,13 +8,14 @@ from pydantic import BaseModel
 from typing import List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 from contextlib import asynccontextmanager
+from sqlalchemy.orm import Session
 
 from .config import settings
 from services.shared.database import get_db
 from services.shared.models import Memory
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
-from .schemas import MemoryResponse
+from .schemas import MemoryResponse, MemoryUpdate
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
 JWT_ALGORITHM = "HS256"
@@ -189,3 +190,56 @@ def search_memories(query: str, user_id: UUID = Depends(get_current_user_id), db
     results.sort(key=lambda x: x["similarity"], reverse=True)
     return results[:10]
 
+@app.patch("/api/v1/memories/{memory_id}", response_model=MemoryResponse)
+def update_memory(
+    memory_id: UUID,
+    memory_in: MemoryUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    if memory_in.content is not None:
+        memory.content = memory_in.content
+    if memory_in.type is not None:
+        memory.type = memory_in.type
+    if memory_in.memory_type is not None:
+        memory.memory_type = memory_in.memory_type
+    if memory_in.importance is not None:
+        memory.importance = memory_in.importance
+    if memory_in.confidence is not None:
+        memory.confidence = memory_in.confidence
+    if memory_in.tags is not None:
+        memory.tags = memory_in.tags
+
+    meta = memory.meta_data or {}
+    if memory_in.meta_data is not None:
+        meta.update(memory_in.meta_data)
+    if memory_in.is_archived is not None:
+        memory.is_archived = memory_in.is_archived
+        meta["is_archived"] = memory_in.is_archived
+    memory.meta_data = meta
+
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+@app.delete("/api/v1/memories/{memory_id}")
+def archive_memory(
+    memory_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    memory.is_archived = True
+    meta = memory.meta_data or {}
+    meta["is_archived"] = True
+    memory.meta_data = meta
+
+    db.commit()
+    return {"message": "Memory archived successfully"}

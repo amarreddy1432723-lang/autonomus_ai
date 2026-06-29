@@ -55,6 +55,12 @@ def get_current_user_id(
         except ValueError:
             pass
 
+    if x_user_id:
+        try:
+            return UUID(x_user_id)
+        except ValueError:
+            pass
+
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication credentials missing or invalid."

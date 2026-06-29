@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -27,24 +27,38 @@ app = FastAPI(title="my-ai Auth Service", version="1.0.0", lifespan=lifespan)
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
-def get_current_user_id(token: str = Depends(oauth2_scheme)) -> UUID:
-    payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user_id_str = payload.get("sub")
-    try:
-        return UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user identity format",
-        )
+def get_current_user_id(
+    token: str | None = Depends(oauth2_scheme),
+    x_user_id: str | None = Header(None, alias="x-user-id"),
+) -> UUID:
+    if token:
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            user_id_str = payload.get("sub")
+            try:
+                return UUID(user_id_str)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid user identity format",
+                )
+
+    if x_user_id:
+        try:
+            return UUID(x_user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid x-user-id header",
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 @app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):

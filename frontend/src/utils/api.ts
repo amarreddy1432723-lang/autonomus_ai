@@ -30,15 +30,35 @@ export function getServiceUrl(path: string): string {
   return GOALS_URL + path; // Fallback
 }
 
-export async function apiRequest(path: string, options: RequestInit = {}): Promise<any> {
-  const url = getServiceUrl(path);
+const DEMO_USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID || '00000000-0000-0000-0000-000000000000';
+
+export function createApiHeaders(options: RequestInit = {}): Headers {
   const headers = new Headers(options.headers || {});
-  
-  // Attach default test user UUID and credentials
-  headers.set('x-user-id', '00000000-0000-0000-0000-000000000000');
+
+  if (typeof window !== 'undefined') {
+    const storedToken = window.localStorage.getItem('my-ai.access_token');
+    const storedUserId = window.localStorage.getItem('my-ai.user_id') || DEMO_USER_ID;
+
+    if (storedToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${storedToken}`);
+    }
+    if (!headers.has('x-user-id')) {
+      headers.set('x-user-id', storedUserId);
+    }
+  } else if (!headers.has('x-user-id')) {
+    headers.set('x-user-id', DEMO_USER_ID);
+  }
+
   if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
+
+  return headers;
+}
+
+export async function apiRequest(path: string, options: RequestInit = {}): Promise<any> {
+  const url = getServiceUrl(path);
+  const headers = createApiHeaders(options);
 
   const response = await fetch(url, { ...options, headers });
   

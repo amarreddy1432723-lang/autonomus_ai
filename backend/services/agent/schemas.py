@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
 
@@ -26,3 +26,13 @@ class MemorySearchResponse(BaseModel):
     similarity: float
     created_at: datetime
     tags: List[str] = []
+
+class MemoryUpdate(BaseModel):
+    content: Optional[str] = None
+    type: Optional[str] = None
+    memory_type: Optional[str] = None
+    importance: Optional[int] = None
+    confidence: Optional[float] = None
+    tags: Optional[List[str]] = None
+    is_archived: Optional[bool] = None
+    meta_data: Optional[Dict[str, Any]] = None

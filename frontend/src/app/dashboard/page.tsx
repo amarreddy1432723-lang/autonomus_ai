@@ -1,13 +1,15 @@
 'use client';
 
 import React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Dashboard.module.css';
 import { Play, TrendingUp, ShieldCheck, Cpu } from 'lucide-react';
 
 export default function DashboardPage() {
+  const queryClient = useQueryClient();
+
   // Query active goals
   const { data: goals } = useQuery({
     queryKey: ['dashboard-goals'],
@@ -36,6 +38,26 @@ export default function DashboardPage() {
           { id: 'a2', action_type: 'git_commit', payload: { message: 'Add JWT authorization middleware' }, status: 'pending', requested_at: '8 min ago' }
         ];
       }
+    }
+  });
+
+  const runTasksMutation = useMutation({
+    mutationFn: async () => apiRequest('/api/v1/tasks/run', { method: 'POST' }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-goals'] });
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-approvals'] });
+    }
+  });
+
+  const resolveApprovalMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: 'approved' | 'rejected' }) => {
+      return apiRequest(`/api/v1/approvals/${id}/resolve`, {
+        method: 'POST',
+        body: JSON.stringify({ status })
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-approvals'] });
     }
   });
 
@@ -106,7 +128,11 @@ export default function DashboardPage() {
                       <span>{task.agent}</span>
                     </div>
                   </div>
-                  <button className={styles.focusAction}>
+                  <button
+                    className={styles.focusAction}
+                    onClick={() => runTasksMutation.mutate()}
+                    type="button"
+                  >
                     <Play size={10} style={{ marginRight: '4px', fill: 'var(--color-text-primary)' }} />
                     Run
                   </button>
@@ -139,8 +165,20 @@ export default function DashboardPage() {
                     </span>
                   </div>
                   <div className={styles.approvalActions}>
-                    <button className={styles.btnApprove}>Approve</button>
-                    <button className={styles.btnReject}>Reject</button>
+                    <button
+                      className={styles.btnApprove}
+                      onClick={() => resolveApprovalMutation.mutate({ id: app.id, status: 'approved' })}
+                      type="button"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className={styles.btnReject}
+                      onClick={() => resolveApprovalMutation.mutate({ id: app.id, status: 'rejected' })}
+                      type="button"
+                    >
+                      Reject
+                    </button>
                   </div>
                 </div>
               ))}

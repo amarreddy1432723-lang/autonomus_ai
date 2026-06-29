@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
@@ -8,8 +9,12 @@ import styles from './Memory.module.css';
 import { BrainCircuit, Search, Star, Archive, Trash, Edit } from 'lucide-react';
 
 export default function MemoryPage() {
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string>('m1');
+  const [draftContent, setDraftContent] = useState('');
+  const [draftImportance, setDraftImportance] = useState('5');
+  const [draftTags, setDraftTags] = useState('');
 
   const { data: memories } = useQuery({
     queryKey: ['memories-list', search],
@@ -32,6 +37,48 @@ export default function MemoryPage() {
   });
 
   const selectedMemory = memories?.find((m: any) => m.id === selectedId) || memories?.[0];
+
+  useEffect(() => {
+    if (!selectedMemory) {
+      return;
+    }
+    setDraftContent(selectedMemory.content || '');
+    setDraftImportance(String(selectedMemory.importance ?? 5));
+    setDraftTags(Array.isArray(selectedMemory.tags) ? selectedMemory.tags.join(', ') : '');
+  }, [selectedMemory]);
+
+  const updateMemoryMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedMemory) {
+        throw new Error('No memory selected');
+      }
+      return apiRequest(`/api/v1/memories/${selectedMemory.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          content: draftContent,
+          importance: Number(draftImportance),
+          tags: draftTags.split(',').map((tag) => tag.trim()).filter(Boolean)
+        })
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['memories-list'] });
+    }
+  });
+
+  const archiveMemoryMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedMemory) {
+        throw new Error('No memory selected');
+      }
+      return apiRequest(`/api/v1/memories/${selectedMemory.id}`, {
+        method: 'DELETE'
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['memories-list'] });
+    }
+  });
 
   return (
     <AppShell>
@@ -88,7 +135,21 @@ export default function MemoryPage() {
 
               <div className={styles.detailContent}>
                 <p><strong>Content:</strong></p>
-                <p style={{ marginTop: '8px', color: 'var(--color-text-primary)' }}>{selectedMemory.content}</p>
+                <textarea
+                  value={draftContent}
+                  onChange={(e) => setDraftContent(e.target.value)}
+                  style={{
+                    marginTop: '8px',
+                    width: '100%',
+                    minHeight: '110px',
+                    background: 'var(--color-bg-tertiary)',
+                    color: 'var(--color-text-primary)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '12px',
+                    resize: 'vertical'
+                  }}
+                />
               </div>
 
               <div>
@@ -96,8 +157,44 @@ export default function MemoryPage() {
                 <div className={styles.tagRow}>
                   {selectedMemory.tags?.map((t: string) => (
                     <span key={t} className={styles.tag}>#{t}</span>
-                  ))}
+                ))}
                 </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                  Importance
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={draftImportance}
+                    onChange={(e) => setDraftImportance(e.target.value)}
+                    style={{
+                      background: 'var(--color-bg-tertiary)',
+                      color: 'var(--color-text-primary)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '8px 10px'
+                    }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                  Tags
+                  <input
+                    type="text"
+                    value={draftTags}
+                    onChange={(e) => setDraftTags(e.target.value)}
+                    placeholder="comma, separated, tags"
+                    style={{
+                      background: 'var(--color-bg-tertiary)',
+                      color: 'var(--color-text-primary)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '8px 10px'
+                    }}
+                  />
+                </label>
               </div>
 
               <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -106,11 +203,11 @@ export default function MemoryPage() {
               </div>
 
               <div className={styles.actions}>
-                <button className={styles.btnEdit}>
+                <button className={styles.btnEdit} type="button" onClick={() => updateMemoryMutation.mutate()}>
                   <Edit size={12} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
-                  Edit
+                  Save
                 </button>
-                <button className={styles.btnArchive}>
+                <button className={styles.btnArchive} type="button" onClick={() => archiveMemoryMutation.mutate()}>
                   <Archive size={12} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
                   Archive
                 </button>

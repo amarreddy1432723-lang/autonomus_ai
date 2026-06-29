@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import AppShell from '../../components/AppShell';
 import { useChatStore } from '../../store';
+import { createApiHeaders } from '../../utils/api';
 import styles from './Chat.module.css';
 import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit } from 'lucide-react';
 
@@ -39,11 +40,16 @@ export default function ChatPage() {
 
     try {
       const allMessages = [...messages, userMsg];
+      const headers = createApiHeaders({
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: '00000000-0000-0000-0000-000000000000',
+          messages: allMessages.map(m => ({ role: m.role, content: m.content }))
+        })
+      });
       const response = await fetch('/api/v1/agents/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           user_id: '00000000-0000-0000-0000-000000000000',
           messages: allMessages.map(m => ({ role: m.role, content: m.content }))
@@ -174,7 +180,7 @@ export default function ChatPage() {
                       ))}
                     </div>
                   )}
-                  <button className={styles.saveMemoryBtn}>
+                  <button className={styles.saveMemoryBtn} type="button">
                     <Check size={10} style={{ marginRight: '4px' }} />
                     Save to Memory
                   </button>
@@ -234,10 +240,10 @@ export default function ChatPage() {
             </button>
           </div>
           <div className={styles.optionsRow}>
-            <button type="button" className={styles.optionBtn}>📎 File</button>
-            <button type="button" className={styles.optionBtn}>🔗 URL</button>
-            <button type="button" className={styles.optionBtn}>📋 Task</button>
-            <button type="button" className={styles.optionBtn}>🎯 Goal</button>
+            <button type="button" className={styles.optionBtn}>File</button>
+            <button type="button" className={styles.optionBtn}>URL</button>
+            <button type="button" className={styles.optionBtn}>Task</button>
+            <button type="button" className={styles.optionBtn}>Goal</button>
           </div>
         </form>
       </div>
