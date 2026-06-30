@@ -9,14 +9,16 @@ class Settings(BaseSettings):
     AGENT_PORT: int = int(os.getenv("AGENT_PORT", "8003"))
 
     # ── LLM Provider ──────────────────────────────────────────
-    # Supported: openai | anthropic | google | groq | ollama | custom | mock
+    # Supported: autonomus | openai | anthropic | google | groq | ollama | custom | mock
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
-    # Model name for the selected provider (e.g. gpt-4o-mini, claude-3-5-haiku-20241022)
+    # Model name for the selected provider (e.g. autonomus-ai-v1, gpt-4o-mini)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
     # Per-role model overrides (optional — falls back to LLM_MODEL if empty)
     APPROVAL_LLM_MODEL: Optional[str] = os.getenv("APPROVAL_LLM_MODEL")     # stronger model for risk decisions
     EXTRACTION_LLM_MODEL: Optional[str] = os.getenv("EXTRACTION_LLM_MODEL")   # cheaper model for memory extraction
+    FALLBACK_LLM_PROVIDER: Optional[str] = os.getenv("FALLBACK_LLM_PROVIDER")
+    FALLBACK_LLM_MODEL: Optional[str] = os.getenv("FALLBACK_LLM_MODEL")
 
     # ── Embedding Provider ────────────────────────────────────
     # Supported: openai | google | ollama | huggingface | mock
@@ -52,6 +54,8 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     LLM_BASE_URL: Optional[str] = os.getenv("LLM_BASE_URL")           # only needed for provider=custom
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "not-needed")              # only needed for provider=custom
+    AUTONOMUS_LLM_BASE_URL: Optional[str] = os.getenv("AUTONOMUS_LLM_BASE_URL")
+    AUTONOMUS_LLM_API_KEY: str = os.getenv("AUTONOMUS_LLM_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
 
     class Config:
         env_file = ".env"

@@ -2,8 +2,8 @@
 LLM Router — Centralized provider-agnostic model selector.
 
 Configure in .env:
-  LLM_PROVIDER         = openai | anthropic | google | groq | ollama | custom | mock
-  LLM_MODEL            = gpt-4o-mini | claude-3-5-haiku-20241022 | gemini-1.5-flash | etc.
+  LLM_PROVIDER         = autonomus | openai | anthropic | google | groq | ollama | custom | mock
+  LLM_MODEL            = autonomus-ai-v1 | gpt-4o-mini | claude-3-5-haiku-20241022 | etc.
 
 Per-role overrides (optional — fallback to LLM_MODEL if unset):
   APPROVAL_LLM_MODEL   = stronger model for risk-gated decisions
@@ -72,6 +72,32 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
             provider = "mock"
 
     try:
+        # ── Autonomus AI (own OpenAI-compatible model endpoint) ──
+        if provider in {"autonomus", "autonomous"}:
+            from langchain_openai import ChatOpenAI
+            llm_base_url = (
+                getattr(settings, "AUTONOMUS_LLM_BASE_URL", None)
+                or getattr(settings, "LLM_BASE_URL", None)
+            )
+            if not llm_base_url:
+                fallback_provider = getattr(settings, "FALLBACK_LLM_PROVIDER", None)
+                fallback_model = getattr(settings, "FALLBACK_LLM_MODEL", None)
+                if fallback_provider:
+                    return get_chat_llm(role=role, provider=fallback_provider, model=fallback_model)
+                if getattr(settings, "GROQ_API_KEY", None):
+                    return get_chat_llm(role=role, provider="groq", model="llama-3.3-70b-versatile")
+                if not is_mock:
+                    return get_chat_llm(role=role, provider="openai", model="gpt-4o-mini")
+                from .mock_llm import MockChatOpenAI
+                return MockChatOpenAI()
+            llm_api_key = getattr(settings, "AUTONOMUS_LLM_API_KEY", None) or getattr(settings, "LLM_API_KEY", "not-needed")
+            return ChatOpenAI(
+                model=model or "autonomus-ai-v1",
+                base_url=llm_base_url,
+                api_key=llm_api_key,
+                temperature=0.2,
+            )
+
         # ── OpenAI ────────────────────────────────────────────────
         if provider == "openai":
             from langchain_openai import ChatOpenAI
@@ -127,7 +153,7 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
             llm_base_url = getattr(settings, "LLM_BASE_URL", "http://localhost:8000/v1")
             llm_api_key = getattr(settings, "LLM_API_KEY", "not-needed")
             return ChatOpenAI(
-                model=model or "local-model",
+                model=model or "autonomus-ai-v1",
                 base_url=llm_base_url,
                 api_key=llm_api_key,
                 temperature=0.2,

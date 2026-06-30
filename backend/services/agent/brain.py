@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from .llm_router import get_chat_llm
 from .memory_agent import retrieve_context
-from .tools import live_news, web_search, read_file, memory_read
+from .tools import live_news, web_search, read_file, memory_read, fetch_educational_media
 from services.shared.security import sanitize_tool_output, wrap_input_xml, sanitize_user_input
 
 # State representation
@@ -27,6 +27,58 @@ def _looks_like_media_teaching_request(text: str) -> bool:
     media_words = ("image", "images", "picture", "photo", "diagram", "visual", "illustration", "gif", "video", "youtube", "animation")
     teaching_words = ("explain", "teach", "show", "learn", "understand", "describe", "how", "what")
     return any(word in text_lower for word in media_words) and any(word in text_lower for word in teaching_words)
+
+def _looks_like_anatomy_visual_request(text: str, goal_context: str = "") -> bool:
+    combined = f"{text}\n{goal_context}".lower()
+    anatomy_words = (
+        "anatomy", "mbbs", "skeletal", "skeleton", "bone", "bones", "muscle",
+        "nervous system", "cardiovascular", "respiratory", "digestive", "organ"
+    )
+    continuation_words = ("continue", "go with", "start", "next")
+    has_anatomy_context = any(word in combined for word in anatomy_words)
+    asks_to_continue_learning = any(word in (text or "").lower() for word in continuation_words)
+    has_direct_subject = any(word in (text or "").lower() for word in anatomy_words)
+    return has_direct_subject or (has_anatomy_context and asks_to_continue_learning)
+
+def _extract_markdown_media(media_context: str, limit: int = 2) -> list[str]:
+    media = []
+    for line in (media_context or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Markdown: "):
+            media.append(stripped.replace("Markdown: ", "", 1))
+        if len(media) >= limit:
+            break
+    return media
+
+def _subject_from_text(text: str) -> str:
+    clean = " ".join((text or "").replace("<user_input>", "").replace("</user_input>", "").split())
+    for prefix in ("go with ", "explain ", "teach ", "show ", "continue with "):
+        if clean.lower().startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    return clean[:120] or "this topic"
+
+def _build_media_teaching_response(subject: str, media_context: str) -> str:
+    media_blocks = _extract_markdown_media(media_context)
+    if not media_blocks:
+        media_blocks = ["![Human skeletal system diagram](https://upload.wikimedia.org/wikipedia/commons/c/ca/Human_skeleton_front_en.svg)"]
+
+    return (
+        f"**{subject.title()} - visual teacher explanation**\n\n"
+        "I found external educational media and combined it with a short guided explanation below. "
+        "Open the image directly in chat, then click it to get a focused teacher-style breakdown of that exact diagram.\n\n"
+        + "\n\n".join(media_blocks)
+        + "\n\n"
+        "**How to study this image like a teacher would guide you:**\n"
+        "1. First identify the full structure and its orientation, such as front/back, top/bottom, or left/right.\n"
+        "2. Break the topic into major regions instead of memorizing everything at once.\n"
+        "3. Notice the labels and connect each label to its function.\n"
+        "4. For anatomy, learn the big landmark first, then smaller parts attached to it.\n"
+        "5. Click the image to open the focused explanation panel, where I will explain the diagram step by step from the visible image.\n\n"
+        "**For skeletal system specifically:** begin with the axial skeleton: skull, vertebral column, ribs, and sternum. "
+        "Then move to the appendicular skeleton: shoulder girdle, upper limb bones, pelvic girdle, and lower limb bones. "
+        "This order helps first-year MBBS anatomy feel organized instead of overwhelming."
+    )
 
 # 1. Intent Classification Node
 def intent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -129,16 +181,31 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
             last_user_message = str(msg.content)
             break
 
+    recent_user_messages = []
+    for msg in reversed(state["messages"]):
+        if msg.type == "human":
+            recent_user_messages.append(str(msg.content))
+        if len(recent_user_messages) >= 4:
+            break
+    recent_user_text = "\n".join(reversed(recent_user_messages))
+
     media_context = ""
-    is_media_teaching_request = _looks_like_media_teaching_request(last_user_message)
+    is_media_teaching_request = (
+        _looks_like_media_teaching_request(recent_user_text)
+        or _looks_like_anatomy_visual_request(recent_user_text, goal_context)
+    )
     if is_media_teaching_request:
+        media_query = sanitize_user_input(recent_user_text)
+        if not any(word in media_query.lower() for word in ("image", "diagram", "visual", "video", "picture")):
+            media_query = f"{media_query} anatomy diagram image"
         try:
-            media_context = web_search.invoke({"query": sanitize_user_input(last_user_message)})
+            media_context = fetch_educational_media(media_query)
         except Exception as e:
             media_context = f"Media lookup failed: {e}"
 
+
     system_prompt = (
-        "You are the Central Brain of the Autonomous Personal AI Agent.\n"
+        "You are Autonomus AI, the user's unified personal AI model and learning agent.\n"
         f"Active User ID: {state.get('user_id')}\n"
         f"Classified Intent: {state.get('intent')}\n\n"
     )
@@ -161,7 +228,7 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         "- IMPORTANT: When you decide to call a tool (like web_search or live_news), you MUST output ONLY the tool call. Do NOT output any thoughts, preambles, explanations, conversational text, or introductions (such as 'Let me look that up' or 'Sure, I will search...') before the tool call. Doing so will crash the system. Go directly to calling the function.\n"
         "- Respond in a highly professional, detailed, and structured manner. Use formatted markdown tables, bold highlights, and clean bullet lists where appropriate to make information clear.\n"
         "- When in an Active Goal Context, make sure your reasoning and answers are tightly aligned with the goal description and current task statuses. Explicitly reference completed vs pending tasks to show progress and guide the user.\n"
-        "- If a student or user asks you to explain something with an image or a video, you MUST use the web_search tool with a media-focused query. Use the returned IMAGE RESULTS or VIDEO RESULTS directly when available. Include a short teacher-style intro, then embed one or two relevant items using markdown syntax: `![Description](image_url)` for images, or `[Video: Title](youtube_url)` for videos. Tell the student they can click an image in chat to open a focused teacher explanation inside the app.\n"
+        "- If a student or user asks you to explain something with an image or a video, use the prefetched media results when they are present; otherwise use web_search with a media-focused query. Include a short teacher-style intro, then embed one or two relevant items using markdown syntax: `![Description](image_url)` for images, or `[Video: Title](youtube_url)` for videos. Write a fresh explanation for the exact topic instead of repeating a generic template. Tell the student they can click an image in chat to open a focused teacher explanation inside the app.\n"
         "- When explaining an image URL provided by the user or interface, teach from the visible subject step by step in simple language. Do not ask the student to leave the site.\n"
         "- Use the memory context to personalize your responses. If a memory says User's name is X, address them as X.\n"
         "- Call live_news for current news, recent events, latest announcements, or anything that may have changed recently.\n"

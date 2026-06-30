@@ -20,6 +20,9 @@ export interface ChatMessage {
   timestamp: string;
   thoughts?: string[];
   sources?: string[];
+  modelLabel?: string;
+  modelProvider?: string;
+  modelName?: string;
 }
 
 interface AppState {
@@ -77,7 +80,7 @@ export const useChatStore = create<ChatState>((set) => ({
     {
       id: 'm1',
       role: 'assistant',
-      content: `I've completed the cloud pricing research. Here's what I found:
+      content: `I'm Autonomus AI. Here's a sample research response:
 
 **AWS vs GCP vs Azure for Early-Stage SaaS**
 
@@ -87,9 +90,9 @@ export const useChatStore = create<ChatState>((set) => ({
 | GCP | $300 credit | $35-95 | ML/Data |
 | Render | Generous | $25-60 | Startups |
 
-💡 **Recommendation**: Start with Render or Railway for MVP. Migrate to AWS when you hit $10K MRR.
+**Recommendation**: Start with Render or Railway for MVP. Migrate to AWS when you hit $10K MRR.
 
-📚 Sources: [AWS Pricing], [GCP Calc], [Render Docs]`,
+Sources: [AWS Pricing], [GCP Calc], [Render Docs]`,
       timestamp: '9:04 AM',
       thoughts: ['Brain: Classified as general_chat', 'Memory: Found preference cloud=AWS']
     }

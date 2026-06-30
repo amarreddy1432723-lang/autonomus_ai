@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Autonomus AI instruction example",
+  "type": "object",
+  "required": ["system", "user", "assistant"],
+  "properties": {
+    "system": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assistant": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "domain": { "type": "string" },
+        "goal_id": { "type": "string" },
+        "quality_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": { "type": "string" },
+        "trainable_memory": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

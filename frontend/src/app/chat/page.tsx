@@ -8,12 +8,24 @@ import styles from './Chat.module.css';
 import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit, X, ImageIcon } from 'lucide-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 
-const MODELS = [
-  { name: 'Groq Llama 3.3', provider: 'groq', model: 'llama-3.3-70b-versatile' },
-  { name: 'OpenAI GPT-4o Mini', provider: 'openai', model: 'gpt-4o-mini' },
-  { name: 'Anthropic Claude 3.5', provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  { name: 'Google Gemini 1.5', provider: 'google', model: 'gemini-1.5-flash' },
-];
+const MODEL_OPTIONS = [
+  { id: 'autonomus-ai-v1', label: 'Autonomus AI', provider: 'autonomus', model: 'autonomus-ai-v1' },
+  { id: 'groq-llama-3.3', label: 'Groq Llama 3.3', provider: 'groq', model: 'llama-3.3-70b-versatile' },
+  { id: 'openai-gpt-4o-mini', label: 'OpenAI GPT-4o mini', provider: 'openai', model: 'gpt-4o-mini' },
+  { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', provider: 'google', model: 'gemini-1.5-flash' }
+] as const;
+
+type ModelOption = typeof MODEL_OPTIONS[number];
+
+const extractMediaUrls = (content: string) => {
+  const urls = new Set<string>();
+  const markdownMediaRegex = /!?\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = markdownMediaRegex.exec(content)) !== null) {
+    urls.add(match[1]);
+  }
+  return Array.from(urls);
+};
 
 export default function ChatPage() {
   const { messages, addMessage, setMessages, isStreaming, streamingContent, streamingThoughts, setIsStreaming, setStreamingContent, setStreamingThoughts } = useChatStore();
@@ -21,7 +33,8 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [showThoughts, setShowThoughts] = useState<Record<string, boolean>>({});
   const [goals, setGoals] = useState<any[]>([]);
-  const [selectedModel, setSelectedModel] = useState(MODELS[0]);
+  const [selectedModelId, setSelectedModelId] = useState<ModelOption['id']>('autonomus-ai-v1');
+  const [trainingCaptureStatus, setTrainingCaptureStatus] = useState<Record<string, 'saved' | 'error' | 'saving'>>({});
   const [imageViewer, setImageViewer] = useState<{
     url: string;
     alt: string;
@@ -32,10 +45,22 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeGoalId = activeGoalContext?.id || 'default';
+  const selectedModel = MODEL_OPTIONS.find((option) => option.id === selectedModelId) || MODEL_OPTIONS[0];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('my_ai_selected_model_id');
+    if (saved && MODEL_OPTIONS.some((option) => option.id === saved)) {
+      setSelectedModelId(saved as ModelOption['id']);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('my_ai_selected_model_id', selectedModelId);
+  }, [selectedModelId]);
 
   // Load goals on mount
   useEffect(() => {
@@ -50,18 +75,6 @@ export default function ChatPage() {
       }
     };
     fetchGoals();
-  }, []);
-
-  // Load saved model on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('my_ai_selected_model');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        const found = MODELS.find(m => m.provider === parsed.provider && m.model === parsed.model);
-        if (found) setSelectedModel(found);
-      } catch (e) {}
-    }
   }, []);
 
   // Load chat history when activeGoalId changes
@@ -97,7 +110,7 @@ export default function ChatPage() {
             ? {
                 id: 'm1',
                 role: 'assistant' as const,
-                content: "Hello! I'm your Autonomous Personal AI Agent. How can I help you today?",
+                content: "Hello! I'm Autonomus AI. How can I help you today?",
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               }
             : {
@@ -160,6 +173,35 @@ export default function ChatPage() {
         const parsed = JSON.parse(currentHistory);
         localStorage.setItem(`chat_history_${activeGoalId}`, JSON.stringify([...parsed, errMsg]));
       }
+    }
+  };
+
+  const captureTrainingExample = async (assistantMsg: any, index: number) => {
+    const previousUser = [...messages.slice(0, index)].reverse().find((msg) => msg.role === 'user');
+    if (!previousUser) return;
+
+    setTrainingCaptureStatus((prev) => ({ ...prev, [assistantMsg.id]: 'saving' }));
+    try {
+      await apiRequest('/api/v1/training/examples', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_request: previousUser.content,
+          assistant_response: assistantMsg.content,
+          goal_context: activeGoalContext || null,
+          selected_model: {
+            label: assistantMsg.modelLabel || selectedModel.label,
+            provider: assistantMsg.modelProvider || selectedModel.provider,
+            model: assistantMsg.modelName || selectedModel.model,
+          },
+          media_urls: extractMediaUrls(assistantMsg.content),
+          quality_status: 'approved',
+          source: 'chat_manual_approval',
+        })
+      });
+      setTrainingCaptureStatus((prev) => ({ ...prev, [assistantMsg.id]: 'saved' }));
+    } catch (error) {
+      console.error(error);
+      setTrainingCaptureStatus((prev) => ({ ...prev, [assistantMsg.id]: 'error' }));
     }
   };
 
@@ -355,7 +397,10 @@ export default function ChatPage() {
         role: 'assistant' as const,
         content: result.content,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        thoughts: result.thoughts
+        thoughts: result.thoughts,
+        modelLabel: selectedModel.label,
+        modelProvider: selectedModel.provider,
+        modelName: selectedModel.model
       };
       addMessage(assistantMsg);
 
@@ -394,13 +439,9 @@ export default function ChatPage() {
     }
   };
 
-  const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    const found = MODELS.find(m => m.model === val);
-    if (found) {
-      setSelectedModel(found);
-      localStorage.setItem('my_ai_selected_model', JSON.stringify(found));
-    }
+  const assistantLabel = (modelLabel?: string) => {
+    const label = modelLabel || selectedModel.label;
+    return label === 'Autonomus AI' ? 'AUTONOMUS AI' : label.toUpperCase();
   };
 
   return (
@@ -411,15 +452,13 @@ export default function ChatPage() {
           <div className={styles.headerControls}>
             <div className={styles.selectorWrapper}>
               <span>Active Model:</span>
-              <select 
-                className={styles.customSelect} 
-                value={selectedModel.model} 
-                onChange={handleModelChange}
+              <select
+                className={styles.customSelect}
+                value={selectedModelId}
+                onChange={(event) => setSelectedModelId(event.target.value as ModelOption['id'])}
               >
-                {MODELS.map((m) => (
-                  <option key={m.model} value={m.model}>
-                    {m.name}
-                  </option>
+                {MODEL_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>{option.label}</option>
                 ))}
               </select>
             </div>
@@ -452,7 +491,7 @@ export default function ChatPage() {
 
         {/* MESSAGE LIST */}
         <div className={styles.messageList}>
-          {messages.map((msg) => (
+          {messages.map((msg, index) => (
             <div 
               key={msg.id} 
               className={msg.role === 'user' ? styles.messageUser : styles.messageAssistant}
@@ -461,7 +500,7 @@ export default function ChatPage() {
               {msg.role === 'assistant' && (
                 <div className={styles.messageHeader}>
                   <Cpu size={12} color="var(--color-accent-primary)" />
-                  <span>PERSONAL AI · {msg.timestamp}</span>
+                  <span>{assistantLabel(msg.modelLabel)} · {msg.timestamp}</span>
                 </div>
               )}
               <div className={styles.messageContent}>
@@ -488,6 +527,21 @@ export default function ChatPage() {
                     <Check size={10} style={{ marginRight: '4px' }} />
                     Save to Memory
                   </button>
+                  <button
+                    className={styles.saveMemoryBtn}
+                    type="button"
+                    onClick={() => captureTrainingExample(msg, index)}
+                    disabled={trainingCaptureStatus[msg.id] === 'saving' || trainingCaptureStatus[msg.id] === 'saved'}
+                  >
+                    <BrainCircuit size={10} style={{ marginRight: '4px' }} />
+                    {trainingCaptureStatus[msg.id] === 'saved'
+                      ? 'Training Saved'
+                      : trainingCaptureStatus[msg.id] === 'saving'
+                        ? 'Saving...'
+                        : trainingCaptureStatus[msg.id] === 'error'
+                          ? 'Training Failed'
+                          : 'Train Autonomus'}
+                  </button>
                 </>
               )}
             </div>
@@ -498,7 +552,7 @@ export default function ChatPage() {
             <div className={styles.messageAssistant} style={{ alignSelf: 'flex-start', maxWidth: '85%' }}>
               <div className={styles.messageHeader}>
                 <Cpu size={12} className={styles.pulseDot} />
-                <span>PERSONAL AI · thinking...</span>
+                <span>{assistantLabel()} · thinking...</span>
               </div>
               <div className={styles.messageContent}>
                 <MarkdownRenderer content={streamingContent || '●●●'} onExplainImage={explainImage} />

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface MarkdownRendererProps {
   content: string;
@@ -163,38 +163,9 @@ function parseInline(
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', margin: '12px 0', alignItems: 'center' }}>
         {onExplainImage ? (
-          <button
-            type="button"
-            onClick={() => onExplainImage({ url, alt })}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                onExplainImage({ url, alt });
-              }
-            }}
-            aria-label={`Explain image${alt ? `: ${alt}` : ''}`}
-            style={{
-              width: '100%',
-              padding: 0,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'zoom-in',
-              display: 'flex',
-              justifyContent: 'center'
-            }}
-          >
-            <img
-              src={url}
-              alt={alt}
-              style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
-            />
-          </button>
+          <ExplainableInlineImage url={url} alt={alt} onExplainImage={onExplainImage} />
         ) : (
-          <img
-            src={url}
-            alt={alt}
-            style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
-          />
+          <InlineImage url={url} alt={alt} />
         )}
         {alt && (
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontStyle: 'italic', textAlign: 'center' }}>
@@ -258,4 +229,91 @@ function parseInline(
   });
 
   return <>{parts}</>;
+}
+
+function ExplainableInlineImage({
+  url,
+  alt,
+  onExplainImage,
+}: {
+  url: string;
+  alt: string;
+  onExplainImage: (image: { url: string; alt: string }) => void;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <ImageFailureFallback url={url} />;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onExplainImage({ url, alt })}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onExplainImage({ url, alt });
+        }
+      }}
+      aria-label={`Explain image${alt ? `: ${alt}` : ''}`}
+      style={{
+        width: '100%',
+        padding: 0,
+        border: 'none',
+        background: 'transparent',
+        cursor: 'zoom-in',
+        display: 'flex',
+        justifyContent: 'center'
+      }}
+    >
+      <img
+        src={url}
+        alt={alt}
+        onError={() => setFailed(true)}
+        style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
+      />
+    </button>
+  );
+}
+
+function InlineImage({ url, alt }: { url: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <ImageFailureFallback url={url} />;
+  }
+
+  return (
+    <img
+      src={url}
+      alt={alt}
+      onError={() => setFailed(true)}
+      style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
+    />
+  );
+}
+
+function ImageFailureFallback({ url }: { url: string }) {
+  return (
+    <div style={{
+      width: '100%',
+      border: '1px solid var(--color-border)',
+      borderRadius: '8px',
+      padding: '12px',
+      background: 'var(--color-bg-tertiary)',
+      color: 'var(--color-text-secondary)',
+      textAlign: 'center'
+    }}>
+      <div style={{ marginBottom: '6px', fontWeight: 600 }}>Image could not be displayed inline.</div>
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ color: 'var(--color-accent-primary)', textDecoration: 'underline', overflowWrap: 'anywhere' }}
+      >
+        Open image source
+      </a>
+    </div>
+  );
 }

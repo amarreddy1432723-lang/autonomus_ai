@@ -2,10 +2,12 @@ import json
 import os
 import jwt
 from uuid import UUID
+from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
@@ -64,6 +66,46 @@ class ChatRequest(BaseModel):
     llm_model: Optional[str] = None
     persist: bool = True
 
+EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
+    "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
+    "groq-llama-3.3": ("groq", "llama-3.3-70b-versatile"),
+    "openai-gpt-4o-mini": ("openai", "gpt-4o-mini"),
+    "gemini-1.5-flash": ("google", "gemini-1.5-flash"),
+}
+
+EXPOSED_PROVIDER_MODELS = set(EXPOSED_CHAT_MODELS.values())
+
+def resolve_exposed_chat_model(provider: str | None, model: str | None) -> tuple[str | None, str | None]:
+    if not provider and not model:
+        return None, None
+
+    normalized_provider = (provider or "").strip().lower()
+    normalized_model = (model or "").strip()
+    if normalized_provider in EXPOSED_CHAT_MODELS and not normalized_model:
+        return EXPOSED_CHAT_MODELS[normalized_provider]
+
+    pair = (normalized_provider, normalized_model)
+    if pair in EXPOSED_PROVIDER_MODELS:
+        return pair
+
+    raise HTTPException(status_code=400, detail="Unsupported chat model selection.")
+
+class TrainingExampleRequest(BaseModel):
+    user_request: str
+    assistant_response: str
+    goal_context: Optional[dict[str, Any]] = None
+    selected_model: Optional[dict[str, str]] = None
+    user_correction: Optional[str] = None
+    media_urls: List[str] = Field(default_factory=list)
+    quality_status: str = "candidate"
+    source: str = "chat"
+
+def _training_data_path(filename: str) -> Path:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "training" / "data" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
 async def chat_stream_generator(
     user_id: str,
     prompt: str,
@@ -84,7 +126,7 @@ async def chat_stream_generator(
             formatted_messages.append(AIMessage(content=msg.content))
             
     formatted_messages.append(HumanMessage(content=prompt))
-    
+
     input_state = {
         "messages": formatted_messages,
         "user_id": user_id
@@ -158,6 +200,7 @@ async def chat_endpoint(request: ChatRequest):
         
     prompt = request.messages[-1].content
     history = request.messages[:-1]
+    llm_provider, llm_model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     
     return StreamingResponse(
         chat_stream_generator(
@@ -165,12 +208,42 @@ async def chat_endpoint(request: ChatRequest):
             prompt,
             history,
             request.session_id or "default",
-            request.llm_provider,
-            request.llm_model,
+            llm_provider,
+            llm_model,
             request.persist,
         ),
         media_type="text/event-stream"
     )
+
+@app.post("/api/v1/training/examples", status_code=202)
+def capture_training_example(
+    request: TrainingExampleRequest,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    status_value = request.quality_status.strip().lower()
+    if status_value not in {"candidate", "approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="quality_status must be candidate, approved, or rejected.")
+    if not request.user_request.strip() or not request.assistant_response.strip():
+        raise HTTPException(status_code=400, detail="user_request and assistant_response are required.")
+
+    record = {
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": str(user_id),
+        "user_request": request.user_request.strip(),
+        "assistant_response": request.assistant_response.strip(),
+        "goal_context": request.goal_context or {},
+        "selected_model": request.selected_model or {},
+        "user_correction": (request.user_correction or "").strip(),
+        "media_urls": [url for url in request.media_urls if url.startswith(("http://", "https://"))],
+        "quality_status": status_value,
+        "source": request.source,
+    }
+
+    output = _training_data_path("candidate_examples.jsonl")
+    with output.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+    return {"status": "captured", "quality_status": status_value}
 
 class CompressRequest(BaseModel):
     user_id: str
