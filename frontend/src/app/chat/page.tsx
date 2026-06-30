@@ -212,6 +212,7 @@ export default function ChatPage() {
     let currentEvent = '';
     let accumulatedContent = '';
     let accumulatedThoughts: string[] = [];
+    let streamError = '';
 
     while (true) {
       const { value, done } = await reader.read();
@@ -247,7 +248,8 @@ export default function ChatPage() {
               accumulatedThoughts.push(thought);
               handlers.onThought?.(thought);
             } else if (currentEvent === 'error') {
-              throw new Error(payload.error || 'Agent stream failed');
+              streamError = payload.error || 'Agent stream failed';
+              throw new Error(streamError);
             }
           } catch (err) {
             if (currentEvent === 'error') {
@@ -256,6 +258,10 @@ export default function ChatPage() {
           }
         }
       }
+    }
+
+    if (streamError) {
+      throw new Error(streamError);
     }
 
     return { content: accumulatedContent, thoughts: accumulatedThoughts };
@@ -362,7 +368,7 @@ export default function ChatPage() {
       const errMsg = {
         id: `err-${Date.now()}`,
         role: 'assistant' as const,
-        content: 'Error: Could not connect to the agent service. Make sure backend containers are running.',
+        content: `Error: ${error instanceof Error ? error.message : 'Could not connect to the agent service. Make sure backend containers are running.'}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       addMessage(errMsg);

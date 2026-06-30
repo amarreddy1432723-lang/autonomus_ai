@@ -22,6 +22,12 @@ def get_llm() -> BaseChatModel:
     """Backward-compatible shim — delegates to llm_router."""
     return get_chat_llm(role="reasoning")
 
+def _looks_like_media_teaching_request(text: str) -> bool:
+    text_lower = (text or "").lower()
+    media_words = ("image", "images", "picture", "photo", "diagram", "visual", "illustration", "gif", "video", "youtube", "animation")
+    teaching_words = ("explain", "teach", "show", "learn", "understand", "describe", "how", "what")
+    return any(word in text_lower for word in media_words) and any(word in text_lower for word in teaching_words)
+
 # 1. Intent Classification Node
 def intent_node(state: AgentState, config: RunnableConfig) -> dict:
     cfg = config.get("configurable", {}) if config else {}
@@ -87,10 +93,6 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
     
     llm = get_chat_llm(role="reasoning", provider=provider, model=model)
     
-    # Bind tools to model
-    tools = [web_search, live_news, read_file, memory_read]
-    llm_with_tools = llm.bind_tools(tools)
-    
     # Query Database for Goal context if session_id is a valid UUID
     goal_context = ""
     if session_id and session_id != "default":
@@ -121,6 +123,20 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         finally:
             db.close()
 
+    last_user_message = ""
+    for msg in reversed(state["messages"]):
+        if msg.type == "human":
+            last_user_message = str(msg.content)
+            break
+
+    media_context = ""
+    is_media_teaching_request = _looks_like_media_teaching_request(last_user_message)
+    if is_media_teaching_request:
+        try:
+            media_context = web_search.invoke({"query": sanitize_user_input(last_user_message)})
+        except Exception as e:
+            media_context = f"Media lookup failed: {e}"
+
     system_prompt = (
         "You are the Central Brain of the Autonomous Personal AI Agent.\n"
         f"Active User ID: {state.get('user_id')}\n"
@@ -129,11 +145,20 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
     
     if goal_context:
         system_prompt += f"{goal_context}\n"
+
+    if media_context:
+        system_prompt += (
+            "PREFETCHED EDUCATIONAL MEDIA RESULTS:\n"
+            f"{media_context}\n\n"
+            "For this response, the media lookup has already been performed for you. Do NOT call web_search again. "
+            "Use the prefetched Markdown image/video entries directly when relevant.\n\n"
+        )
         
     system_prompt += (
         "RELEVANT MEMORY CONTEXT FROM DATABASE:\n"
         f"{state.get('memories') or 'No relevant memories found.'}\n\n"
         "Guidelines:\n"
+        "- IMPORTANT: When you decide to call a tool (like web_search or live_news), you MUST output ONLY the tool call. Do NOT output any thoughts, preambles, explanations, conversational text, or introductions (such as 'Let me look that up' or 'Sure, I will search...') before the tool call. Doing so will crash the system. Go directly to calling the function.\n"
         "- Respond in a highly professional, detailed, and structured manner. Use formatted markdown tables, bold highlights, and clean bullet lists where appropriate to make information clear.\n"
         "- When in an Active Goal Context, make sure your reasoning and answers are tightly aligned with the goal description and current task statuses. Explicitly reference completed vs pending tasks to show progress and guide the user.\n"
         "- If a student or user asks you to explain something with an image or a video, you MUST use the web_search tool with a media-focused query. Use the returned IMAGE RESULTS or VIDEO RESULTS directly when available. Include a short teacher-style intro, then embed one or two relevant items using markdown syntax: `![Description](image_url)` for images, or `[Video: Title](youtube_url)` for videos. Tell the student they can click an image in chat to open a focused teacher explanation inside the app.\n"
@@ -154,7 +179,13 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
             sanitized_messages.append(msg)
             
     messages = [SystemMessage(content=system_prompt)] + sanitized_messages
-    response = llm_with_tools.invoke(messages)
+
+    if is_media_teaching_request:
+        response = llm.invoke(messages)
+    else:
+        tools = [web_search, live_news, read_file, memory_read]
+        llm_with_tools = llm.bind_tools(tools)
+        response = llm_with_tools.invoke(messages)
     
     return {"messages": [response]}
 
