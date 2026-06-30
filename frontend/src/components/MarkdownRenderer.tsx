@@ -2,9 +2,10 @@ import React from 'react';
 
 interface MarkdownRendererProps {
   content: string;
+  onExplainImage?: (image: { url: string; alt: string }) => void;
 }
 
-export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export default function MarkdownRenderer({ content, onExplainImage }: MarkdownRendererProps) {
   if (!content) return null;
 
   // Split content into blocks: code blocks, tables, lists, and paragraphs.
@@ -33,7 +34,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
           <thead>
             <tr>
               {headerRow.map((cell, idx) => (
-                <th key={`th-${idx}`}>{parseInline(cell)}</th>
+                <th key={`th-${idx}`}>{parseInline(cell, onExplainImage)}</th>
               ))}
             </tr>
           </thead>
@@ -41,7 +42,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
             {bodyRows.map((row, rowIdx) => (
               <tr key={`tr-${rowIdx}`}>
                 {row.map((cell, cellIdx) => (
-                  <td key={`td-${cellIdx}`}>{parseInline(cell)}</td>
+                  <td key={`td-${cellIdx}`}>{parseInline(cell, onExplainImage)}</td>
                 ))}
               </tr>
             ))}
@@ -70,7 +71,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
         const itemContent = line.trim().slice(2);
         elements.push(
           <ul key={`ul-${i}`} style={{ paddingLeft: '20px', margin: '4px 0', listStyleType: 'disc' }}>
-            <li>{parseInline(itemContent)}</li>
+            <li>{parseInline(itemContent, onExplainImage)}</li>
           </ul>
         );
       } else if (/^\d+\.\s/.test(line.trim())) {
@@ -80,7 +81,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
           const itemContent = match[2];
           elements.push(
             <ol key={`ol-${i}`} start={parseInt(num)} style={{ paddingLeft: '20px', margin: '4px 0' }}>
-              <li>{parseInline(itemContent)}</li>
+              <li>{parseInline(itemContent, onExplainImage)}</li>
             </ol>
           );
         }
@@ -89,7 +90,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
       } else {
         elements.push(
           <p key={`p-${i}`} style={{ margin: '8px 0', lineHeight: '1.6' }}>
-            {parseInline(line)}
+            {parseInline(line, onExplainImage)}
           </p>
         );
       }
@@ -103,7 +104,10 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
   return <>{elements}</>;
 }
 
-function parseInline(text: string): React.ReactNode {
+function parseInline(
+  text: string,
+  onExplainImage?: (image: { url: string; alt: string }) => void
+): React.ReactNode {
   const imageRegex = /!\[(.*?)\]\((.*?)\)/g;
   const linkRegex = /\[(.*?)\]\((.*?)\)/g;
   const boldRegex = /\*\*(.*?)\*\*/g;
@@ -158,11 +162,40 @@ function parseInline(text: string): React.ReactNode {
     
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', margin: '12px 0', alignItems: 'center' }}>
-        <img 
-          src={url} 
-          alt={alt} 
-          style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }} 
-        />
+        {onExplainImage ? (
+          <button
+            type="button"
+            onClick={() => onExplainImage({ url, alt })}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onExplainImage({ url, alt });
+              }
+            }}
+            aria-label={`Explain image${alt ? `: ${alt}` : ''}`}
+            style={{
+              width: '100%',
+              padding: 0,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'zoom-in',
+              display: 'flex',
+              justifyContent: 'center'
+            }}
+          >
+            <img
+              src={url}
+              alt={alt}
+              style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
+            />
+          </button>
+        ) : (
+          <img
+            src={url}
+            alt={alt}
+            style={{ maxWidth: '100%', borderRadius: '8px', boxShadow: 'var(--shadow-md)', border: '1px solid var(--color-border)', objectFit: 'contain', maxHeight: '400px' }}
+          />
+        )}
         {alt && (
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontStyle: 'italic', textAlign: 'center' }}>
             {alt}

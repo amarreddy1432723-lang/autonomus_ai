@@ -62,6 +62,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    persist: bool = True
 
 async def chat_stream_generator(
     user_id: str,
@@ -70,6 +71,7 @@ async def chat_stream_generator(
     session_id: str = "default",
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
+    persist: bool = True,
 ):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
@@ -98,7 +100,8 @@ async def chat_stream_generator(
     
     assistant_text = []
     stm = RedisShortTermMemoryStore()
-    stm.append_event(user_id, session_id, {"role": "user", "content": prompt})
+    if persist:
+        stm.append_event(user_id, session_id, {"role": "user", "content": prompt})
 
     try:
         async for event in brain_agent.astream_events(input_state, config=config, version="v2"):
@@ -137,12 +140,13 @@ async def chat_stream_generator(
                 yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'output': str(output)})}\n\n"
                 
         final_text = "".join(assistant_text)
-        if final_text:
+        if persist and final_text:
             stm.append_event(user_id, session_id, {"role": "assistant", "content": final_text})
-        try:
-            extract_memories(UUID(user_id), "\n".join([prompt, final_text]))
-        except Exception:
-            pass
+        if persist:
+            try:
+                extract_memories(UUID(user_id), "\n".join([prompt, final_text]))
+            except Exception:
+                pass
         yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
     except Exception as e:
         yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
@@ -163,6 +167,7 @@ async def chat_endpoint(request: ChatRequest):
             request.session_id or "default",
             request.llm_provider,
             request.llm_model,
+            request.persist,
         ),
         media_type="text/event-stream"
     )

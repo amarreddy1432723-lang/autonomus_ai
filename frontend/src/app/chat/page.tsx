@@ -5,7 +5,7 @@ import AppShell from '../../components/AppShell';
 import { useChatStore, useAppStore } from '../../store';
 import { apiRequest, createApiHeaders } from '../../utils/api';
 import styles from './Chat.module.css';
-import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit } from 'lucide-react';
+import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit, X, ImageIcon } from 'lucide-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 
 const MODELS = [
@@ -22,6 +22,13 @@ export default function ChatPage() {
   const [showThoughts, setShowThoughts] = useState<Record<string, boolean>>({});
   const [goals, setGoals] = useState<any[]>([]);
   const [selectedModel, setSelectedModel] = useState(MODELS[0]);
+  const [imageViewer, setImageViewer] = useState<{
+    url: string;
+    alt: string;
+    explanation: string;
+    isLoading: boolean;
+    error: string | null;
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeGoalId = activeGoalContext?.id || 'default';
@@ -166,6 +173,140 @@ export default function ChatPage() {
     setInput(templates[kind]);
   };
 
+  const streamChatResponse = async (
+    requestMessages: { role: 'user' | 'assistant'; content: string }[],
+    handlers: {
+      onToken?: (token: string) => void;
+      onThought?: (thought: string) => void;
+    } = {},
+    options: { persist?: boolean } = {}
+  ) => {
+    const body = {
+      user_id: '00000000-0000-0000-0000-000000000000',
+      messages: requestMessages,
+      session_id: activeGoalId,
+      llm_provider: selectedModel.provider,
+      llm_model: selectedModel.model,
+      persist: options.persist ?? true,
+    };
+    const headers = createApiHeaders({
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const response = await fetch('/api/v1/agents/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      throw new Error('Chat request failed');
+    }
+    if (!response.body) {
+      throw new Error('Chat response did not include a stream');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+    let accumulatedContent = '';
+    let accumulatedThoughts: string[] = [];
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('event:')) {
+          currentEvent = trimmed.slice(6).trim();
+        } else if (trimmed.startsWith('data:')) {
+          const dataStr = trimmed.slice(5).trim();
+          try {
+            const payload = JSON.parse(dataStr);
+            if (currentEvent === 'token') {
+              accumulatedContent += payload.token;
+              handlers.onToken?.(accumulatedContent);
+            } else if (currentEvent === 'thinking') {
+              const thought = payload.node
+                ? `Running node: ${payload.node} (${payload.status})`
+                : `Brain execution ${payload.status}`;
+              accumulatedThoughts.push(thought);
+              handlers.onThought?.(thought);
+            } else if (currentEvent === 'tool_start') {
+              const thought = `Tool Start: ${payload.tool}`;
+              accumulatedThoughts.push(thought);
+              handlers.onThought?.(thought);
+            } else if (currentEvent === 'tool_end') {
+              const thought = `Tool End: ${payload.tool}`;
+              accumulatedThoughts.push(thought);
+              handlers.onThought?.(thought);
+            } else if (currentEvent === 'error') {
+              throw new Error(payload.error || 'Agent stream failed');
+            }
+          } catch (err) {
+            if (currentEvent === 'error') {
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    return { content: accumulatedContent, thoughts: accumulatedThoughts };
+  };
+
+  const explainImage = async (image: { url: string; alt: string }) => {
+    setImageViewer({
+      url: image.url,
+      alt: image.alt,
+      explanation: '',
+      isLoading: true,
+      error: null,
+    });
+
+    const hiddenPrompt = [
+      'Explain this image like a teacher for a student.',
+      `Image URL: ${image.url}`,
+      `Alt text or title: ${image.alt || 'No alt text provided.'}`,
+      'Give a clear step-by-step explanation of what the student should notice, using simple language and concrete labels from the image when possible.',
+      'Do not ask the student to leave the app. Do not repeat the image URL unless it is useful.'
+    ].join('\n');
+
+    try {
+      await streamChatResponse(
+        [
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: hiddenPrompt }
+        ],
+        {
+          onToken: (content) => {
+            setImageViewer((current) => current && current.url === image.url
+              ? { ...current, explanation: content, isLoading: true, error: null }
+              : current);
+          }
+        },
+        { persist: false }
+      );
+      setImageViewer((current) => current && current.url === image.url
+        ? { ...current, isLoading: false }
+        : current);
+    } catch (error) {
+      setImageViewer((current) => current && current.url === image.url
+        ? {
+            ...current,
+            isLoading: false,
+            error: error instanceof Error ? error.message : 'Could not explain this image yet.'
+          }
+        : current);
+    }
+  };
+
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isStreaming) return;
@@ -190,86 +331,25 @@ export default function ChatPage() {
     localStorage.setItem(currentLocalKey, JSON.stringify(updatedHistoryWithUser));
 
     try {
-      const headers = createApiHeaders({
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: '00000000-0000-0000-0000-000000000000',
-          messages: updatedHistoryWithUser.map(m => ({ role: m.role, content: m.content })),
-          session_id: activeGoalId,
-          llm_provider: selectedModel.provider,
-          llm_model: selectedModel.model,
-        })
-      });
-      const response = await fetch('/api/v1/agents/chat', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          user_id: '00000000-0000-0000-0000-000000000000',
-          messages: updatedHistoryWithUser.map(m => ({ role: m.role, content: m.content })),
-          session_id: activeGoalId,
-          llm_provider: selectedModel.provider,
-          llm_model: selectedModel.model,
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Chat request failed');
-      }
-
-      if (!response.body) return;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let currentEvent = '';
-      let accumulatedContent = '';
-      let accumulatedThoughts: string[] = [];
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('event:')) {
-            currentEvent = trimmed.slice(6).trim();
-          } else if (trimmed.startsWith('data:')) {
-            const dataStr = trimmed.slice(5).trim();
-            try {
-              const payload = JSON.parse(dataStr);
-              if (currentEvent === 'token') {
-                accumulatedContent += payload.token;
-                setStreamingContent(accumulatedContent);
-              } else if (currentEvent === 'thinking') {
-                const thought = payload.node 
-                  ? `Running node: ${payload.node} (${payload.status})`
-                  : `Brain execution ${payload.status}`;
-                accumulatedThoughts.push(thought);
-                setStreamingThoughts([...accumulatedThoughts]);
-              } else if (currentEvent === 'tool_start') {
-                accumulatedThoughts.push(`🔧 Tool Start: ${payload.tool}`);
-                setStreamingThoughts([...accumulatedThoughts]);
-              } else if (currentEvent === 'tool_end') {
-                accumulatedThoughts.push(`✅ Tool End: ${payload.tool}`);
-                setStreamingThoughts([...accumulatedThoughts]);
-              }
-            } catch (err) {
-              // Ignore parse errors for incomplete JSON
-            }
+      let liveThoughts: string[] = [];
+      const result = await streamChatResponse(
+        updatedHistoryWithUser.map(m => ({ role: m.role, content: m.content })),
+        {
+          onToken: (content) => setStreamingContent(content),
+          onThought: (thought) => {
+            liveThoughts = [...liveThoughts, thought];
+            setStreamingThoughts(liveThoughts);
           }
         }
-      }
+      );
 
       // Add final assistant message to store
       const assistantMsg = {
         id: `a-${Date.now()}`,
         role: 'assistant' as const,
-        content: accumulatedContent,
+        content: result.content,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        thoughts: accumulatedThoughts
+        thoughts: result.thoughts
       };
       addMessage(assistantMsg);
 
@@ -379,7 +459,7 @@ export default function ChatPage() {
                 </div>
               )}
               <div className={styles.messageContent}>
-                <MarkdownRenderer content={msg.content} />
+                <MarkdownRenderer content={msg.content} onExplainImage={explainImage} />
               </div>
               
               {msg.role === 'assistant' && msg.thoughts && msg.thoughts.length > 0 && (
@@ -415,7 +495,7 @@ export default function ChatPage() {
                 <span>PERSONAL AI · thinking...</span>
               </div>
               <div className={styles.messageContent}>
-                <MarkdownRenderer content={streamingContent || '●●●'} />
+                <MarkdownRenderer content={streamingContent || '●●●'} onExplainImage={explainImage} />
               </div>
               {streamingThoughts.length > 0 && (
                 <div className={styles.thoughtsPanel}>
@@ -464,6 +544,42 @@ export default function ChatPage() {
             <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('goal')}>Goal</button>
           </div>
         </form>
+        {imageViewer && (
+          <div className={styles.imageViewerOverlay} role="dialog" aria-modal="true" aria-label="Image explanation">
+            <div className={styles.imageViewer}>
+              <div className={styles.imageViewerHeader}>
+                <div className={styles.imageViewerTitle}>
+                  <ImageIcon size={16} />
+                  <span>Teacher Image Explanation</span>
+                </div>
+                <button
+                  type="button"
+                  className={styles.imageViewerClose}
+                  onClick={() => setImageViewer(null)}
+                  aria-label="Close image explanation"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className={styles.imageViewerBody}>
+                <div className={styles.imagePreviewPanel}>
+                  <img src={imageViewer.url} alt={imageViewer.alt} className={styles.imageViewerImg} />
+                  {imageViewer.alt && <span className={styles.imageCaption}>{imageViewer.alt}</span>}
+                </div>
+                <div className={styles.imageExplanationPanel}>
+                  {imageViewer.error ? (
+                    <p className={styles.imageExplanationError}>{imageViewer.error}</p>
+                  ) : (
+                    <MarkdownRenderer content={imageViewer.explanation || (imageViewer.isLoading ? 'Preparing the explanation...' : '')} />
+                  )}
+                  {imageViewer.isLoading && (
+                    <div className={styles.imageExplanationLoading}>Teaching mode is thinking...</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </AppShell>
   );

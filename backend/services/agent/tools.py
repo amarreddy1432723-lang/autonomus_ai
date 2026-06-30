@@ -17,6 +17,67 @@ def _normalize_news_item(item: dict) -> dict:
         "published_at": item.get("published_at") or item.get("date") or item.get("publishedDate"),
     }
 
+def _is_image_query(query: str) -> bool:
+    query_lower = query.lower()
+    return any(word in query_lower for word in ["image", "images", "picture", "photo", "diagram", "visual", "illustration", "gif"])
+
+def _is_video_query(query: str) -> bool:
+    query_lower = query.lower()
+    return any(word in query_lower for word in ["video", "youtube", "animation", "animated", "watch"])
+
+def _fetch_media_results(query: str) -> str:
+    """
+    Return markdown-ready media candidates for teaching responses.
+    Uses Serper's image/video endpoints when configured.
+    """
+    headers = {
+        "X-API-KEY": settings.SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
+    sections: list[str] = []
+
+    if _is_image_query(query):
+        image_response = httpx.post(
+            "https://google.serper.dev/images",
+            json={"q": query, "num": 5},
+            headers=headers,
+            timeout=10.0,
+        )
+        image_response.raise_for_status()
+        images = image_response.json().get("images", [])
+        image_lines = []
+        for item in images[:5]:
+            image_url = item.get("imageUrl") or item.get("thumbnailUrl")
+            if not image_url:
+                continue
+            title = _clean_text(item.get("title")) or "Educational image"
+            source = item.get("source") or item.get("link") or ""
+            image_lines.append(f"- Image: {title}\n  Markdown: ![{title}]({image_url})\n  Source: {source}")
+        if image_lines:
+            sections.append("IMAGE RESULTS:\n" + "\n".join(image_lines))
+
+    if _is_video_query(query):
+        video_response = httpx.post(
+            "https://google.serper.dev/videos",
+            json={"q": query, "num": 5},
+            headers=headers,
+            timeout=10.0,
+        )
+        video_response.raise_for_status()
+        videos = video_response.json().get("videos", [])
+        video_lines = []
+        for item in videos[:5]:
+            link = item.get("link")
+            if not link:
+                continue
+            title = _clean_text(item.get("title")) or "Educational video"
+            snippet = _clean_text(item.get("snippet"))
+            video_lines.append(f"- Video: {title}\n  Markdown: [Video: {title}]({link})\n  Summary: {snippet}")
+        if video_lines:
+            sections.append("VIDEO RESULTS:\n" + "\n".join(video_lines))
+
+    return "\n\n".join(sections)
+
 def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
     """
     Fetch live news with no model-memory assumptions.
@@ -73,6 +134,23 @@ def web_search(query: str) -> str:
     if settings.SERPER_API_KEY == "mock-serper-key-for-local-dev-only" or not settings.SERPER_API_KEY:
         # Mock search response
         print(f"Mock Search Query: {query}")
+        if _is_image_query(query):
+            return (
+                "IMAGE RESULTS:\n"
+                "- Image: Mitosis stages diagram\n"
+                "  Markdown: ![Mitosis stages diagram](https://upload.wikimedia.org/wikipedia/commons/2/2a/Major_events_in_mitosis.svg)\n"
+                "  Source: Wikimedia Commons\n"
+                "- Image: Cell cycle and mitosis illustration\n"
+                "  Markdown: ![Cell cycle and mitosis illustration](https://upload.wikimedia.org/wikipedia/commons/3/3f/Cell_Cycle_2.svg)\n"
+                "  Source: Wikimedia Commons"
+            )
+        if _is_video_query(query):
+            return (
+                "VIDEO RESULTS:\n"
+                "- Video: How a car engine works\n"
+                "  Markdown: [Video: How a car engine works](https://www.youtube.com/watch?v=ZQvfHyfgBtA)\n"
+                "  Summary: Educational engine animation."
+            )
         if "pricing" in query.lower():
             return "AWS: Est $45-120/mo, GCP: Est $35-95/mo, Render: Est $25-60/mo. Best for early-stage SaaS is Render."
         elif "clerk" in query.lower():
@@ -80,6 +158,11 @@ def web_search(query: str) -> str:
         return f"Mock search result for '{query}': High-quality relevant articles and pricing comparison data."
         
     try:
+        if _is_image_query(query) or _is_video_query(query):
+            media_results = _fetch_media_results(query)
+            if media_results:
+                return media_results
+
         url = "https://google.serper.dev/search"
         payload = {"q": query}
         headers = {
