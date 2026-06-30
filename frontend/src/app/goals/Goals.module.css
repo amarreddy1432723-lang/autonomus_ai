@@ -13,7 +13,7 @@
 .title {
   font-size: var(--text-2xl);
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: 0;
 }
 
 .btnNew {
@@ -245,3 +245,35 @@
   cursor: pointer;
 }
 
+.formError,
+.emptyState {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.formError {
+  border-color: rgba(239, 68, 68, 0.45);
+  color: var(--color-error);
+}
+
+@media (max-width: 720px) {
+  .header,
+  .cardHeader,
+  .cardFooter {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .projectsList {
+    flex-wrap: wrap;
+  }
+
+  .modalContent {
+    max-width: calc(100vw - 32px);
+  }
+}

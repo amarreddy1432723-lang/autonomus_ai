@@ -1,23 +1,59 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Calendar.module.css';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+
+type CalendarEvent = {
+  title: string;
+  type: string;
+};
+
+type CalendarDay = {
+  key: string;
+  num: number | string;
+  events: CalendarEvent[];
+  isToday: boolean;
+};
 
 export default function CalendarPage() {
-  const days = [
-    { num: 22, events: [{ title: 'T2: Auth Svc Coding', type: 'task' }] },
-    { num: 23, events: [] },
-    { num: 24, events: [{ title: 'Standup briefing', type: 'ai' }] },
-    { num: 25, events: [{ title: 'Weekly review', type: 'meeting' }] },
-    { num: 26, events: [] },
-    { num: 27, events: [] },
-    { num: 28, isToday: true, events: [{ title: 'T4: Billing Setup', type: 'task' }, { title: 'Suggest Standup', type: 'ai' }] },
-    { num: 29, events: [] }
-  ];
+  const [view, setView] = useState<'month' | 'week' | 'day'>('month');
+  const [monthOffset, setMonthOffset] = useState(0);
+  const { data: schedules = [] } = useQuery({
+    queryKey: ['calendar-schedules'],
+    queryFn: async () => apiRequest('/api/v1/schedules?is_active=true&page_size=100')
+  });
 
   const weekdayNames = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const now = new Date();
+  const activeMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const monthLabel = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(activeMonth);
+  const daysInMonth = new Date(activeMonth.getFullYear(), activeMonth.getMonth() + 1, 0).getDate();
+  const mondayStartOffset = (activeMonth.getDay() + 6) % 7;
+  const dayCells: CalendarDay[] = [
+    ...Array.from({ length: mondayStartOffset }, (_, index) => ({ key: `pad-${index}`, num: '', events: [], isToday: false })),
+    ...Array.from({ length: daysInMonth }, (_, index) => {
+      const date = new Date(activeMonth.getFullYear(), activeMonth.getMonth(), index + 1);
+      const dateKey = date.toDateString();
+      const events = schedules
+        .filter((schedule: any) => schedule.next_run_at && new Date(schedule.next_run_at).toDateString() === dateKey)
+        .map((schedule: any) => ({ title: schedule.title, type: schedule.schedule_type === 'ai' ? 'ai' : 'task' }));
+      return {
+        key: date.toISOString(),
+        num: index + 1,
+        events,
+        isToday: date.toDateString() === now.toDateString(),
+      };
+    })
+  ];
+  const visibleDays: CalendarDay[] = view === 'month'
+    ? dayCells
+    : view === 'week'
+      ? dayCells.filter((day) => day.num && Math.ceil(Number(day.num) / 7) === Math.ceil(now.getDate() / 7))
+      : dayCells.filter((day) => day.isToday);
 
   return (
     <AppShell>
@@ -29,15 +65,15 @@ export default function CalendarPage() {
         <div className={styles.calendarCard}>
           <div className={styles.viewToggle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <button style={{ background: 'none', border: 'none', color: 'var(--color-text-secondary)', cursor: 'pointer' }}><ChevronLeft size={16} /></button>
-              <span className={styles.dateTitle}>June 2026</span>
-              <button style={{ background: 'none', border: 'none', color: 'var(--color-text-secondary)', cursor: 'pointer' }}><ChevronRight size={16} /></button>
+              <button className={styles.iconButton} onClick={() => setMonthOffset((value) => value - 1)} aria-label="Previous month"><ChevronLeft size={16} /></button>
+              <span className={styles.dateTitle}>{monthLabel}</span>
+              <button className={styles.iconButton} onClick={() => setMonthOffset((value) => value + 1)} aria-label="Next month"><ChevronRight size={16} /></button>
             </div>
             
             <div className={styles.btnGroup}>
-              <button className={`${styles.btnToggle} ${styles.btnToggleActive}`}>Month</button>
-              <button className={styles.btnToggle}>Week</button>
-              <button className={styles.btnToggle}>Day</button>
+              <button className={`${styles.btnToggle} ${view === 'month' ? styles.btnToggleActive : ''}`} onClick={() => setView('month')}>Month</button>
+              <button className={`${styles.btnToggle} ${view === 'week' ? styles.btnToggleActive : ''}`} onClick={() => setView('week')}>Week</button>
+              <button className={`${styles.btnToggle} ${view === 'day' ? styles.btnToggleActive : ''}`} onClick={() => setView('day')}>Day</button>
             </div>
           </div>
 
@@ -46,17 +82,8 @@ export default function CalendarPage() {
               <div key={name} className={styles.dayHeader}>{name}</div>
             ))}
             
-            {/* Pad cells to align with June calendar start */}
-            <div className={styles.dayCell}><span className={styles.dayNumber}>15</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>16</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>17</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>18</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>19</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>20</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>21</span></div>
-
-            {days.map((day) => (
-              <div key={day.num} className={`${styles.dayCell} ${day.isToday ? styles.dayCellToday : ''}`}>
+            {visibleDays.map((day) => (
+              <div key={day.key} className={`${styles.dayCell} ${day.isToday ? styles.dayCellToday : ''}`}>
                 <span className={`${styles.dayNumber} ${day.isToday ? styles.dayNumberToday : ''}`}>{day.num}</span>
                 {day.events.map((e, index) => (
                   <div 
@@ -70,13 +97,6 @@ export default function CalendarPage() {
                 ))}
               </div>
             ))}
-            
-            <div className={styles.dayCell}><span className={styles.dayNumber}>30</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>1</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>2</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>3</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>4</span></div>
-            <div className={styles.dayCell}><span className={styles.dayNumber}>5</span></div>
           </div>
         </div>
       </div>

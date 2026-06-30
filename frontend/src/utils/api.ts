@@ -24,28 +24,34 @@ export function getServiceUrl(path: string): string {
   ) {
     return GOALS_URL + path;
   }
-  if (path.startsWith('/api/v1/agents')) {
+  if (
+    path.startsWith('/api/v1/agents') ||
+    path.startsWith('/api/v1/memories') ||
+    path.startsWith('/api/v1/news') ||
+    path.startsWith('/api/v1/sessions')
+  ) {
     return AGENT_URL + path;
   }
   return GOALS_URL + path; // Fallback
 }
 
 const DEMO_USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID || '00000000-0000-0000-0000-000000000000';
+const REQUIRE_AUTH = process.env.NEXT_PUBLIC_REQUIRE_AUTH === 'true';
 
 export function createApiHeaders(options: RequestInit = {}): Headers {
   const headers = new Headers(options.headers || {});
 
   if (typeof window !== 'undefined') {
     const storedToken = window.localStorage.getItem('my-ai.access_token');
-    const storedUserId = window.localStorage.getItem('my-ai.user_id') || DEMO_USER_ID;
+    const storedUserId = window.localStorage.getItem('my-ai.user_id') || (REQUIRE_AUTH ? '' : DEMO_USER_ID);
 
     if (storedToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${storedToken}`);
     }
-    if (!headers.has('x-user-id')) {
+    if (storedUserId && !headers.has('x-user-id')) {
       headers.set('x-user-id', storedUserId);
     }
-  } else if (!headers.has('x-user-id')) {
+  } else if (!REQUIRE_AUTH && !headers.has('x-user-id')) {
     headers.set('x-user-id', DEMO_USER_ID);
   }
 

@@ -1,0 +1,171 @@
+{
+  "phase": 13,
+  "name": "future roadmap",
+  "last_updated": "2026-06-30",
+  "source_last_updated": "2026-06-28",
+  "status": "implemented_as_blueprint",
+  "horizon": "years 2-5",
+  "strategic_vision": {
+    "title": "The Sovereign Agent",
+    "year_1": "Assistant: AI helps user do their work.",
+    "year_3": "Partner: AI works alongside user.",
+    "year_5": "Sovereign: AI represents the user in the digital world cryptographically.",
+    "paradigm_shift": "The future internet will be dominated by machine-to-machine interactions, so a personal AI must gain secure sovereign capabilities to act on the user's behalf."
+  },
+  "roadmap_tracks": [
+    {
+      "id": "voice_ambient_interfaces",
+      "name": "Voice & Ambient Interfaces",
+      "time_horizon": "year_2",
+      "goal": "Move from turn-based chat into low-latency real-time voice and opt-in ambient capture.",
+      "target_capabilities": [
+        "WebRTC live audio channel",
+        "Sub-300ms conversational latency target",
+        "Interruption detection",
+        "Emotion-aware response tone",
+        "Background noise isolation",
+        "Smart-glasses HUD for active tasks",
+        "Wearable integrations with explicit consent and edge trigger detection"
+      ],
+      "implementation_notes": [
+        "Use explicit permission flows before recording physical conversations.",
+        "Keep ambient audio disabled by default.",
+        "Prefer edge filtering so irrelevant private audio is never uploaded."
+      ]
+    },
+    {
+      "id": "sovereign_digital_identity",
+      "name": "Sovereign Digital Identity",
+      "time_horizon": "years_2_3",
+      "goal": "Give each agent cryptographic identity and verifiable authority to represent the user.",
+      "target_capabilities": [
+        "W3C Decentralized Identifiers",
+        "Verifiable Credentials wallet",
+        "Zero-knowledge proof support",
+        "Non-custodial smart contract wallet",
+        "Limited pre-authorized keys for micro-transactions and signatures"
+      ],
+      "implementation_notes": [
+        "Never grant broad custody over user assets.",
+        "Require explicit approval for high-risk signing and financial actions.",
+        "Treat DID/VC support as an advanced opt-in identity layer."
+      ]
+    },
+    {
+      "id": "agent_protocol_suite",
+      "name": "AI-to-AI Protocols & Negotiation",
+      "time_horizon": "years_3_4",
+      "goal": "Enable trusted machine-to-machine communication, scheduling, delegation, and marketplace negotiation.",
+      "target_capabilities": [
+        "JSON-LD schemas over WebSockets",
+        "AP-HANDSHAKE for DID verification and trust constraints",
+        "AP-NEGOTIATE for calendar, schedule, and pricing alignment",
+        "AP-TRANSACT for cryptographic value exchange",
+        "AP-DELEGATE for outsourced subtasks",
+        "External marketplace bidding with user confirmation"
+      ],
+      "implementation_notes": [
+        "Start with scheduling negotiation before financial transactions.",
+        "Log all agent-to-agent actions to audit logs.",
+        "Present top options to the user before irreversible external commitments."
+      ]
+    },
+    {
+      "id": "memory_portability",
+      "name": "Memory Portability & Open Standards",
+      "time_horizon": "year_2",
+      "goal": "Guarantee user-owned memories that can move to any compliant runtime.",
+      "target_capabilities": [
+        "Open Memory Format JSON-LD export",
+        "Graph archive with provenance and relations",
+        "Portable vector normalization strategy",
+        "Memory import/export audit trail",
+        "Anti-lock-in user data guarantees"
+      ],
+      "open_memory_format_example": {
+        "@context": "https://openmemory.org/context.jsonld",
+        "id": "mem-urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+        "type": "PreferenceMemory",
+        "statement": "User prefers dark mode first in design",
+        "confidence": 0.98,
+        "importance": 8,
+        "provenance": {
+          "source": "user_explicit",
+          "timestamp": "2026-06-28T05:15:24Z",
+          "sessionRef": "session:chat-4482"
+        },
+        "graphRelations": [
+          {
+            "type": "relatesTo",
+            "target": "mem-urn:uuid:card-102"
+          }
+        ]
+      }
+    },
+    {
+      "id": "decentralized_agent_networks",
+      "name": "Decentralized Multi-Agent Collaboration Networks",
+      "time_horizon": "years_4_5",
+      "goal": "Allow personal agents to collaborate securely and use decentralized compute where appropriate.",
+      "target_capabilities": [
+        "DePIN-style low-priority execution",
+        "zkML verification for untrusted hardware execution",
+        "Federated temporary agent groups",
+        "Project-scoped shared memory with strict isolation",
+        "Private state channels for collaborative work"
+      ],
+      "implementation_notes": [
+        "Do not send raw private user memory to untrusted compute.",
+        "Use decentralized execution only for tasks that can be privacy-preserved or independently verified.",
+        "Keep shared memory scoped to explicit projects."
+      ]
+    }
+  ],
+  "north_star": {
+    "title": "The Cognitive Extension",
+    "description": "At year 5, the personal AI agent is no longer just an app; it becomes a cognitive extension of the human.",
+    "characteristics": [
+      "Zero-latency alignment with >95% intent prediction accuracy",
+      "Cryptographic sovereignty where platform operators cannot decrypt the user memory graph",
+      "Economic agency for approved earning, spending, contracting, and negotiation",
+      "Eternal memory that archives noise and preserves lifelong knowledge"
+    ]
+  },
+  "strategic_decisions": [
+    {
+      "area": "Voice Standard",
+      "choice": "WebRTC auditory pipeline",
+      "rationale": "Bypasses traditional HTTP request/response loops and enables real conversational intervention."
+    },
+    {
+      "area": "Identity",
+      "choice": "W3C Decentralized Identifiers",
+      "rationale": "Replaces email/password as a native trust anchor for agent-to-agent networks."
+    },
+    {
+      "area": "Trust Verification",
+      "choice": "zkML",
+      "rationale": "Allows heavy agent execution on decentralized compute without exposing tenant data."
+    },
+    {
+      "area": "Data Format",
+      "choice": "Open Memory Format JSON-LD Graph",
+      "rationale": "Positions the product as a trusted, non-custodial steward instead of a data prison."
+    },
+    {
+      "area": "Transaction Protocol",
+      "choice": "Agent-to-agent micro-transactions",
+      "rationale": "Enables a native machine economy where agents exchange value to solve subtasks."
+    }
+  ],
+  "near_term_bridge": {
+    "why_it_matters_now": "The current MVP should make architectural choices that do not block sovereignty later.",
+    "do_now": [
+      "Keep memory exportable.",
+      "Preserve audit logs for agent actions.",
+      "Keep autonomy approvals explicit.",
+      "Keep production readiness checks in place.",
+      "Avoid locking data to a single vector or model provider."
+    ]
+  }
+}

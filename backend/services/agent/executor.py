@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from uuid import UUID
 from sqlalchemy.orm import Session
 from services.shared.models import Task, Approval, TaskExecution
@@ -32,11 +33,14 @@ def run_task_execution(db: Session, task: Task) -> bool:
         # Record execution log
         execution = TaskExecution(
             task_id=task.id,
+            user_id=task.user_id,
             agent_type=agent_type,
             tool_name=tool_name,
             tool_input=tool_input,
             tool_output=str(tool_output),
-            success=True
+            status="completed",
+            success=True,
+            completed_at=datetime.utcnow(),
         )
         db.add(execution)
         return True
@@ -44,11 +48,14 @@ def run_task_execution(db: Session, task: Task) -> bool:
         # Record execution failure
         execution = TaskExecution(
             task_id=task.id,
+            user_id=task.user_id,
             agent_type=task.assigned_agent or "CodingAgent",
             tool_name="unknown",
             tool_input=task.title,
             tool_output=f"Error executing: {e}",
-            success=False
+            status="failed",
+            success=False,
+            completed_at=datetime.utcnow(),
         )
         db.add(execution)
         return False
@@ -118,10 +125,12 @@ def execute_pending_tasks(db: Session, user_id: UUID):
             task.status = "failed"
             execution = TaskExecution(
                 task_id=task.id,
+                user_id=user_id,
                 agent_type=task.assigned_agent or "CodingAgent",
                 tool_name="dependency_check",
                 tool_input=task.title,
                 tool_output=f"Task failed automatically because its predecessor dependency '{failed_dep_title}' failed.",
+                status="failed",
                 success=False
             )
             db.add(execution)
@@ -155,12 +164,22 @@ def execute_pending_tasks(db: Session, user_id: UUID):
             # Create Approval record
             approval = Approval(
                 user_id=user_id,
+                task_id=task.id,
+                requested_by_agent="execution",
                 action_type="task_execution",
                 payload={
                     "task_id": str(task.id),
                     "task_title": task.title,
                     "task_description": task.description
                 },
+                action_description=f"Execute task: {task.title}",
+                action_payload={
+                    "task_id": str(task.id),
+                    "task_title": task.title,
+                    "task_description": task.description
+                },
+                risk_level="high",
+                risk_reasoning="Executor risk assessment classified this task as HIGH.",
                 status="pending"
             )
             db.add(approval)

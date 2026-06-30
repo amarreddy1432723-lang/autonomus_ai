@@ -5,46 +5,66 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Dashboard.module.css';
-import { Play, TrendingUp, ShieldCheck, Cpu } from 'lucide-react';
+import { Newspaper, Play, RefreshCw, TrendingUp, ShieldCheck, Cpu } from 'lucide-react';
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
+  const todayLabel = new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(new Date());
 
-  // Query active goals
-  const { data: goals } = useQuery({
+  const { data: goals = [] } = useQuery({
     queryKey: ['dashboard-goals'],
     queryFn: async () => {
-      try {
-        return await apiRequest('/api/v1/goals');
-      } catch {
-        return [
-          { id: 'g1', title: 'Launch SaaS MVP', progress: 0.67, deadline: 'Sep 28 · 43 days left', status: 'active' },
-          { id: 'g2', title: 'Learn Rust Programming', progress: 0.30, deadline: 'Aug 31 · 64 days left', status: 'active' },
-          { id: 'g3', title: 'Read 24 books in 2026', progress: 0.50, deadline: 'On track', status: 'active' }
-        ];
-      }
+      return await apiRequest('/api/v1/goals?status=active&page_size=5');
     }
   });
 
-  // Query pending approvals
-  const { data: approvals } = useQuery({
+  const { data: tasks = [] } = useQuery({
+    queryKey: ['dashboard-tasks'],
+    queryFn: async () => {
+      return await apiRequest('/api/v1/tasks?page_size=8');
+    }
+  });
+
+  const { data: approvals = [] } = useQuery({
     queryKey: ['dashboard-approvals'],
     queryFn: async () => {
-      try {
-        return await apiRequest('/api/v1/approvals');
-      } catch {
-        return [
-          { id: 'a1', action_type: 'send_email', payload: { to: 'sarah.chen@vcfirm.com', subject: 'Following up...' }, status: 'pending', requested_at: '2 min ago' },
-          { id: 'a2', action_type: 'git_commit', payload: { message: 'Add JWT authorization middleware' }, status: 'pending', requested_at: '8 min ago' }
-        ];
-      }
+      return await apiRequest('/api/v1/approvals?status=pending&page_size=5');
     }
+  });
+
+  const { data: liveNews, refetch: refetchNews, isFetching: newsFetching } = useQuery({
+    queryKey: ['live-news', 'ai-agents'],
+    queryFn: async () => {
+      try {
+        return await apiRequest('/api/v1/news/live?query=AI%20agents%20OR%20autonomous%20AI&limit=5');
+      } catch (error) {
+        return {
+          query: 'AI agents OR autonomous AI',
+          items: [
+            {
+              title: 'Live news service needs attention',
+              source: 'Agent service',
+              published_at: new Date().toISOString(),
+              link: '',
+              snippet: error instanceof Error ? error.message : 'Retry once network access is available.'
+            }
+          ]
+        };
+      }
+    },
+    staleTime: 5 * 60 * 1000,
   });
 
   const runTasksMutation = useMutation({
     mutationFn: async () => apiRequest('/api/v1/tasks/run', { method: 'POST' }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['dashboard-goals'] });
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-tasks'] });
       await queryClient.invalidateQueries({ queryKey: ['dashboard-approvals'] });
     }
   });
@@ -61,40 +81,43 @@ export default function DashboardPage() {
     }
   });
 
-  const prioritizedTasks = [
-    { id: 't1', title: 'T2: Implement Auth Service (JWT + OAuth)', goal: 'Launch SaaS MVP', est: '8h', agent: 'Coding Agent', priority: 'Critical Path', priorityScore: 0.92 },
-    { id: 't2', title: 'T4: Setup Stripe Billing integration', goal: 'Launch SaaS MVP', est: '8h', agent: 'Coding Agent', priority: 'High Priority', priorityScore: 0.78 },
-    { id: 't3', title: 'T7: Write Integration Test Suite', goal: 'Launch SaaS MVP', est: '6h', agent: 'Exec Agent', priority: 'Medium Priority', priorityScore: 0.55 }
-  ];
+  const prioritizedTasks = [...tasks]
+    .filter((task: any) => !['done', 'completed'].includes(task.status))
+    .sort((a: any, b: any) => (b.priority_score || 0) - (a.priority_score || 0))
+    .slice(0, 4);
+  const completedThisWeek = tasks.filter((task: any) => ['done', 'completed'].includes(task.status)).length;
+  const averageProgress = goals.length
+    ? Math.round(goals.reduce((sum: number, goal: any) => sum + ((goal.progress_pct ?? goal.progress ?? 0) * 100), 0) / goals.length)
+    : 0;
 
   return (
     <AppShell>
       <div className={styles.header}>
-        <h1 className={styles.title}>Good Morning, Amar ☀️</h1>
-        <p className={styles.subtitle}>Saturday, June 28 · Here's what your AI has planned for you today</p>
+        <h1 className={styles.title}>Good morning, Amar</h1>
+        <p className={styles.subtitle}>{todayLabel} · Your AI workspace is synced with the current backend state.</p>
       </div>
 
       {/* QUICK STATS ROW */}
       <div className={styles.statsRow}>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Tasks Completed</span>
-          <span className={styles.statValue}>12 done</span>
-          <span className={styles.statDesc}>This week (+4 vs last week)</span>
+          <span className={styles.statValue}>{completedThisWeek}</span>
+          <span className={styles.statDesc}>Done in the current task view</span>
         </div>
         <div className={styles.statCard}>
-          <span className={styles.statLabel}>Memories Stored</span>
-          <span className={styles.statValue}>2,847</span>
-          <span className={styles.statDesc}>Semantic contexts cached</span>
+          <span className={styles.statLabel}>Active Goals</span>
+          <span className={styles.statValue}>{goals.length}</span>
+          <span className={styles.statDesc}>Active goals in focus</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Average Progress</span>
-          <span className={styles.statValue}>67%</span>
+          <span className={styles.statValue}>{averageProgress}%</span>
           <span className={styles.statDesc}>Across all active goals</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>AI Cost Today</span>
-          <span className={styles.statValue}>$1.24</span>
-          <span className={styles.statDesc}>Tokens and compute spent</span>
+          <span className={styles.statValue}>Live</span>
+          <span className={styles.statDesc}>Tracked by backend executions</span>
         </div>
       </div>
 
@@ -113,19 +136,22 @@ export default function DashboardPage() {
             </div>
             
             <div className={styles.focusList}>
-              {prioritizedTasks.map((task) => (
+              {prioritizedTasks.length === 0 && (
+                <div className={styles.emptyInline}>No open tasks found. Create a goal to generate a plan.</div>
+              )}
+              {prioritizedTasks.map((task: any) => (
                 <div key={task.id} className={styles.focusItem}>
                   <div className={styles.focusInfo}>
                     <span className={styles.focusTitle}>
-                      <span className={`${styles.priorityDot} ${task.priorityScore > 0.8 ? styles.priorityDotCritical : styles.priorityDotHigh}`} />
+                      <span className={`${styles.priorityDot} ${(task.priority_score || 0) > 0.8 ? styles.priorityDotCritical : styles.priorityDotHigh}`} />
                       {task.title}
                     </span>
                     <div className={styles.focusMeta}>
-                      <span>{task.goal}</span>
+                      <span>{task.status}</span>
                       <span>·</span>
-                      <span>{task.est} est</span>
+                      <span>{task.est_hours_pert || task.pert_estimate || 0}h est</span>
                       <span>·</span>
-                      <span>{task.agent}</span>
+                      <span>{task.assigned_agent || 'Agent'}</span>
                     </div>
                   </div>
                   <button
@@ -152,16 +178,19 @@ export default function DashboardPage() {
             </div>
 
             <div className={styles.approvalsList}>
-              {approvals?.map((app: any) => (
+              {approvals.length === 0 && (
+                <div className={styles.emptyInline}>No pending approvals.</div>
+              )}
+              {approvals.map((app: any) => (
                 <div key={app.id} className={styles.approvalItem}>
                   <div className={styles.approvalDetails}>
                     <span className={styles.approvalTitle}>
-                      {app.action_type === 'send_email' ? '📧 Send email' : '💻 Git commit push'}
+                      {app.action_type === 'send_email' ? 'Send email' : 'Review action'}
                     </span>
                     <span className={styles.approvalMeta}>
                       {app.action_type === 'send_email' 
-                        ? `To: ${app.payload.to} · Subject: ${app.payload.subject}`
-                        : `Commit msg: ${app.payload.message}`}
+                        ? `To: ${app.payload?.to || 'unknown'} · Subject: ${app.payload?.subject || 'No subject'}`
+                        : app.action_description || app.payload?.message || 'Manual approval required'}
                     </span>
                   </div>
                   <div className={styles.approvalActions}>
@@ -184,6 +213,35 @@ export default function DashboardPage() {
               ))}
             </div>
           </div>
+
+          <div className={styles.card}>
+            <div className={styles.cardHeader}>
+              <div className={styles.cardTitle}>
+                <Newspaper size={16} color="var(--color-info)" />
+                <span>Live AI News</span>
+              </div>
+              <button className={styles.iconButton} onClick={() => refetchNews()} type="button" title="Refresh live news">
+                <RefreshCw size={14} className={newsFetching ? styles.spin : ''} />
+              </button>
+            </div>
+
+            <div className={styles.newsList}>
+              {liveNews?.items?.map((item: any) => (
+                <a
+                  className={styles.newsItem}
+                  href={item.link || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  key={`${item.title}-${item.source}`}
+                >
+                  <span className={styles.newsTitle}>{item.title}</span>
+                  <span className={styles.newsMeta}>
+                    {item.source} · {item.published_at ? new Date(item.published_at).toLocaleString() : 'recent'}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* RIGHT COLUMN: Goals & AI Stats */}
@@ -198,26 +256,30 @@ export default function DashboardPage() {
             </div>
 
             <div className={styles.goalList}>
-              {goals?.map((goal: any, index: number) => {
+              {goals.length === 0 && (
+                <div className={styles.emptyInline}>No active goals yet.</div>
+              )}
+              {goals.map((goal: any, index: number) => {
                 const colorMap = ['var(--color-success)', 'var(--color-warning)', 'var(--color-info)'];
                 const progressColor = colorMap[index % colorMap.length];
+                const progress = goal.progress_pct ?? goal.progress ?? 0;
                 return (
                   <div key={goal.id} className={styles.goalItem}>
                     <div className={styles.goalInfo}>
                       <span>{goal.title}</span>
-                      <span style={{ color: progressColor }}>{Math.round(goal.progress * 100)}%</span>
+                      <span style={{ color: progressColor }}>{Math.round(progress * 100)}%</span>
                     </div>
                     <div className={styles.progressBarContainer}>
                       <div 
                         className={styles.progressBar} 
                         style={{ 
-                          width: `${goal.progress * 100}%`,
+                          width: `${progress * 100}%`,
                           backgroundColor: progressColor,
                           boxShadow: `0 0 10px ${progressColor}50`
                         }} 
                       />
                     </div>
-                    <span className={styles.goalMeta}>{goal.deadline}</span>
+                    <span className={styles.goalMeta}>{goal.deadline ? new Date(goal.deadline).toLocaleDateString() : 'No deadline'}</span>
                   </div>
                 );
               })}

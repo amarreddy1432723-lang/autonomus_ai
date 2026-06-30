@@ -37,6 +37,10 @@ def run_migrations_online() -> None:
     # Override connection string from environment if set
     db_url = os.getenv("DATABASE_URL")
     if db_url:
+        if db_url.startswith("postgresql://"):
+            db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        elif db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
         config.set_main_option("sqlalchemy.url", db_url)
 
     connectable = engine_from_config(

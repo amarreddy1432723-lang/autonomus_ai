@@ -63,71 +63,73 @@ def get_chat_llm(role: str = "default") -> BaseChatModel:
         else:
             provider = "mock"
 
-    # ── OpenAI ────────────────────────────────────────────────
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=model or "gpt-4o-mini",
-            temperature=0.2,
-            api_key=settings.OPENAI_API_KEY,
-        )
+    try:
+        # ── OpenAI ────────────────────────────────────────────────
+        if provider == "openai":
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=model or "gpt-4o-mini",
+                temperature=0.2,
+                api_key=settings.OPENAI_API_KEY,
+            )
 
-    # ── Anthropic (Claude) ────────────────────────────────────
-    elif provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        anthropic_key = getattr(settings, "ANTHROPIC_API_KEY", "")
-        return ChatAnthropic(
-            model=model or "claude-3-5-haiku-20241022",
-            anthropic_api_key=anthropic_key,
-            temperature=0.2,
-        )
+        # ── Anthropic (Claude) ────────────────────────────────────
+        elif provider == "anthropic":
+            from langchain_anthropic import ChatAnthropic
+            anthropic_key = getattr(settings, "ANTHROPIC_API_KEY", "")
+            return ChatAnthropic(
+                model=model or "claude-3-5-haiku-20241022",
+                anthropic_api_key=anthropic_key,
+                temperature=0.2,
+            )
 
-    # ── Google Gemini ─────────────────────────────────────────
-    elif provider == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        google_key = getattr(settings, "GOOGLE_API_KEY", "")
-        return ChatGoogleGenerativeAI(
-            model=model or "gemini-1.5-flash",
-            google_api_key=google_key,
-            temperature=0.2,
-        )
+        # ── Google Gemini ─────────────────────────────────────────
+        elif provider == "google":
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            google_key = getattr(settings, "GOOGLE_API_KEY", "")
+            return ChatGoogleGenerativeAI(
+                model=model or "gemini-1.5-flash",
+                google_api_key=google_key,
+                temperature=0.2,
+            )
 
-    # ── Groq (ultra-fast hosted inference) ───────────────────
-    elif provider == "groq":
-        from langchain_groq import ChatGroq
-        groq_key = getattr(settings, "GROQ_API_KEY", "")
-        return ChatGroq(
-            model=model or "llama-3.1-70b-versatile",
-            groq_api_key=groq_key,
-            temperature=0.2,
-        )
+        # ── Groq (ultra-fast hosted inference) ───────────────────
+        elif provider == "groq":
+            from langchain_groq import ChatGroq
+            groq_key = getattr(settings, "GROQ_API_KEY", "")
+            return ChatGroq(
+                model=model or "llama-3.1-70b-versatile",
+                groq_api_key=groq_key,
+                temperature=0.2,
+            )
 
-    # ── Ollama (local self-hosted) ────────────────────────────
-    elif provider == "ollama":
-        from langchain_ollama import ChatOllama
-        base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
-        return ChatOllama(
-            model=model or "llama3.1:8b",
-            base_url=base_url,
-            temperature=0.2,
-        )
+        # ── Ollama (local self-hosted) ────────────────────────────
+        elif provider == "ollama":
+            from langchain_ollama import ChatOllama
+            base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
+            return ChatOllama(
+                model=model or "llama3.1:8b",
+                base_url=base_url,
+                temperature=0.2,
+            )
 
-    # ── Custom / vLLM / LM Studio (OpenAI-compatible) ────────
-    elif provider == "custom":
-        from langchain_openai import ChatOpenAI
-        llm_base_url = getattr(settings, "LLM_BASE_URL", "http://localhost:8000/v1")
-        llm_api_key = getattr(settings, "LLM_API_KEY", "not-needed")
-        return ChatOpenAI(
-            model=model or "local-model",
-            base_url=llm_base_url,
-            api_key=llm_api_key,
-            temperature=0.2,
-        )
+        # ── Custom / vLLM / LM Studio (OpenAI-compatible) ────────
+        elif provider == "custom":
+            from langchain_openai import ChatOpenAI
+            llm_base_url = getattr(settings, "LLM_BASE_URL", "http://localhost:8000/v1")
+            llm_api_key = getattr(settings, "LLM_API_KEY", "not-needed")
+            return ChatOpenAI(
+                model=model or "local-model",
+                base_url=llm_base_url,
+                api_key=llm_api_key,
+                temperature=0.2,
+            )
+    except ImportError as exc:
+        print(f"[LLM Router] Provider '{provider}' is not installed ({exc}). Falling back to mock LLM.")
 
-    # ── Mock (local dev, no API keys) ────────────────────────
-    else:
-        from .mock_llm import MockChatOpenAI
-        return MockChatOpenAI()
+    # ── Mock (local dev, no API keys, or missing optional provider package) ──
+    from .mock_llm import MockChatOpenAI
+    return MockChatOpenAI()
 
 
 # ─────────────────────────────────────────────────────────────

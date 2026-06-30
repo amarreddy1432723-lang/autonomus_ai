@@ -65,7 +65,28 @@ class MockChatOpenAI(BaseChatModel):
             yield ChatGenerationChunk(message=AIMessageChunk(content=response_content))
         else:
             # Check if this requires a tool call (e.g., search/pricing or read file)
-            if "search" in last_msg or "pricing" in last_msg:
+            if "news" in last_msg or "latest" in last_msg or "current" in last_msg:
+                call_id = f"call_{uuid.uuid4().hex}"
+                tool_call = ToolCall(
+                    name="live_news",
+                    args={"query": last_msg},
+                    id=call_id
+                )
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content="",
+                        tool_calls=[tool_call],
+                        tool_call_chunks=[
+                            {
+                                "name": "live_news",
+                                "args": json.dumps({"query": last_msg}),
+                                "id": call_id,
+                                "index": 0
+                            }
+                        ]
+                    )
+                )
+            elif "search" in last_msg or "pricing" in last_msg:
                 call_id = f"call_{uuid.uuid4().hex}"
                 tool_call = ToolCall(
                     name="web_search",

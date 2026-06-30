@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError
 def register_error_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
-        request_id = str(uuid.uuid4())
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
         # Infer title from HTTP status
         title = exc.detail if isinstance(exc.detail, str) else "An error occurred"
         if exc.status_code == status.HTTP_404_NOT_FOUND:
@@ -39,7 +39,7 @@ def register_error_handlers(app: FastAPI):
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        request_id = str(uuid.uuid4())
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
         details = exc.errors()
         detail_msg = "; ".join([f"{'.'.join(str(p) for p in d['loc'])}: {d['msg']}" for d in details])
         
@@ -59,7 +59,7 @@ def register_error_handlers(app: FastAPI):
 
     @app.exception_handler(Exception)
     async def general_exception_handler(request: Request, exc: Exception):
-        request_id = str(uuid.uuid4())
+        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             headers={"Content-Type": "application/problem+json"},

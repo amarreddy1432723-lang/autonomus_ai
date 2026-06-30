@@ -1,7 +1,70 @@
 import os
 import httpx
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from langchain_core.tools import tool
 from .config import settings
+
+def _clean_text(value: str | None) -> str:
+    return " ".join((value or "").split())
+
+def _normalize_news_item(item: dict) -> dict:
+    return {
+        "title": _clean_text(item.get("title")),
+        "snippet": _clean_text(item.get("snippet") or item.get("description")),
+        "link": item.get("link") or item.get("url") or "",
+        "source": item.get("source") or item.get("publisher") or "Live news",
+        "published_at": item.get("published_at") or item.get("date") or item.get("publishedDate"),
+    }
+
+def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
+    """
+    Fetch live news with no model-memory assumptions.
+    Prefer Serper News when configured, then fall back to Google News RSS.
+    """
+    query = _clean_text(query) or "artificial intelligence"
+    limit = max(1, min(limit, 20))
+
+    if settings.SERPER_API_KEY and settings.SERPER_API_KEY != "mock-serper-key-for-local-dev-only":
+        response = httpx.post(
+            "https://google.serper.dev/news",
+            json={"q": query, "num": limit},
+            headers={"X-API-KEY": settings.SERPER_API_KEY, "Content-Type": "application/json"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        news = response.json().get("news", [])
+        return [_normalize_news_item(item) for item in news[:limit]]
+
+    rss_url = "https://news.google.com/rss/search"
+    response = httpx.get(
+        rss_url,
+        params={"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+
+    root = ET.fromstring(response.text)
+    items = []
+    for item in root.findall("./channel/item")[:limit]:
+        published = _clean_text(item.findtext("pubDate"))
+        published_iso = published
+        if published:
+            try:
+                published_iso = parsedate_to_datetime(published).isoformat()
+            except Exception:
+                pass
+
+        source = item.find("source")
+        items.append({
+            "title": _clean_text(item.findtext("title")),
+            "snippet": _clean_text(item.findtext("description")),
+            "link": item.findtext("link") or "",
+            "source": _clean_text(source.text if source is not None else "Google News"),
+            "published_at": published_iso,
+        })
+
+    return items
 
 @tool
 def web_search(query: str) -> str:
@@ -32,6 +95,20 @@ def web_search(query: str) -> str:
         return f"Search service returned status {response.status_code}"
     except Exception as e:
         return f"Search execution failed: {str(e)}"
+
+@tool
+def live_news(query: str) -> str:
+    """Fetch current news headlines about AI, companies, markets, tools, regulations, or any live topic."""
+    try:
+        items = fetch_live_news(query, limit=5)
+        if not items:
+            return "No live news results found."
+        return "\n".join(
+            f"- {item['title']} ({item['source']}, {item.get('published_at') or 'recent'}) {item['link']}"
+            for item in items
+        )
+    except Exception as e:
+        return f"Live news lookup failed: {str(e)}"
 
 @tool
 def read_file(file_path: str) -> str:

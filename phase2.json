@@ -1,0 +1,114 @@
+{
+  "phase": 2,
+  "name": "system architecture",
+  "last_updated": "2026-06-30",
+  "source_last_updated": "2026-06-28",
+  "status": "implemented_as_architecture_contract",
+  "architectural_principles": [
+    "Domain-Driven Design",
+    "Event-Driven Architecture",
+    "Microservices",
+    "Clean Architecture",
+    "CQRS",
+    "Eventual Consistency",
+    "Fail-Safe Defaults"
+  ],
+  "layers": [
+    {
+      "name": "client_layer",
+      "implemented": ["web_app_nextjs"],
+      "future": ["mobile_app_react_native", "cli_tool", "api_sdk"]
+    },
+    {
+      "name": "api_gateway_layer",
+      "implemented": ["nextjs_rewrites", "shared_fastapi_middleware"],
+      "target": ["Kong Gateway", "AWS API Gateway", "rate_limiting", "auth_verification", "request_logging"]
+    },
+    {
+      "name": "backend_services_layer",
+      "implemented": ["auth_service", "goals_service", "agent_service"],
+      "target": [
+        "auth_service",
+        "user_service",
+        "goal_service",
+        "task_service",
+        "memory_service",
+        "execution_service",
+        "notification_service",
+        "analytics_service"
+      ]
+    },
+    {
+      "name": "ai_agent_layer",
+      "implemented": ["central_brain_agent", "planner_agent", "memory_agent", "execution_agent", "approval_agent", "reflection_support"],
+      "target": [
+        "central_brain_agent",
+        "planner_agent",
+        "memory_agent",
+        "research_agent",
+        "coding_agent",
+        "task_agent",
+        "scheduler_agent",
+        "reflection_agent",
+        "execution_agent",
+        "approval_agent",
+        "learning_agent",
+        "notification_agent"
+      ]
+    },
+    {
+      "name": "message_bus_event_layer",
+      "implemented": ["redis_short_term_memory", "database_audit_logs"],
+      "target": ["Redis Streams", "Apache Kafka", "agent_events", "task_events", "memory_events", "approval_events"]
+    },
+    {
+      "name": "data_layer",
+      "implemented": ["PostgreSQL", "pgvector", "Redis", "optional Pinecone", "optional Neo4j"],
+      "target": ["PostgreSQL", "Pinecone or Weaviate", "Redis", "S3 or Blob storage", "ClickHouse analytics"]
+    },
+    {
+      "name": "external_integrations",
+      "implemented": ["OpenAI-compatible LLM router", "live news/search adapter", "encrypted integration storage"],
+      "target": ["OpenAI", "Anthropic", "Google", "GitHub", "Slack", "Notion", "Calendar", "Email"]
+    }
+  ],
+  "bounded_contexts": [
+    "auth",
+    "user_profile",
+    "goals",
+    "tasks",
+    "memory",
+    "execution",
+    "approvals",
+    "notifications",
+    "analytics",
+    "agent_orchestration"
+  ],
+  "event_domains": {
+    "goal": ["goal.created", "goal.updated", "goal.completed"],
+    "task": ["task.created", "task.started", "task.completed", "task.failed"],
+    "memory": ["memory.created", "memory.updated", "memory.recalled", "memory.expired"],
+    "agent": ["agent.dispatched", "agent.thinking", "agent.completed", "agent.failed"],
+    "approval": ["approval.requested", "approval.granted", "approval.rejected", "approval.timeout"]
+  },
+  "deployment_target": {
+    "cloud": "AWS",
+    "orchestration": "EKS Kubernetes",
+    "gateway": "Kong",
+    "service_mesh": "Istio",
+    "cdn_dns": ["CloudFront", "Route 53"],
+    "data": ["Aurora PostgreSQL", "ElastiCache Redis", "Amazon MSK Kafka", "S3"],
+    "observability": ["Prometheus", "Grafana", "Jaeger", "ELK"],
+    "cicd": ["GitHub Actions", "ECR", "ArgoCD", "rolling deploys"]
+  },
+  "current_repo_mapping": {
+    "frontend": "frontend/src/app and frontend/src/components",
+    "auth_service": "backend/services/auth",
+    "goals_service": "backend/services/goals",
+    "agent_service": "backend/services/agent",
+    "shared_infrastructure": "backend/services/shared",
+    "migrations": "backend/migrations",
+    "local_infra": "docker-compose.yml"
+  },
+  "gap_policy": "Current repo implements a local-first subset of the target architecture. Missing enterprise-scale services remain documented target components, not blockers for local/private-alpha use."
+}

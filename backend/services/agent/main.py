@@ -2,7 +2,7 @@ import json
 import os
 import jwt
 from uuid import UUID
-from fastapi import FastAPI, Depends, Header, HTTPException, status
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -15,7 +15,18 @@ from services.shared.database import get_db
 from services.shared.models import Memory
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
-from .schemas import MemoryResponse, MemoryUpdate
+from services.shared.api import clamp_pagination, install_api_foundation
+from services.shared.security import resolve_user_id_from_auth
+from .schemas import (
+    MemoryCreate,
+    MemoryExtractRequest,
+    MemoryResponse,
+    MemoryUpdate,
+    SessionMemoryEvent,
+    SessionMemoryResponse,
+    AutonomyLevelUpdate,
+    AutonomyRunRequest,
+)
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
 JWT_ALGORITHM = "HS256"
@@ -31,6 +42,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="my-ai Agent Service", version="1.0.0", lifespan=lifespan)
+install_api_foundation(app, "agent-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
@@ -38,28 +50,7 @@ def get_current_user_id(
     authorization: str | None = Header(None), 
     x_user_id: str | None = Header(None, alias="x-user-id")
 ) -> UUID:
-    # 1. Try Authorization header
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split("Bearer ")[1].strip()
-        try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            user_id_str = payload.get("sub")
-            if user_id_str:
-                return UUID(user_id_str)
-        except Exception:
-            pass
-            
-    # 2. Try X-User-Id fallback
-    if x_user_id:
-        try:
-            return UUID(x_user_id)
-        except ValueError:
-            pass
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication credentials missing or invalid."
-    )
+    return resolve_user_id_from_auth(authorization, x_user_id, JWT_SECRET_KEY, JWT_ALGORITHM)
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"
@@ -68,9 +59,11 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     user_id: str
     messages: List[ChatMessage]
+    session_id: Optional[str] = None
 
-async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[ChatMessage]):
+async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[ChatMessage], session_id: str = "default"):
     from .brain import brain_agent
+    from .memory_agent import RedisShortTermMemoryStore, extract_memories
     
     formatted_messages = []
     for msg in chat_history:
@@ -86,6 +79,10 @@ async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[Ch
         "user_id": user_id
     }
     
+    assistant_text = []
+    stm = RedisShortTermMemoryStore()
+    stm.append_event(user_id, session_id, {"role": "user", "content": prompt})
+
     try:
         async for event in brain_agent.astream_events(input_state, version="v2"):
             kind = event.get("event")
@@ -100,6 +97,16 @@ async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[Ch
             elif kind == "on_chat_model_stream":
                 chunk = event["data"].get("chunk")
                 if chunk and chunk.content:
+                    token = str(chunk.content)
+                    if node_name == "classify_intent":
+                        continue
+                    try:
+                        parsed_token = json.loads(token)
+                        if set(parsed_token.keys()) == {"intent"}:
+                            continue
+                    except Exception:
+                        pass
+                    assistant_text.append(str(chunk.content))
                     yield f"event: token\ndata: {json.dumps({'token': chunk.content})}\n\n"
                     
             elif kind == "on_tool_start":
@@ -112,6 +119,13 @@ async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[Ch
                 output = event["data"].get("output")
                 yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'output': str(output)})}\n\n"
                 
+        final_text = "".join(assistant_text)
+        if final_text:
+            stm.append_event(user_id, session_id, {"role": "assistant", "content": final_text})
+        try:
+            extract_memories(UUID(user_id), "\n".join([prompt, final_text]))
+        except Exception:
+            pass
         yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
     except Exception as e:
         yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
@@ -125,12 +139,23 @@ async def chat_endpoint(request: ChatRequest):
     history = request.messages[:-1]
     
     return StreamingResponse(
-        chat_stream_generator(request.user_id, prompt, history),
+        chat_stream_generator(request.user_id, prompt, history, request.session_id or "default"),
         media_type="text/event-stream"
     )
 
 class CompressRequest(BaseModel):
     user_id: str
+
+class NewsItem(BaseModel):
+    title: str
+    snippet: str | None = None
+    link: str
+    source: str
+    published_at: str | None = None
+
+class NewsResponse(BaseModel):
+    query: str
+    items: List[NewsItem]
 
 @app.post("/api/v1/memories/compress")
 def trigger_memory_compression(request: CompressRequest):
@@ -148,47 +173,150 @@ def trigger_memory_compression(request: CompressRequest):
     finally:
         db.close()
 
+@app.post("/api/v1/memories/extract")
+def extract_memory_endpoint(
+    request: MemoryExtractRequest,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .memory_agent import extract_memories
+
+    return {"memories": extract_memories(user_id, request.conversation)}
+
+@app.delete("/api/v1/memories/hard-delete")
+def hard_delete_memories(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .memory_agent import PostgresMemoryStore
+
+    return PostgresMemoryStore(db).hard_delete_user_memories(user_id)
+
+@app.post("/api/v1/sessions/{session_id}/memory")
+def append_session_memory(
+    session_id: str,
+    event: SessionMemoryEvent,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .memory_agent import RedisShortTermMemoryStore
+
+    result = RedisShortTermMemoryStore().append_event(user_id, session_id, event.model_dump())
+    return {"session_id": session_id, **result}
+
+@app.get("/api/v1/sessions/{session_id}/memory", response_model=SessionMemoryResponse)
+def get_session_memory(
+    session_id: str,
+    limit: int = 50,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .memory_agent import RedisShortTermMemoryStore
+
+    return {
+        "session_id": session_id,
+        "events": RedisShortTermMemoryStore().read_events(user_id, session_id, limit=limit),
+    }
+
+@app.get("/api/v1/news/live", response_model=NewsResponse)
+def get_live_news(
+    query: str = "AI agents OR autonomous AI",
+    limit: int = 8,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .tools import fetch_live_news
+
+    try:
+        items = fetch_live_news(query, limit=limit)
+        return {"query": query, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Live news lookup failed: {e}")
+
+@app.get("/api/v1/agents/autonomy/status")
+def autonomy_status(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .autonomy import get_autonomy_status
+
+    return get_autonomy_status(db, user_id)
+
+@app.post("/api/v1/agents/autonomy/run")
+def run_autonomy(
+    request: AutonomyRunRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .autonomy import run_autonomous_cycle
+
+    return run_autonomous_cycle(db, user_id, max_tasks=request.max_tasks, dry_run=request.dry_run)
+
+@app.patch("/api/v1/agents/autonomy/level")
+def update_autonomy_level(
+    request: AutonomyLevelUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .autonomy import get_or_create_user_profile
+
+    profile = get_or_create_user_profile(db, user_id)
+    profile.autonomy_level = request.autonomy_level
+    db.commit()
+    return {"autonomy_level": profile.autonomy_level}
+
 @app.get("/api/v1/memories", response_model=List[MemoryResponse])
-def get_memories(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    return db.query(Memory).filter(Memory.user_id == user_id).all()
+def get_memories(
+    memory_type: str | None = None,
+    include_archived: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .memory_agent import PostgresMemoryStore
+
+    page, page_size, offset = clamp_pagination(page, page_size)
+    memories = PostgresMemoryStore(db).list_memories(
+        user_id=user_id,
+        memory_type=memory_type,
+        include_archived=include_archived,
+        limit=page * page_size,
+    )
+    return memories[offset:offset + page_size]
+
+@app.post("/api/v1/memories", response_model=MemoryResponse, status_code=201)
+def create_memory(
+    memory_in: MemoryCreate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .memory_agent import MemoryWrite, PostgresMemoryStore
+
+    memory, _ = PostgresMemoryStore(db).create_memory(
+        user_id,
+        MemoryWrite(
+            content=memory_in.content,
+            type=memory_in.type,
+            memory_type=memory_in.memory_type,
+            importance=memory_in.importance,
+            confidence=memory_in.confidence,
+            source=memory_in.source,
+            source_session_id=memory_in.source_session_id,
+            source_url=memory_in.source_url,
+            tags=memory_in.tags,
+            meta_data=memory_in.meta_data,
+        ),
+    )
+    return memory
 
 @app.get("/api/v1/memories/search")
-def search_memories(query: str, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .llm_router import get_embedding_vector
-    from .memory_agent import cosine_distance_py
-    
-    try:
-        query_vec = get_embedding_vector(query)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate query embedding: {e}")
-        
-    memories = db.query(Memory).filter(Memory.user_id == user_id).all()
-    
-    results = []
-    for m in memories:
-        if m.vector:
-            m_vec = m.vector
-            if isinstance(m_vec, str):
-                import json
-                try:
-                    m_vec = json.loads(m_vec)
-                except Exception:
-                    continue
-            distance = cosine_distance_py(query_vec, m_vec)
-            similarity = 1.0 - distance
-            results.append({
-                "id": m.id,
-                "content": m.content,
-                "type": m.type,
-                "importance": m.importance,
-                "confidence": m.confidence,
-                "similarity": similarity,
-                "created_at": m.created_at,
-                "tags": m.tags or []
-            })
-            
-    results.sort(key=lambda x: x["similarity"], reverse=True)
-    return results[:10]
+def search_memories(
+    query: str,
+    limit: int = 10,
+    memory_type: str | None = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .memory_agent import PostgresMemoryStore
+
+    return PostgresMemoryStore(db).hybrid_search(user_id, query, limit=limit, memory_type=memory_type)
 
 @app.patch("/api/v1/memories/{memory_id}", response_model=MemoryResponse)
 def update_memory(
@@ -197,34 +325,15 @@ def update_memory(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
+    from .memory_agent import PostgresMemoryStore
+
     memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    if memory_in.content is not None:
-        memory.content = memory_in.content
-    if memory_in.type is not None:
-        memory.type = memory_in.type
-    if memory_in.memory_type is not None:
-        memory.memory_type = memory_in.memory_type
-    if memory_in.importance is not None:
-        memory.importance = memory_in.importance
-    if memory_in.confidence is not None:
-        memory.confidence = memory_in.confidence
-    if memory_in.tags is not None:
-        memory.tags = memory_in.tags
-
-    meta = memory.meta_data or {}
-    if memory_in.meta_data is not None:
-        meta.update(memory_in.meta_data)
-    if memory_in.is_archived is not None:
-        memory.is_archived = memory_in.is_archived
-        meta["is_archived"] = memory_in.is_archived
-    memory.meta_data = meta
-
-    db.commit()
-    db.refresh(memory)
-    return memory
+    return PostgresMemoryStore(db).update_memory(
+        memory,
+        **memory_in.model_dump(exclude_unset=True),
+    )
 
 @app.delete("/api/v1/memories/{memory_id}")
 def archive_memory(
@@ -232,14 +341,10 @@ def archive_memory(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
+    from .memory_agent import PostgresMemoryStore
+
     memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    memory.is_archived = True
-    meta = memory.meta_data or {}
-    meta["is_archived"] = True
-    memory.meta_data = meta
-
-    db.commit()
+    PostgresMemoryStore(db).archive_memory(memory)
     return {"message": "Memory archived successfully"}

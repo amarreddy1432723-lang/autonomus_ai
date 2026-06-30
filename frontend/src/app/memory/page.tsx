@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Memory.module.css';
-import { BrainCircuit, Search, Star, Archive, Trash, Edit } from 'lucide-react';
+import { BrainCircuit, Search, Star, Archive, Edit, Plus } from 'lucide-react';
 
 export default function MemoryPage() {
   const queryClient = useQueryClient();
@@ -15,15 +15,18 @@ export default function MemoryPage() {
   const [draftContent, setDraftContent] = useState('');
   const [draftImportance, setDraftImportance] = useState('5');
   const [draftTags, setDraftTags] = useState('');
+  const [memoryType, setMemoryType] = useState('');
+  const [newMemory, setNewMemory] = useState('');
 
   const { data: memories } = useQuery({
-    queryKey: ['memories-list', search],
+    queryKey: ['memories-list', search, memoryType],
     queryFn: async () => {
       try {
         // Semantic search or general list
-        const path = search 
-          ? `/api/v1/memories/search?query=${encodeURIComponent(search)}` 
-          : '/api/v1/memories';
+        const typeParam = memoryType ? `&memory_type=${encodeURIComponent(memoryType)}` : '';
+        const path = search
+          ? `/api/v1/memories/search?query=${encodeURIComponent(search)}${typeParam}`
+          : `/api/v1/memories?limit=100${memoryType ? `&memory_type=${encodeURIComponent(memoryType)}` : ''}`;
         return await apiRequest(path);
       } catch {
         return [
@@ -37,6 +40,10 @@ export default function MemoryPage() {
   });
 
   const selectedMemory = memories?.find((m: any) => m.id === selectedId) || memories?.[0];
+
+  useEffect(() => {
+    setSearch(new URLSearchParams(window.location.search).get('query') || '');
+  }, []);
 
   useEffect(() => {
     if (!selectedMemory) {
@@ -62,6 +69,28 @@ export default function MemoryPage() {
       });
     },
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['memories-list'] });
+    }
+  });
+
+  const createMemoryMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest('/api/v1/memories', {
+        method: 'POST',
+        body: JSON.stringify({
+          content: newMemory,
+          type: memoryType || 'fact',
+          memory_type: memoryType || 'fact',
+          importance: 5,
+          confidence: 0.9,
+          source: 'user_explicit',
+          tags: []
+        })
+      });
+    },
+    onSuccess: async (created: any) => {
+      setNewMemory('');
+      setSelectedId(created.id);
       await queryClient.invalidateQueries({ queryKey: ['memories-list'] });
     }
   });
@@ -97,7 +126,41 @@ export default function MemoryPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className={styles.btnSearch}>Search</button>
+          <select
+            className={styles.typeSelect}
+            value={memoryType}
+            onChange={(e) => setMemoryType(e.target.value)}
+            aria-label="Memory type filter"
+          >
+            <option value="">All types</option>
+            <option value="fact">Fact</option>
+            <option value="preference">Preference</option>
+            <option value="decision">Decision</option>
+            <option value="skill">Skill</option>
+            <option value="constraint">Constraint</option>
+            <option value="goal_context">Goal Context</option>
+            <option value="compressed">Compressed</option>
+          </select>
+          <button className={styles.btnSearch} onClick={() => queryClient.invalidateQueries({ queryKey: ['memories-list'] })}>Search</button>
+        </div>
+
+        <div className={styles.createRow}>
+          <input
+            type="text"
+            value={newMemory}
+            onChange={(e) => setNewMemory(e.target.value)}
+            placeholder="Add an explicit memory..."
+            className={styles.createInput}
+          />
+          <button
+            className={styles.btnSearch}
+            type="button"
+            disabled={!newMemory.trim() || createMemoryMutation.isPending}
+            onClick={() => createMemoryMutation.mutate()}
+          >
+            <Plus size={14} />
+            Add
+          </button>
         </div>
 
         {/* GRID LAYOUT */}
@@ -111,10 +174,15 @@ export default function MemoryPage() {
                 onClick={() => setSelectedId(mem.id)}
               >
                 <div className={styles.memoryBrief}>
-                  <span className={styles.memoryText}>{mem.content.substring(0, 50)}...</span>
-                  <span className={styles.memoryMeta}>{mem.type.toUpperCase()} · {new Date(mem.created_at).toLocaleDateString()}</span>
+                  <span className={styles.memoryText}>{mem.content.substring(0, 70)}{mem.content.length > 70 ? '...' : ''}</span>
+                  <span className={styles.memoryMeta}>
+                    {(mem.memory_type || mem.type).toUpperCase()} · {mem.source || 'unknown'} · {new Date(mem.created_at).toLocaleDateString()}
+                  </span>
                 </div>
-                <span className={styles.importance}>★ {mem.importance}</span>
+                <div className={styles.memoryBadges}>
+                  {mem.is_superseded && <span className={styles.conflictBadge}>Conflict</span>}
+                  <span className={styles.importance}>★ {mem.importance}</span>
+                </div>
               </div>
             ))}
           </div>
@@ -131,6 +199,15 @@ export default function MemoryPage() {
                   <Star size={12} fill="var(--color-warning)" color="var(--color-warning)" />
                   Importance: {selectedMemory.importance}
                 </span>
+              </div>
+
+              <div className={styles.metaGrid}>
+                <span>Type: {(selectedMemory.memory_type || selectedMemory.type || 'fact').toUpperCase()}</span>
+                <span>Source: {selectedMemory.source || 'unknown'}</span>
+                <span>Confidence: {((selectedMemory.confidence || 0) * 100).toFixed(0)}%</span>
+                <span>Accessed: {selectedMemory.access_count || 0} times</span>
+                <span>Status: {selectedMemory.is_archived ? 'Archived' : selectedMemory.is_superseded ? 'Conflict review' : 'Active'}</span>
+                <span>Score: {selectedMemory.score ? selectedMemory.score.toFixed(3) : 'list'}</span>
               </div>
 
               <div className={styles.detailContent}>
@@ -198,8 +275,9 @@ export default function MemoryPage() {
               </div>
 
               <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <span>Confidence: {(selectedMemory.confidence * 100).toFixed(0)}%</span>
                 <span>Created: {new Date(selectedMemory.created_at).toLocaleString()}</span>
+                {selectedMemory.last_accessed_at && <span>Last accessed: {new Date(selectedMemory.last_accessed_at).toLocaleString()}</span>}
+                {selectedMemory.related_memory_ids?.length > 0 && <span>Related conflicts: {selectedMemory.related_memory_ids.length}</span>}
               </div>
 
               <div className={styles.actions}>

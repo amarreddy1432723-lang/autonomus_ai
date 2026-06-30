@@ -1,0 +1,90 @@
+{
+  "phase": 13,
+  "name": "my-ai technology stack",
+  "last_updated": "2026-06-29",
+  "current_completed_phase": 13,
+  "next_phase": "private_alpha_launch",
+  "runtime": {
+    "backend_language": "Python 3.12+",
+    "frontend_language": "TypeScript 5.x",
+    "node": "local development runtime"
+  },
+  "services": {
+    "frontend": {
+      "technology": "Next.js App Router",
+      "port": 3004,
+      "production_default_port": 3000,
+      "status": "implemented"
+    },
+    "auth": {
+      "technology": "FastAPI",
+      "port": 8001,
+      "status": "implemented"
+    },
+    "goals": {
+      "technology": "FastAPI",
+      "port": 8002,
+      "status": "implemented"
+    },
+    "agent": {
+      "technology": "FastAPI + LangGraph",
+      "port": 8003,
+      "status": "implemented"
+    }
+  },
+  "ai": {
+    "primary_provider": "OpenAI",
+    "local_default_provider": "mock",
+    "primary_model": "gpt-4o",
+    "fast_model": "gpt-4o-mini",
+    "embedding_model": "text-embedding-3-small",
+    "agent_framework": "LangGraph",
+    "status": "implemented_with_local_fallback"
+  },
+  "data": {
+    "primary_database": "PostgreSQL 16 + pgvector",
+    "cache": "Redis 7",
+    "vector_search": "pgvector local fallback, Pinecone adapter optional",
+    "graph": "Neo4j adapter optional",
+    "orm": "SQLAlchemy 2",
+    "migrations": "Alembic",
+    "status": "implemented_with_optional_production_adapters"
+  },
+  "frontend": {
+    "framework": "Next.js",
+    "state": "Zustand",
+    "server_state": "TanStack Query",
+    "forms": "React Hook Form",
+    "validation": "Zod",
+    "icons": "Lucide React",
+    "charts": "Recharts",
+    "styling": "CSS Modules + custom properties"
+  },
+  "security": {
+    "password_hashing": "bcrypt",
+    "jwt": "PyJWT",
+    "field_encryption": "Fernet AES-128-CBC/HMAC construction via cryptography",
+    "headers": "shared FastAPI security middleware",
+    "audit": "append-only audit_logs",
+    "status": "phase_10_foundation_implemented"
+  },
+  "planned_production": {
+    "api_gateway": "Kong Gateway",
+    "message_bus": "Kafka / MSK",
+    "workers": "Celery for scheduled jobs, native Kafka consumers for durable agent execution",
+    "cloud": "AWS EKS + RDS/Aurora + ElastiCache + MSK",
+    "observability": "OpenTelemetry + Prometheus + Grafana + Jaeger + Sentry + LangSmith",
+    "security_tooling": "Trivy + Semgrep + TruffleHog + Cosign + Falco + Kyverno"
+  },
+  "verification": {
+    "backend_compile": "python -m compileall backend\\services",
+    "backend_tests": "python -m pytest backend -q",
+    "frontend_build": "npm run build",
+    "system_architecture": "GET /api/v1/architecture/system",
+    "ai_architecture": "GET /api/v1/architecture/ai",
+    "roadmap": "GET /api/v1/roadmap",
+    "future_roadmap": "GET /api/v1/future-roadmap",
+    "evaluation": "GET /api/v1/evaluation/status",
+    "production_readiness": "GET /api/v1/production/readiness"
+  }
+}

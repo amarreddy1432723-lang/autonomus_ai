@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import AppShell from '../../components/AppShell';
 import { useChatStore } from '../../store';
-import { createApiHeaders } from '../../utils/api';
+import { apiRequest, createApiHeaders } from '../../utils/api';
 import styles from './Chat.module.css';
 import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit } from 'lucide-react';
 
@@ -19,6 +19,45 @@ export default function ChatPage() {
 
   const toggleThoughts = (id: string) => {
     setShowThoughts((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const saveMessageToMemory = async (content: string) => {
+    if (!content.trim()) return;
+    try {
+      await apiRequest('/api/v1/memories', {
+        method: 'POST',
+        body: JSON.stringify({
+          content,
+          type: 'fact',
+          memory_type: 'chat_note',
+          importance: 5,
+          tags: ['chat']
+        })
+      });
+      addMessage({
+        id: `mem-${Date.now()}`,
+        role: 'assistant',
+        content: 'Saved that response to long-term memory.',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    } catch {
+      addMessage({
+        id: `mem-err-${Date.now()}`,
+        role: 'assistant',
+        content: 'I could not save that memory yet. The memory service returned an error.',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+  };
+
+  const applyPromptTemplate = (kind: 'file' | 'url' | 'task' | 'goal') => {
+    const templates = {
+      file: 'Read file ',
+      url: 'Review this URL and summarize the useful actions: ',
+      task: 'Create a task for me: ',
+      goal: 'Create a goal and break it into tasks: '
+    };
+    setInput(templates[kind]);
   };
 
   const handleSend = async (e: React.FormEvent) => {
@@ -180,7 +219,7 @@ export default function ChatPage() {
                       ))}
                     </div>
                   )}
-                  <button className={styles.saveMemoryBtn} type="button">
+                  <button className={styles.saveMemoryBtn} type="button" onClick={() => saveMessageToMemory(msg.content)}>
                     <Check size={10} style={{ marginRight: '4px' }} />
                     Save to Memory
                   </button>
@@ -240,10 +279,10 @@ export default function ChatPage() {
             </button>
           </div>
           <div className={styles.optionsRow}>
-            <button type="button" className={styles.optionBtn}>File</button>
-            <button type="button" className={styles.optionBtn}>URL</button>
-            <button type="button" className={styles.optionBtn}>Task</button>
-            <button type="button" className={styles.optionBtn}>Goal</button>
+            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('file')}>File</button>
+            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('url')}>URL</button>
+            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('task')}>Task</button>
+            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('goal')}>Goal</button>
           </div>
         </form>
       </div>

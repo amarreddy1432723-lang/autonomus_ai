@@ -10,38 +10,10 @@ import { ShieldCheck, Mail, GitCommit, Check } from 'lucide-react';
 export default function ApprovalsPage() {
   const queryClient = useQueryClient();
 
-  const { data: approvals, isLoading } = useQuery({
+  const { data: approvals = [], isLoading, isError } = useQuery({
     queryKey: ['approvals-list'],
     queryFn: async () => {
-      try {
-        return await apiRequest('/api/v1/approvals');
-      } catch {
-        return [
-          { 
-            id: 'a1', 
-            action_type: 'send_email', 
-            payload: { 
-              to: 'sarah.chen@vcfirm.com', 
-              subject: 'Following up on our conversation',
-              body: 'Hi Sarah,\n\nHope you had a great week. I wanted to follow up on our meeting from June 20. We have successfully completed database schema migrations for the SaaS MVP project.'
-            }, 
-            status: 'pending', 
-            why: 'User requested to draft a follow-up email to Sarah Chen. Since sending emails is an external, irreversible action, it was classified as HIGH RISK and held for approval.',
-            requested_at: '2 min ago' 
-          },
-          { 
-            id: 'a2', 
-            action_type: 'git_commit', 
-            payload: { 
-              message: 'Add JWT authorization middleware with unit tests passing',
-              branch: 'feature/auth'
-            }, 
-            status: 'pending', 
-            why: 'Coding Agent finished task T2 and requested to commit code changes to a shared branch. Held for approval according to autonomy level Settings.',
-            requested_at: '8 min ago' 
-          }
-        ];
-      }
+      return await apiRequest('/api/v1/approvals?status=pending&page_size=50');
     }
   });
 
@@ -58,12 +30,7 @@ export default function ApprovalsPage() {
   });
 
   const handleResolve = (id: string, status: 'approved' | 'rejected') => {
-    // If backend is running, execute mutation, otherwise just alert for demo
-    resolveMutation.mutate({ id, status }, {
-      onError: () => {
-        alert(`Simulated resolution: ${status} approval ${id}`);
-      }
-    });
+    resolveMutation.mutate({ id, status });
   };
 
   return (
@@ -73,14 +40,17 @@ export default function ApprovalsPage() {
           <h1 className={styles.title}>Pending Approvals</h1>
         </div>
 
-        {approvals && approvals.length > 0 ? (
+        {isLoading && <div className={styles.emptyState}>Loading approvals...</div>}
+        {isError && <div className={styles.emptyState}>Approvals could not be loaded from the backend.</div>}
+
+        {!isLoading && !isError && approvals.length > 0 ? (
           <div className={styles.list}>
             {approvals.map((app: any) => (
               <div key={app.id} className={styles.card}>
                 <div className={styles.cardHeader}>
                   <span className={styles.actionType}>
                     {app.action_type === 'send_email' ? <Mail size={16} /> : <GitCommit size={16} />}
-                    {app.action_type === 'send_email' ? '📧 SEND EMAIL' : '💻 GIT COMMIT & PUSH'}
+                    {app.action_type === 'send_email' ? 'SEND EMAIL' : 'REVIEW ACTION'}
                   </span>
                   <span className={styles.badge}>HIGH RISK</span>
                 </div>
@@ -114,9 +84,9 @@ export default function ApprovalsPage() {
             ))}
           </div>
         ) : (
-          <div className={styles.emptyState}>
+          !isLoading && !isError && <div className={styles.emptyState}>
             <Check size={40} color="var(--color-success)" />
-            <span className={styles.emptyTitle}>All caught up!</span>
+            <span className={styles.emptyTitle}>All caught up</span>
             <span>No pending approvals requiring your attention.</span>
           </div>
         )}

@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, JSON, Boolean, Text, Table, Numeric
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, JSON, Boolean, Text, Table, Numeric, Index, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -34,6 +34,68 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     integrations = relationship("Integration", back_populates="user", cascade="all, delete-orphan")
     task_executions = relationship("TaskExecution", back_populates="user", cascade="all, delete-orphan")
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+    subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
+    file_references = relationship("FileReference", back_populates="user", cascade="all, delete-orphan")
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(255), nullable=False)
+    device_info = Column(JSON, default=dict)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="sessions")
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    plan_type = Column(String(50), default="free")
+    status = Column(String(50), default="active")
+    billing_cycle = Column(String(50), nullable=True)
+    provider = Column(String(100), nullable=True)
+    provider_customer_id = Column(String(255), nullable=True)
+    provider_subscription_id = Column(String(255), nullable=True)
+    current_period_start = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+    next_billing_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_at = Column(DateTime(timezone=True), nullable=True)
+    entitlements = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="subscriptions")
+
+class FileReference(Base):
+    __tablename__ = "file_references"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    owner_type = Column(String(50), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), nullable=True)
+    storage_provider = Column(String(100), default="local")
+    bucket = Column(String(255), nullable=True)
+    object_key = Column(Text, nullable=False)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(255), nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    checksum_sha256 = Column(String(64), nullable=True)
+    status = Column(String(50), default="active")
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="file_references")
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -249,6 +311,44 @@ class Memory(Base):
 
     user = relationship("User", back_populates="memories")
 
+class EmbeddingJob(Base):
+    __tablename__ = "embedding_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    memory_id = Column(UUID(as_uuid=True), ForeignKey("memories.id", ondelete="CASCADE"), nullable=True)
+    provider = Column(String(100), default="pgvector")
+    model = Column(String(255), nullable=True)
+    status = Column(String(50), default="queued")
+    operation = Column(String(50), default="upsert")
+    error_message = Column(Text, nullable=True)
+    attempts = Column(Integer, default=0)
+    meta_data = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class MemoryConflict(Base):
+    __tablename__ = "memory_conflicts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    existing_memory_id = Column(UUID(as_uuid=True), ForeignKey("memories.id", ondelete="CASCADE"), nullable=False)
+    new_memory_id = Column(UUID(as_uuid=True), ForeignKey("memories.id", ondelete="CASCADE"), nullable=True)
+    incoming_content = Column(Text, nullable=False)
+    conflict_type = Column(String(100), default="semantic_contradiction")
+    similarity = Column(Float, default=0.0)
+    status = Column(String(50), default="open")
+    resolution = Column(Text, nullable=True)
+    meta_data = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+Index("idx_memories_user_archived", Memory.user_id, Memory.is_archived)
+Index("idx_memories_user_type", Memory.user_id, Memory.memory_type)
+Index("idx_memories_user_importance", Memory.user_id, Memory.importance)
+Index("idx_embedding_jobs_user_status", EmbeddingJob.user_id, EmbeddingJob.status)
+Index("idx_memory_conflicts_user_status", MemoryConflict.user_id, MemoryConflict.status)
+
 class Approval(Base):
     __tablename__ = "approvals"
 
@@ -356,3 +456,79 @@ class AuditLog(Base):
     user_agent = Column(Text, nullable=True)
     checksum = Column(String(255), nullable=True)
     occurred_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+UserSession.__table__.append_constraint(UniqueConstraint(UserSession.token_hash, name="uq_user_sessions_token_hash"))
+Index("idx_user_sessions_user_active", UserSession.user_id, UserSession.is_active)
+Index("idx_user_sessions_expires", UserSession.expires_at)
+
+Subscription.__table__.append_constraint(
+    UniqueConstraint(Subscription.provider, Subscription.provider_subscription_id, name="uq_subscriptions_provider_subscription")
+)
+Index("idx_subscriptions_user_status", Subscription.user_id, Subscription.status)
+Index("idx_subscriptions_next_billing", Subscription.next_billing_at)
+
+Index("idx_file_references_user_owner", FileReference.user_id, FileReference.owner_type, FileReference.owner_id)
+Index("idx_file_references_user_status", FileReference.user_id, FileReference.status)
+Index("idx_file_references_checksum", FileReference.checksum_sha256)
+
+Goal.__table__.append_constraint(CheckConstraint("priority BETWEEN 1 AND 5", name="ck_goals_priority_range"))
+Goal.__table__.append_constraint(CheckConstraint("progress_pct BETWEEN 0.0 AND 1.0", name="ck_goals_progress_pct_range"))
+Index("idx_goals_user_status", Goal.user_id, Goal.status)
+Index("idx_goals_user_deadline_active", Goal.user_id, Goal.deadline, postgresql_where=(Goal.status == "active"))
+Index("idx_goals_user_priority_active", Goal.user_id, Goal.priority, postgresql_where=(Goal.status == "active"))
+Index("idx_goals_parent", Goal.parent_goal_id, postgresql_where=(Goal.parent_goal_id.isnot(None)))
+
+Project.__table__.append_constraint(CheckConstraint("progress_pct BETWEEN 0.0 AND 1.0", name="ck_projects_progress_pct_range"))
+Index("idx_projects_goal_id", Project.goal_id)
+Index("idx_projects_user_id", Project.user_id)
+Index("idx_projects_user_status", Project.user_id, Project.status)
+
+Task.__table__.append_constraint(CheckConstraint("priority_score BETWEEN 0.0 AND 1.0", name="ck_tasks_priority_score_range"))
+Task.__table__.append_constraint(CheckConstraint("quality_score IS NULL OR quality_score BETWEEN 0.0 AND 1.0", name="ck_tasks_quality_score_range"))
+Task.__table__.append_constraint(CheckConstraint("retry_count >= 0", name="ck_tasks_retry_count_non_negative"))
+Task.__table__.append_constraint(CheckConstraint("max_retries >= 0", name="ck_tasks_max_retries_non_negative"))
+Index("idx_tasks_project_id", Task.project_id)
+Index("idx_tasks_user_id", Task.user_id)
+Index("idx_tasks_user_status", Task.user_id, Task.status)
+Index("idx_tasks_user_critical", Task.user_id, Task.is_critical_path, postgresql_where=(Task.is_critical_path == True))
+Index(
+    "idx_tasks_user_priority_active",
+    Task.user_id,
+    Task.priority_score,
+    postgresql_where=(Task.status.in_(["queued", "in_progress", "blocked", "waiting_approval"])),
+)
+Index("idx_tasks_user_due_active", Task.user_id, Task.due_date, postgresql_where=(Task.due_date.isnot(None)))
+
+Index("idx_task_exec_task_id", TaskExecution.task_id)
+Index("idx_task_exec_user_id", TaskExecution.user_id)
+Index("idx_task_exec_started", TaskExecution.started_at)
+Index("idx_task_exec_status", TaskExecution.user_id, TaskExecution.status)
+
+Memory.__table__.append_constraint(CheckConstraint("confidence BETWEEN 0.0 AND 1.0", name="ck_memories_confidence_range"))
+Memory.__table__.append_constraint(CheckConstraint("importance BETWEEN 1 AND 10", name="ck_memories_importance_range"))
+Index("idx_memories_user_id", Memory.user_id)
+Index("idx_memories_accessed", Memory.user_id, Memory.last_accessed_at)
+Index("idx_memories_active", Memory.user_id, Memory.memory_type, Memory.importance, postgresql_where=(Memory.is_archived == False))
+
+Index("idx_approvals_user_status", Approval.user_id, Approval.status)
+Index("idx_approvals_pending", Approval.user_id, Approval.requested_at, postgresql_where=(Approval.status == "pending"))
+Index("idx_approvals_task_id", Approval.task_id)
+
+Index("idx_schedules_next_run", Schedule.next_run_at, postgresql_where=(Schedule.is_active == True))
+Index("idx_schedules_user_active", Schedule.user_id, Schedule.is_active)
+
+Notification.__table__.append_constraint(CheckConstraint("priority BETWEEN 0 AND 3", name="ck_notifications_priority_range"))
+Index("idx_notifications_user_status", Notification.user_id, Notification.status)
+Index("idx_notifications_unread", Notification.user_id, Notification.created_at, postgresql_where=(Notification.read_at.is_(None)))
+Index("idx_notifications_priority", Notification.user_id, Notification.priority, Notification.created_at)
+
+Integration.__table__.append_constraint(
+    UniqueConstraint(Integration.user_id, Integration.provider, Integration.provider_user_id, name="uq_integrations_user_provider_account")
+)
+Index("idx_integrations_user_id", Integration.user_id)
+Index("idx_integrations_expiry", Integration.token_expires_at, postgresql_where=(Integration.token_expires_at.isnot(None)))
+
+Index("idx_audit_user_time", AuditLog.user_id, AuditLog.occurred_at)
+Index("idx_audit_event_type", AuditLog.event_type, AuditLog.occurred_at)
+Index("idx_audit_entity", AuditLog.entity_type, AuditLog.entity_id)

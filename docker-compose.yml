@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: ankane/pgvector:latest
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
     container_name: my-ai-postgres
     ports:
       - "5432:5432"

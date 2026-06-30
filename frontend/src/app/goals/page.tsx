@@ -1,55 +1,33 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Goals.module.css';
 import { Target, Calendar, ArrowRight, MessageSquare, Plus } from 'lucide-react';
 
 export default function GoalsPage() {
+  const router = useRouter();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedGoal, setSelectedGoal] = useState<any | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [deadline, setDeadline] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('new') === '1') {
+      setIsModalOpen(true);
+    }
+  }, []);
 
   const { data: goals, refetch } = useQuery({
     queryKey: ['goals-list'],
     queryFn: async () => {
-      try {
-        return await apiRequest('/api/v1/goals');
-      } catch {
-        return [
-          { 
-            id: 'g1', 
-            title: 'Launch SaaS MVP', 
-            description: 'Deploy fully operational SaaS app to Render and get first 10 beta signups',
-            progress: 0.67, 
-            deadline: '2026-09-28T00:00:00Z', 
-            priority_score: 0.92,
-            projects: ['Backend API', 'Frontend Dashboard', 'Stripe Billing']
-          },
-          { 
-            id: 'g2', 
-            title: 'Learn Rust Programming', 
-            description: 'Build a CLI and a web server in Rust to master memory safety concepts',
-            progress: 0.30, 
-            deadline: '2026-08-31T00:00:00Z', 
-            priority_score: 0.75,
-            projects: ['CLI Tool', 'Actix Web API']
-          },
-          { 
-            id: 'g3', 
-            title: 'Read 24 books in 2026', 
-            description: 'Read biography, tech, history, and fiction books',
-            progress: 0.50, 
-            deadline: '2026-12-31T00:00:00Z', 
-            priority_score: 0.45,
-            projects: ['Reading List']
-          }
-        ];
-      }
+      return await apiRequest('/api/v1/goals?page_size=50');
     }
   });
 
@@ -58,6 +36,7 @@ export default function GoalsPage() {
     if (!title.trim() || submitting) return;
 
     setSubmitting(true);
+    setFormError('');
     try {
       await apiRequest('/api/v1/goals', {
         method: 'POST',
@@ -74,7 +53,7 @@ export default function GoalsPage() {
       refetch();
     } catch (err) {
       console.error("Failed to create goal:", err);
-      alert("Error: Failed to create goal. Check backend connectivity.");
+      setFormError(err instanceof Error ? err.message : 'Failed to create goal.');
     } finally {
       setSubmitting(false);
     }
@@ -85,17 +64,21 @@ export default function GoalsPage() {
       <div className={styles.container}>
         <div className={styles.header}>
           <h1 className={styles.title}>Goals & Milestones</h1>
-          <button className={styles.btnNew} onClick={() => setIsModalOpen(true)}>
+          <button className={styles.btnNew} onClick={() => { setFormError(''); setIsModalOpen(true); }}>
             <Plus size={16} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
             New Goal
           </button>
         </div>
 
         <div className={styles.list}>
+          {goals?.length === 0 && (
+            <div className={styles.emptyState}>No goals yet. Create one and the planner will generate projects and tasks.</div>
+          )}
           {goals?.map((goal: any, index: number) => {
             const colorMap = ['var(--color-success)', 'var(--color-warning)', 'var(--color-info)'];
             const progressColor = colorMap[index % colorMap.length];
             const isCritical = goal.priority_score > 0.8;
+            const progress = goal.progress_pct ?? goal.progress ?? 0;
             
             return (
               <div key={goal.id} className={styles.goalCard}>
@@ -120,13 +103,13 @@ export default function GoalsPage() {
                 <div className={styles.progressSection}>
                   <div className={styles.progressInfo}>
                     <span>Progress</span>
-                    <span style={{ color: progressColor }}>{Math.round(goal.progress * 100)}%</span>
+                    <span style={{ color: progressColor }}>{Math.round(progress * 100)}%</span>
                   </div>
                   <div className={styles.barBg}>
                     <div 
                       className={styles.barFill} 
                       style={{ 
-                        width: `${goal.progress * 100}%`,
+                        width: `${progress * 100}%`,
                         backgroundColor: progressColor,
                         boxShadow: `0 0 8px ${progressColor}50`
                       }} 
@@ -136,17 +119,22 @@ export default function GoalsPage() {
 
                 <div className={styles.cardFooter}>
                   <div className={styles.projectsList}>
-                    {goal.projects?.map((proj: string) => (
-                      <span key={proj} className={styles.projectChip}>{proj}</span>
-                    ))}
+                    {goal.projects?.map((proj: any) => {
+                      const label = typeof proj === 'string' ? proj : proj.title;
+                      return <span key={typeof proj === 'string' ? proj : proj.id} className={styles.projectChip}>{label}</span>;
+                    })}
                   </div>
                   
                   <div className={styles.actions}>
-                    <button className={styles.btnAction}>
+                    <button
+                      className={styles.btnAction}
+                      onClick={() => router.push(`/chat?goal=${encodeURIComponent(goal.id)}&title=${encodeURIComponent(goal.title)}`)}
+                      type="button"
+                    >
                       <MessageSquare size={12} style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
                       Chat
                     </button>
-                    <button className={styles.btnAction}>
+                    <button className={styles.btnAction} onClick={() => setSelectedGoal(goal)} type="button">
                       Details
                       <ArrowRight size={12} style={{ marginLeft: '4px', display: 'inline-block', verticalAlign: 'middle' }} />
                     </button>
@@ -163,6 +151,7 @@ export default function GoalsPage() {
           <div className={styles.modalContent}>
             <h2 className={styles.modalTitle}>Create New Goal</h2>
             <form onSubmit={handleCreateGoal} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+              {formError && <div className={styles.formError}>{formError}</div>}
               <div className={styles.formGroup}>
                 <label htmlFor="goal-title">Goal Title</label>
                 <input 
@@ -204,7 +193,40 @@ export default function GoalsPage() {
           </div>
         </div>
       )}
+
+      {selectedGoal && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalContent}>
+            <h2 className={styles.modalTitle}>{selectedGoal.title}</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
+              <p>{selectedGoal.description || 'No description saved for this goal.'}</p>
+              <p>Status: {selectedGoal.status || 'active'}</p>
+              <p>Progress: {Math.round((selectedGoal.progress || 0) * 100)}%</p>
+              <p>Plan version: {selectedGoal.plan_version || 1}</p>
+              {selectedGoal.category && <p>Category: {selectedGoal.category}</p>}
+              {selectedGoal.estimated_hours_total && <p>Estimated effort: {selectedGoal.estimated_hours_total} hours</p>}
+              {selectedGoal.deadline && <p>Deadline: {new Date(selectedGoal.deadline).toLocaleDateString()}</p>}
+              {selectedGoal.projects?.length > 0 && <p>Projects: {selectedGoal.projects.length}</p>}
+              {selectedGoal.tasks?.length > 0 && <p>Tasks: {selectedGoal.tasks.length}</p>}
+              {selectedGoal.current_plan?.critical_path?.length > 0 && (
+                <p>Critical path: {selectedGoal.current_plan.critical_path.join(' -> ')}</p>
+              )}
+            </div>
+            <div className={styles.modalActions}>
+              <button type="button" className={styles.btnCancel} onClick={() => setSelectedGoal(null)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className={styles.btnSubmit}
+                onClick={() => router.push(`/chat?goal=${encodeURIComponent(selectedGoal.id)}&title=${encodeURIComponent(selectedGoal.title)}`)}
+              >
+                Open Chat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
-

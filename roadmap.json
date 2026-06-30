@@ -1,0 +1,239 @@
+{
+  "phase": 12,
+  "name": "my-ai implementation roadmap",
+  "last_updated": "2026-06-29",
+  "horizon_weeks": 24,
+  "strategy": {
+    "principle": "Ship a narrow, reliable personal AI operating system before scaling infrastructure complexity.",
+    "sequence": [
+      "Harden local MVP around memory, planning, approvals, autonomy, and security.",
+      "Release private alpha to a small technical user group.",
+      "Expand to beta with billing, observability, integrations, and operational runbooks.",
+      "Move from local/simple deployment to production-grade cloud infrastructure only after product behavior is proven."
+    ]
+  },
+  "release_plan": [
+    {
+      "name": "MVP Local",
+      "weeks": "1-4",
+      "goal": "Make the current local app complete, testable, and coherent for one user.",
+      "entry_criteria": [
+        "Phases 4-11 compile and test",
+        "PostgreSQL and Redis run locally",
+        "Frontend can create goals, search memory, and use chat"
+      ],
+      "exit_criteria": [
+        "All critical flows pass manual verification",
+        "No stale demo data in core app screens",
+        "README and stack contract match runtime"
+      ]
+    },
+    {
+      "name": "Private Alpha",
+      "weeks": "5-8",
+      "goal": "Validate daily usage with 5-10 trusted users.",
+      "entry_criteria": [
+        "Authentication and session lifecycle verified",
+        "Memory hard-delete and security status verified",
+        "Autonomy defaults to observer mode"
+      ],
+      "exit_criteria": [
+        "Weekly retention from at least 3 users",
+        "At least 20 real goals created",
+        "Approval and memory UX issues triaged"
+      ]
+    },
+    {
+      "name": "Beta",
+      "weeks": "9-16",
+      "goal": "Prepare for broader usage with observability, billing foundation, and integrations.",
+      "entry_criteria": [
+        "Alpha feedback converted into prioritized backlog",
+        "Production deployment target selected",
+        "Incident and rollback runbook drafted"
+      ],
+      "exit_criteria": [
+        "Hosted app has health, readiness, stack, and roadmap endpoints",
+        "OpenTelemetry/Sentry-style error reporting added",
+        "At least one external integration is encrypted and revocable"
+      ]
+    },
+    {
+      "name": "General Availability",
+      "weeks": "17-24",
+      "goal": "Launch a stable product with operational gates and support process.",
+      "entry_criteria": [
+        "Beta reliability targets met",
+        "Security review complete",
+        "User onboarding path documented"
+      ],
+      "exit_criteria": [
+        "99% weekly uptime target met during launch window",
+        "Support and incident response process active",
+        "Cost per active user measured and reviewed weekly"
+      ]
+    }
+  ],
+  "weekly_plan": [
+    {
+      "weeks": "1-2",
+      "theme": "MVP hardening",
+      "deliverables": [
+        "Manual QA checklist for goals, memory, chat, approvals, autonomy",
+        "Fix highest-severity UI/API defects",
+        "Remove stale placeholder states from critical surfaces"
+      ]
+    },
+    {
+      "weeks": "3-4",
+      "theme": "Local release candidate",
+      "deliverables": [
+        "One-command local startup documentation",
+        "Complete smoke test script for backend endpoints",
+        "Private alpha feedback form and issue labels"
+      ]
+    },
+    {
+      "weeks": "5-6",
+      "theme": "Alpha onboarding",
+      "deliverables": [
+        "Seed-user onboarding flow",
+        "Memory import/export audit",
+        "Autonomy mode guidance in settings"
+      ]
+    },
+    {
+      "weeks": "7-8",
+      "theme": "Alpha learning loop",
+      "deliverables": [
+        "Weekly reflection digest surfaced to users",
+        "Approval rejection reason capture",
+        "Alpha bug triage and roadmap refresh"
+      ]
+    },
+    {
+      "weeks": "9-12",
+      "theme": "Hosted beta foundation",
+      "deliverables": [
+        "Production environment variables and deployment runbook",
+        "Error tracking and structured request logging",
+        "Backup and restore drill for PostgreSQL"
+      ]
+    },
+    {
+      "weeks": "13-16",
+      "theme": "Beta integrations",
+      "deliverables": [
+        "GitHub or calendar integration with encrypted tokens",
+        "Integration disconnect and token revocation UX",
+        "Cost and token usage dashboard"
+      ]
+    },
+    {
+      "weeks": "17-20",
+      "theme": "GA readiness",
+      "deliverables": [
+        "Security review checklist complete",
+        "Load test baseline",
+        "Incident response and rollback exercises"
+      ]
+    },
+    {
+      "weeks": "21-24",
+      "theme": "GA launch",
+      "deliverables": [
+        "Public onboarding docs",
+        "Support workflow",
+        "Launch metrics review and phase 13 feedback loop input"
+      ]
+    }
+  ],
+  "team_structure": [
+    {
+      "role": "Product/Founder",
+      "responsibilities": ["User interviews", "Scope decisions", "Release acceptance"]
+    },
+    {
+      "role": "Full-stack Engineer",
+      "responsibilities": ["Frontend workflows", "FastAPI endpoints", "Test coverage"]
+    },
+    {
+      "role": "AI Engineer",
+      "responsibilities": ["Agent behavior", "Memory retrieval", "Prompt and eval quality"]
+    },
+    {
+      "role": "Platform/Security Engineer",
+      "responsibilities": ["Deployment", "Observability", "Secrets", "Security gates"]
+    }
+  ],
+  "phase_sequence": [
+    {"phase": 4, "name": "Memory System", "status": "implemented"},
+    {"phase": 5, "name": "Planning Engine", "status": "implemented"},
+    {"phase": 6, "name": "Database Design", "status": "implemented"},
+    {"phase": 7, "name": "Backend Design", "status": "implemented"},
+    {"phase": 8, "name": "Frontend Design", "status": "implemented"},
+    {"phase": 9, "name": "Autonomous Behaviour", "status": "implemented"},
+    {"phase": 10, "name": "Security Design", "status": "implemented"},
+    {"phase": 11, "name": "Technology Stack", "status": "implemented"},
+    {"phase": 12, "name": "Implementation Roadmap", "status": "implemented"},
+    {"phase": 13, "name": "Future Roadmap", "status": "implemented_as_blueprint"},
+    {"phase": 14, "name": "Private Alpha Launch", "status": "next"}
+  ],
+  "technical_debt_policy": {
+    "allowed_debt": [
+      "Local mock LLM fallback for development",
+      "Optional production adapters not configured locally",
+      "Manual deployment until beta"
+    ],
+    "not_allowed_debt": [
+      "Unbounded list endpoints",
+      "Plaintext integration tokens",
+      "Autonomous high-risk actions without approval",
+      "Stale demo data in core workflows",
+      "Broken compile/test/build pipeline"
+    ],
+    "review_cadence": "Every release milestone"
+  },
+  "manual_actions": [
+    {
+      "owner": "User",
+      "action": "Provide real OpenAI or compatible LLM credentials when moving beyond local mock mode",
+      "required_for": "Private Alpha"
+    },
+    {
+      "owner": "User",
+      "action": "Choose hosting target and production domain",
+      "required_for": "Beta"
+    },
+    {
+      "owner": "User",
+      "action": "Create production secret values outside the repository",
+      "required_for": "Beta"
+    },
+    {
+      "owner": "User",
+      "action": "Recruit 5-10 trusted alpha users and collect weekly feedback",
+      "required_for": "Private Alpha"
+    }
+  ],
+  "success_metrics": {
+    "activation": "User creates first goal and memory within first session",
+    "retention": "At least 3 alpha users return weekly",
+    "quality": "At least 80% of generated tasks are accepted or edited lightly",
+    "safety": "100% of high-risk actions require approval",
+    "reliability": "Backend tests and frontend build pass before every release"
+  },
+  "verification": {
+    "backend_compile": "python -m compileall backend\\services",
+    "backend_tests": "python -m pytest backend -q",
+    "frontend_build": "npm run build",
+    "runtime": [
+      "GET /api/v1/health",
+      "GET /api/v1/stack",
+      "GET /api/v1/roadmap",
+      "GET /api/v1/future-roadmap",
+      "GET /api/v1/evaluation/status",
+      "GET /api/v1/production/readiness"
+    ]
+  }
+}

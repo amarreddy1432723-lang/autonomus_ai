@@ -1,26 +1,30 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { 
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
-  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu
+  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import styles from './AppShell.module.css';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { 
     sidebarCollapsed, toggleSidebar, 
     agentActivityFeed, pendingApprovalCount 
   } = useAppStore();
   
   const [activityCollapsed, setActivityCollapsed] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const navItems = [
+  const navItems = useMemo(() => [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
     { label: 'Chat', icon: MessageSquare, href: '/chat' },
     { label: 'Goals', icon: Target, href: '/goals' },
@@ -31,7 +35,56 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
     { label: 'Analytics', icon: BarChart3, href: '/analytics' },
     { label: 'Settings', icon: Settings, href: '/settings' },
-  ];
+  ], [pendingApprovalCount]);
+
+  const commands = useMemo(() => [
+    ...navItems.map((item, index) => ({
+      id: item.href,
+      label: item.label,
+      hint: index < 9 ? `${index + 1}` : '',
+      action: () => router.push(item.href),
+    })),
+    { id: 'new-goal', label: 'Create a new goal', hint: 'Ctrl+G', action: () => router.push('/goals?new=1') },
+    { id: 'chat', label: 'Open chat with AI', hint: 'Ctrl+J', action: () => router.push('/chat') },
+    { id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) },
+  ], [navItems, router, searchQuery]);
+
+  const filteredCommands = commands.filter((command) => (
+    !searchQuery.trim() || command.label.toLowerCase().includes(searchQuery.trim().toLowerCase())
+  ));
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = event.metaKey || event.ctrlKey;
+      if (modifier && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPaletteOpen(true);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+      if (modifier && event.key.toLowerCase() === 'j') {
+        event.preventDefault();
+        router.push('/chat');
+      }
+      if (modifier && event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        router.push('/goals?new=1');
+      }
+      if (!modifier && /^[1-9]$/.test(event.key)) {
+        const item = navItems[Number(event.key) - 1];
+        if (item) router.push(item.href);
+      }
+      if (event.key === 'Escape') {
+        setPaletteOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navItems, router]);
+
+  const runCommand = (action: () => void) => {
+    action();
+    setPaletteOpen(false);
+  };
 
   return (
     <div className={styles.shell}>
@@ -44,7 +97,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         
         <div className={styles.searchBar}>
           <Search size={14} color="var(--color-text-secondary)" />
-          <input type="text" placeholder="Search goals, memories... ⌘K" readOnly />
+          <input
+            ref={searchInputRef}
+            type="text"
+            placeholder="Search goals, memories... Ctrl+K"
+            value={searchQuery}
+            onFocus={() => setPaletteOpen(true)}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setPaletteOpen(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && searchQuery.trim()) {
+                router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`);
+                setPaletteOpen(false);
+              }
+            }}
+          />
           <span className={styles.searchShortcut}>⌘K</span>
         </div>
         
@@ -147,6 +216,41 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </aside>
         </div>
       </div>
+
+      {paletteOpen && (
+        <div className={styles.paletteOverlay} role="dialog" aria-modal="true" aria-label="Command palette">
+          <div className={styles.palette}>
+            <div className={styles.paletteHeader}>
+              <Search size={16} />
+              <input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Type a command or search memory"
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && filteredCommands[0]) {
+                    runCommand(filteredCommands[0].action);
+                  }
+                }}
+              />
+              <button type="button" className={styles.iconButton} onClick={() => setPaletteOpen(false)} aria-label="Close command palette">
+                <X size={16} />
+              </button>
+            </div>
+            <div className={styles.paletteList}>
+              {filteredCommands.slice(0, 8).map((command) => (
+                <button key={command.id} type="button" className={styles.paletteItem} onClick={() => runCommand(command.action)}>
+                  <span>{command.label}</span>
+                  {command.hint && <kbd>{command.hint}</kbd>}
+                </button>
+              ))}
+              {filteredCommands.length === 0 && (
+                <div className={styles.paletteEmpty}>No matching commands</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

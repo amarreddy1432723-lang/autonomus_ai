@@ -1,15 +1,43 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import List
 from uuid import UUID
 
 from services.shared.database import get_db
-from services.shared.models import User, UserProfile, Integration
+from services.shared.models import User, UserProfile, Integration, UserSession
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
-from .schemas import UserRegister, UserLogin, TokenResponse, UserResponse, IntegrationCreate, IntegrationResponse
-from .auth import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
+from services.shared.api import install_api_foundation
+from services.shared.api import clamp_pagination
+from services.shared.security import (
+    dev_auth_fallback_enabled,
+    encrypt_secret,
+    resolve_user_id_from_auth,
+    secret_fingerprint,
+)
+from .schemas import (
+    LogoutRequest,
+    RefreshRequest,
+    SessionResponse,
+    UserRegister,
+    UserLogin,
+    TokenResponse,
+    UserResponse,
+    IntegrationCreate,
+    IntegrationResponse,
+)
+from .config import settings
+from .auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    hash_refresh_token,
+    refresh_token_expires_at,
+)
 
 from contextlib import asynccontextmanager
 
@@ -24,6 +52,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="my-ai Auth Service", version="1.0.0", lifespan=lifespan)
+install_api_foundation(app, "auth-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
@@ -33,34 +62,25 @@ def get_current_user_id(
     token: str | None = Depends(oauth2_scheme),
     x_user_id: str | None = Header(None, alias="x-user-id"),
 ) -> UUID:
-    if token:
-        payload = decode_token(token)
-        if payload and payload.get("type") == "access":
-            user_id_str = payload.get("sub")
-            try:
-                return UUID(user_id_str)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid user identity format",
-                )
+    authorization = f"Bearer {token}" if token else None
+    return resolve_user_id_from_auth(authorization, x_user_id, settings.JWT_SECRET, settings.JWT_ALGORITHM)
 
-    if x_user_id:
-        try:
-            return UUID(x_user_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid x-user-id header",
-            )
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def require_scopes(*required_scopes: str):
+    def dependency(
+        authorization: str | None = Header(None),
+        x_user_id: str | None = Header(None, alias="x-user-id"),
+    ) -> UUID:
+        return resolve_user_id_from_auth(
+            authorization,
+            x_user_id,
+            settings.JWT_SECRET,
+            settings.JWT_ALGORITHM,
+            required_scopes=set(required_scopes),
+        )
+    return dependency
 
 @app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == user_data.email).first()
@@ -85,7 +105,8 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     return new_user
 
 @app.post("/login", response_model=TokenResponse)
-def login(login_data: UserLogin, db: Session = Depends(get_db)):
+@app.post("/api/v1/auth/login", response_model=TokenResponse)
+def login(login_data: UserLogin, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == login_data.email).first()
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
@@ -96,6 +117,18 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
     
     access = create_access_token(user.id)
     refresh = create_refresh_token(user.id)
+    session = UserSession(
+        user_id=user.id,
+        token_hash=hash_refresh_token(refresh),
+        device_info={"user_agent": request.headers.get("user-agent", "unknown")},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        expires_at=refresh_token_expires_at(),
+        last_seen_at=datetime.utcnow(),
+    )
+    db.add(session)
+    user.last_active_at = datetime.utcnow()
+    db.commit()
     
     return {
         "access_token": access,
@@ -104,40 +137,61 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
     }
 
 @app.post("/refresh", response_model=TokenResponse)
-def refresh_tokens(refresh_token: str, db: Session = Depends(get_db)):
-    payload = decode_token(refresh_token)
-    if not payload or payload.get("type") != "refresh":
+@app.post("/api/v1/auth/refresh", response_model=TokenResponse)
+def refresh_tokens(refresh_in: RefreshRequest, request: Request, db: Session = Depends(get_db)):
+    token_hash = hash_refresh_token(refresh_in.refresh_token)
+    session = db.query(UserSession).filter(
+        UserSession.token_hash == token_hash,
+        UserSession.is_active == True,
+        UserSession.revoked_at.is_(None),
+        UserSession.expires_at > datetime.utcnow(),
+    ).first()
+    if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
-    
-    user_id_str = payload.get("sub")
-    try:
-        user_id = UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload identity format",
-        )
-        
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(User.id == session.user_id, User.is_active == True).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-        
-    access = create_access_token(user.id)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
     refresh = create_refresh_token(user.id)
+    session.token_hash = hash_refresh_token(refresh)
+    session.expires_at = refresh_token_expires_at()
+    session.last_seen_at = datetime.utcnow()
+    session.ip_address = request.client.host if request.client else session.ip_address
+    session.user_agent = request.headers.get("user-agent") or session.user_agent
+    user.last_active_at = datetime.utcnow()
+    db.commit()
     
     return {
-        "access_token": access,
+        "access_token": create_access_token(user.id),
         "refresh_token": refresh,
         "token_type": "bearer"
     }
 
+@app.post("/api/v1/auth/logout")
+@app.post("/logout")
+def logout(logout_in: LogoutRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    if logout_in.refresh_token:
+        session = db.query(UserSession).filter(
+            UserSession.user_id == user_id,
+            UserSession.token_hash == hash_refresh_token(logout_in.refresh_token),
+        ).first()
+        if session:
+            session.is_active = False
+            session.revoked_at = datetime.utcnow()
+    else:
+        db.query(UserSession).filter(UserSession.user_id == user_id, UserSession.is_active == True).update({
+            "is_active": False,
+            "revoked_at": datetime.utcnow(),
+        })
+    db.commit()
+    return {"message": "Logged out successfully"}
+
 @app.get("/me", response_model=UserResponse)
+@app.get("/api/v1/me", response_model=UserResponse)
+@app.get("/api/v1/auth/me", response_model=UserResponse)
 def get_me(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -147,14 +201,53 @@ def get_me(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(g
         )
     return user
 
-from typing import List
+@app.get("/api/v1/auth/sessions", response_model=List[SessionResponse])
+def list_sessions(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return db.query(UserSession).filter(UserSession.user_id == user_id).order_by(UserSession.created_at.desc()).all()
+
+@app.delete("/api/v1/auth/sessions/all")
+def revoke_all_sessions(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    db.query(UserSession).filter(UserSession.user_id == user_id, UserSession.is_active == True).update({
+        "is_active": False,
+        "revoked_at": datetime.utcnow(),
+    })
+    db.commit()
+    return {"message": "All sessions revoked"}
+
+@app.delete("/api/v1/auth/sessions/{session_id}")
+def revoke_session(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    session = db.query(UserSession).filter(UserSession.id == session_id, UserSession.user_id == user_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.is_active = False
+    session.revoked_at = datetime.utcnow()
+    db.commit()
+    return {"message": "Session revoked"}
 
 @app.get("/api/v1/integrations", response_model=List[IntegrationResponse])
-def get_integrations(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    return db.query(Integration).filter(Integration.user_id == user_id).all()
+def get_integrations(
+    status_filter: str | None = Query(None, alias="status"),
+    page: int = 1,
+    page_size: int = 20,
+    user_id: UUID = Depends(require_scopes("integrations:read")),
+    db: Session = Depends(get_db),
+):
+    page, page_size, offset = clamp_pagination(page, page_size)
+    query = db.query(Integration).filter(Integration.user_id == user_id)
+    if status_filter:
+        query = query.filter(Integration.status == status_filter)
+    return query.order_by(Integration.created_at.desc()).offset(offset).limit(page_size).all()
 
 @app.post("/api/v1/integrations", response_model=IntegrationResponse, status_code=201)
-def create_integration(integration_in: IntegrationCreate, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def create_integration(integration_in: IntegrationCreate, user_id: UUID = Depends(require_scopes("integrations:write")), db: Session = Depends(get_db)):
+    metadata = dict(integration_in.metadata_json or {})
+    if integration_in.access_token:
+        metadata["access_token_fingerprint"] = secret_fingerprint(integration_in.access_token)
+    if integration_in.refresh_token:
+        metadata["refresh_token_fingerprint"] = secret_fingerprint(integration_in.refresh_token)
+    if integration_in.access_token or integration_in.refresh_token:
+        metadata["tokens_encrypted"] = True
+
     existing = db.query(Integration).filter(
         Integration.user_id == user_id,
         Integration.provider == integration_in.provider
@@ -162,12 +255,12 @@ def create_integration(integration_in: IntegrationCreate, user_id: UUID = Depend
     
     if existing:
         existing.status = "active"
-        existing.access_token = integration_in.access_token
-        existing.refresh_token = integration_in.refresh_token
+        existing.access_token = encrypt_secret(integration_in.access_token)
+        existing.refresh_token = encrypt_secret(integration_in.refresh_token)
         existing.token_expires_at = integration_in.token_expires_at
         existing.scopes = integration_in.scopes
         existing.provider_user_id = integration_in.provider_user_id
-        existing.metadata_json = integration_in.metadata_json
+        existing.metadata_json = metadata
         db.commit()
         db.refresh(existing)
         return existing
@@ -176,12 +269,12 @@ def create_integration(integration_in: IntegrationCreate, user_id: UUID = Depend
         user_id=user_id,
         provider=integration_in.provider,
         status="active",
-        access_token=integration_in.access_token,
-        refresh_token=integration_in.refresh_token,
+        access_token=encrypt_secret(integration_in.access_token),
+        refresh_token=encrypt_secret(integration_in.refresh_token),
         token_expires_at=integration_in.token_expires_at,
         scopes=integration_in.scopes,
         provider_user_id=integration_in.provider_user_id,
-        metadata_json=integration_in.metadata_json
+        metadata_json=metadata
     )
     db.add(new_integration)
     db.commit()
@@ -189,7 +282,7 @@ def create_integration(integration_in: IntegrationCreate, user_id: UUID = Depend
     return new_integration
 
 @app.delete("/api/v1/integrations/{provider}")
-def delete_integration(provider: str, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def delete_integration(provider: str, user_id: UUID = Depends(require_scopes("integrations:write")), db: Session = Depends(get_db)):
     integration = db.query(Integration).filter(
         Integration.user_id == user_id,
         Integration.provider == provider
@@ -202,3 +295,32 @@ def delete_integration(provider: str, user_id: UUID = Depends(get_current_user_i
     db.delete(integration)
     db.commit()
     return {"message": f"Successfully disconnected integration '{provider}'"}
+
+@app.get("/api/v1/security/status")
+def security_status(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    encrypted_tokens = db.query(Integration).filter(
+        Integration.user_id == user_id,
+        Integration.access_token.like("enc:v1:%"),
+    ).count()
+    return {
+        "jwt": {
+            "algorithm": settings.JWT_ALGORITHM,
+            "access_token_minutes": settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+            "refresh_rotation": True,
+        },
+        "auth": {
+            "dev_header_fallback": dev_auth_fallback_enabled(),
+            "scope_enforcement": ["integrations:read", "integrations:write"],
+        },
+        "data_protection": {
+            "integration_tokens_encrypted": True,
+            "encrypted_integrations_for_user": encrypted_tokens,
+        },
+        "audit": {
+            "append_only": True,
+        },
+        "ai_security": {
+            "prompt_injection_filter": True,
+            "tool_output_marked_untrusted": True,
+        },
+    }

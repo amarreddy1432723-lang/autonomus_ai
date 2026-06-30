@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     )
     JWT_SECRET_KEY: str = os.getenv(
         "GOALS_JWT_SECRET_KEY",
-        os.getenv("JWT_SECRET", "your-jwt-secret-key-for-local-dev-only-change-in-prod")
+        os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
     )
     JWT_ALGORITHM: str = os.getenv("GOALS_JWT_ALGORITHM", os.getenv("JWT_ALGORITHM", "HS256"))
     GOALS_PORT: int = int(os.getenv("GOALS_PORT", "8002"))

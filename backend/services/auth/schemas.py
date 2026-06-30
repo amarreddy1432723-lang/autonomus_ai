@@ -25,6 +25,25 @@ class UserResponse(BaseModel):
 
 from typing import List, Optional
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+class SessionResponse(BaseModel):
+    id: UUID
+    device_info: dict
+    ip_address: Optional[str]
+    is_active: bool
+    expires_at: datetime
+    revoked_at: Optional[datetime]
+    last_seen_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class IntegrationCreate(BaseModel):
     provider: str
     access_token: Optional[str] = None

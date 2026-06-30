@@ -14,7 +14,7 @@
 .title {
   font-size: var(--text-2xl);
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: 0;
 }
 
 .board {
@@ -132,4 +132,14 @@
   align-items: center;
   gap: 4px;
   color: var(--color-text-tertiary);
+}
+
+.statePanel,
+.emptyColumn {
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  background: var(--color-bg-tertiary);
 }

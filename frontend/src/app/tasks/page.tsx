@@ -5,45 +5,24 @@ import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Tasks.module.css';
-import { Cpu, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Cpu, CheckCircle2, Play, ShieldCheck } from 'lucide-react';
 
 export default function TasksPage() {
-  const { data: tasks } = useQuery({
+  const { data: tasks = [], isLoading, isError } = useQuery({
     queryKey: ['tasks-list'],
     queryFn: async () => {
-      try {
-        const response = await apiRequest('/api/v1/tasks');
-        // If the backend returns a dict, extract tasks
-        if (response && response.results) return response.results;
-        return response;
-      } catch {
-        return [
-          { id: 't1', title: 'T1: Create database migrations & models', status: 'done', priority_score: 0.95, assigned_agent: 'Coding Agent' },
-          { id: 't2', title: 'T2: Implement Auth Service JWT verification', status: 'in_progress', priority_score: 0.92, assigned_agent: 'Coding Agent' },
-          { id: 't3', title: 'T3: Design User Profile API route handlers', status: 'queued', priority_score: 0.85, assigned_agent: 'Coding Agent' },
-          { id: 't4', title: 'T4: Setup Stripe Billing integration', status: 'queued', priority_score: 0.78, assigned_agent: 'Coding Agent' },
-          { id: 't5', title: 'T5: Setup Render hosting deployment pipeline', status: 'queued', priority_score: 0.65, assigned_agent: 'Coding Agent' },
-          { id: 't6', title: 'T6: Send follow-up email to Sarah Chen', status: 'waiting_approval', priority_score: 0.72, assigned_agent: 'Research Agent' },
-          { id: 't7', title: 'T7: Write complete Integration Test Suite', status: 'queued', priority_score: 0.55, assigned_agent: 'Exec Agent' }
-        ];
-      }
+      const response = await apiRequest('/api/v1/tasks?page_size=100');
+      if (response && response.results) return response.results;
+      return response;
     }
   });
 
   const columns = [
     { key: 'queued', title: 'Queued', icon: Cpu, iconColor: 'var(--color-text-secondary)' },
-    { key: 'in_progress', title: 'In Progress', icon: PlayIcon, iconColor: 'var(--color-info)' },
+    { key: 'in_progress', title: 'In Progress', icon: Play, iconColor: 'var(--color-info)' },
     { key: 'waiting_approval', title: 'Waiting Approval', icon: ShieldCheck, iconColor: 'var(--color-warning)' },
     { key: 'done', title: 'Done', icon: CheckCircle2, iconColor: 'var(--color-success)' }
   ];
-
-  function PlayIcon(props: any) {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" {...props}>
-        <polygon points="5 3 19 12 5 21 5 3" />
-      </svg>
-    );
-  }
 
   const getPriorityBadgeClass = (score: number) => {
     if (score > 0.9) return styles.badgeCritical;
@@ -63,6 +42,8 @@ export default function TasksPage() {
         <div className={styles.header}>
           <h1 className={styles.title}>Tasks Kanban Board</h1>
         </div>
+        {isLoading && <div className={styles.statePanel}>Loading tasks...</div>}
+        {isError && <div className={styles.statePanel}>Tasks could not be loaded from the backend.</div>}
 
         <div className={styles.board}>
           {columns.map((col) => {
@@ -80,6 +61,9 @@ export default function TasksPage() {
                 </div>
 
                 <div className={styles.taskList}>
+                  {columnTasks.length === 0 && (
+                    <div className={styles.emptyColumn}>No tasks</div>
+                  )}
                   {columnTasks.map((task: any) => (
                     <div key={task.id} className={styles.taskCard}>
                       <span className={styles.taskTitle}>{task.title}</span>

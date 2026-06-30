@@ -112,6 +112,40 @@ def decompose_goal(user_id: UUID, goal_title: str, goal_desc: str, goal_deadline
         except Exception as e:
             print(f"Error invoking Planner LLM: {e}")
             tasks = []
+
+    if not tasks:
+        tasks = [
+            {
+                "title": f"Clarify success criteria for {goal_title}",
+                "description": f"Turn the goal into measurable outcomes, constraints, and review checkpoints: {goal_desc}",
+                "assigned_agent": "ResearchAgent",
+                "optimistic_estimate": 1.0,
+                "most_likely_estimate": 2.0,
+                "pessimistic_estimate": 3.0,
+                "priority_score": 0.9,
+                "dependencies": []
+            },
+            {
+                "title": f"Build the core plan for {goal_title}",
+                "description": "Create the main project structure, task sequence, and execution path.",
+                "assigned_agent": "PlanningAgent",
+                "optimistic_estimate": 2.0,
+                "most_likely_estimate": 4.0,
+                "pessimistic_estimate": 7.0,
+                "priority_score": 0.85,
+                "dependencies": [f"Clarify success criteria for {goal_title}"]
+            },
+            {
+                "title": f"Review and improve {goal_title}",
+                "description": "Check quality, resolve gaps, and prepare the next execution checkpoint.",
+                "assigned_agent": "ResearchAgent",
+                "optimistic_estimate": 1.0,
+                "most_likely_estimate": 2.0,
+                "pessimistic_estimate": 4.0,
+                "priority_score": 0.7,
+                "dependencies": [f"Build the core plan for {goal_title}"]
+            }
+        ]
             
     # Calculate PERT estimates for all tasks
     for task in tasks:
@@ -325,3 +359,235 @@ def calculate_priority_scores(tasks: List[Dict[str, Any]], goal_deadline: dateti
         )
         
         t["priority_score"] = round(min(1.0, max(0.0, composite)), 2)
+
+
+def infer_goal_category(goal_title: str, goal_desc: str | None = None) -> str:
+    text = f"{goal_title} {goal_desc or ''}".lower()
+    categories = {
+        "software": ["app", "api", "code", "deploy", "backend", "frontend", "saas", "website", "mobile"],
+        "learning": ["learn", "study", "course", "book", "roadmap", "practice", "interview"],
+        "career": ["job", "career", "resume", "portfolio", "promotion", "engineer"],
+        "business": ["startup", "customer", "revenue", "marketing", "sales", "launch"],
+        "finance": ["money", "budget", "invest", "saving", "income"],
+        "health": ["fitness", "health", "diet", "workout", "sleep"],
+    }
+    for category, keywords in categories.items():
+        if any(keyword in text for keyword in keywords):
+            return category
+    return "general"
+
+
+def formalize_goal(
+    user_id: UUID,
+    goal_title: str,
+    goal_desc: str | None = None,
+    goal_deadline: datetime | None = None,
+) -> Dict[str, Any]:
+    category = infer_goal_category(goal_title, goal_desc)
+    description = goal_desc or f"Complete the goal: {goal_title}"
+    words = [word.strip(".,;:!?") for word in description.split() if len(word.strip(".,;:!?")) > 3]
+    success_criteria = [
+        f"Define measurable outcome for {goal_title}",
+        "Complete all critical path tasks",
+        "Review final result against the original goal",
+    ]
+    if goal_deadline:
+        success_criteria.append(f"Finish before {goal_deadline.date().isoformat()}")
+
+    constraints = []
+    if "budget" in description.lower():
+        constraints.append("Respect stated budget constraints")
+    if "deadline" in description.lower() or goal_deadline:
+        constraints.append("Protect deadline-sensitive tasks")
+
+    ambiguity_score = 0.35 if len(words) >= 10 else 0.65
+    priority = 4 if goal_deadline else 3
+    return {
+        "title": goal_title.strip(),
+        "description": description.strip(),
+        "category": category,
+        "priority": priority,
+        "success_criteria": success_criteria,
+        "constraints": constraints,
+        "assumptions": [
+            "The plan can be refined as task execution results arrive",
+            "External credentials or paid services require manual user approval",
+        ],
+        "ambiguity_score": ambiguity_score,
+        "user_id": str(user_id),
+    }
+
+
+def generate_roadmap(
+    goal_title: str,
+    goal_desc: str | None = None,
+    goal_deadline: datetime | None = None,
+) -> List[Dict[str, Any]]:
+    now = datetime.utcnow()
+    if goal_deadline:
+        total_days = max(7, (goal_deadline.replace(tzinfo=None) - now).days)
+    else:
+        total_days = 30
+    phase_count = 4 if total_days >= 45 else 3
+    phase_span = max(2, total_days // phase_count)
+
+    labels = [
+        ("Discovery", "Requirements and success criteria are clear"),
+        ("Foundation", "Core structure and dependencies are ready"),
+        ("Execution", "Main deliverables are implemented"),
+        ("Review", "Quality checks and final improvements are complete"),
+    ][:phase_count]
+
+    roadmap = []
+    for index, (title, milestone) in enumerate(labels, start=1):
+        start_day = (index - 1) * phase_span
+        end_day = total_days if index == phase_count else index * phase_span
+        roadmap.append({
+            "phase_number": index,
+            "title": title,
+            "milestone": milestone,
+            "start_day": start_day,
+            "end_day": end_day,
+            "projects": [f"{title}: {goal_title}"],
+        })
+    return roadmap
+
+
+def build_structured_plan(
+    user_id: UUID,
+    goal_title: str,
+    goal_desc: str | None = None,
+    goal_deadline: datetime | None = None,
+) -> Dict[str, Any]:
+    formal_goal = formalize_goal(user_id, goal_title, goal_desc, goal_deadline)
+    roadmap = generate_roadmap(goal_title, goal_desc, goal_deadline)
+    tasks = decompose_goal(user_id, goal_title, goal_desc or "", goal_deadline)
+    cpm = calculate_cpm(tasks)
+
+    projects = []
+    phase_lookup = {}
+    for phase in roadmap:
+        project_title = phase["projects"][0]
+        phase_lookup[phase["phase_number"]] = project_title
+        projects.append({
+            "title": project_title,
+            "description": f"{phase['title']} work for {goal_title}",
+            "phase_number": phase["phase_number"],
+            "milestone": phase["milestone"],
+            "lead_agent": "PlanningAgent",
+            "dependencies": [],
+        })
+
+    for index, task in enumerate(tasks):
+        phase_number = min(len(projects), index + 1)
+        task["phase_number"] = phase_number
+        task["project_title"] = phase_lookup[phase_number]
+        task["success_criteria"] = [
+            "Output is saved or reflected in the project state",
+            "Result can be reviewed by the user",
+        ]
+
+    estimated_hours_total = round(sum(float(t.get("pert_estimate", 0.0)) for t in tasks), 2)
+    health = calculate_plan_health(tasks)
+    risk_flags = []
+    if formal_goal["ambiguity_score"] > 0.6:
+        risk_flags.append("Goal description is broad; early clarification task is important")
+    if goal_deadline and estimated_hours_total / 4.0 > max(1, (goal_deadline.replace(tzinfo=None) - datetime.utcnow()).days):
+        risk_flags.append("Estimated effort may be tight for the deadline")
+
+    return {
+        "formal_goal": formal_goal,
+        "roadmap": roadmap,
+        "projects": projects,
+        "tasks": tasks,
+        "critical_path": cpm.get("critical_path", []),
+        "estimated_hours_total": estimated_hours_total,
+        "plan_health_score": health["score"],
+        "risk_flags": risk_flags,
+        "assumptions": formal_goal["assumptions"],
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def calculate_plan_health(tasks: List[Any]) -> Dict[str, Any]:
+    normalized = []
+    for task in tasks:
+        if isinstance(task, dict):
+            normalized.append(task)
+        else:
+            normalized.append({
+                "status": getattr(task, "status", "queued"),
+                "priority_score": getattr(task, "priority_score", 0.0),
+                "is_critical": getattr(task, "is_critical_path", False),
+                "title": getattr(task, "title", ""),
+            })
+
+    total = len(normalized)
+    if total == 0:
+        return {"score": 0.0, "total_tasks": 0, "completed_tasks": 0, "blocked_tasks": 0, "risk_flags": []}
+
+    completed = sum(1 for t in normalized if t.get("status") in ("done", "completed"))
+    blocked = sum(1 for t in normalized if t.get("status") in ("blocked", "failed", "waiting_approval"))
+    critical_open = sum(
+        1 for t in normalized
+        if (t.get("is_critical") or t.get("is_critical_path")) and t.get("status", "queued") not in ("done", "completed")
+    )
+    completion_score = completed / total
+    blockage_penalty = min(0.4, blocked * 0.12)
+    critical_penalty = min(0.25, critical_open * 0.05)
+    score = round(max(0.0, min(1.0, 0.75 + completion_score * 0.25 - blockage_penalty - critical_penalty)), 2)
+    risk_flags = []
+    if blocked:
+        risk_flags.append(f"{blocked} task(s) blocked or waiting")
+    if critical_open:
+        risk_flags.append(f"{critical_open} critical-path task(s) still open")
+    return {
+        "score": score,
+        "total_tasks": total,
+        "completed_tasks": completed,
+        "blocked_tasks": blocked,
+        "critical_open_tasks": critical_open,
+        "risk_flags": risk_flags,
+    }
+
+
+def propose_replan(goal: Any, tasks: List[Any], trigger: str, strategy: str = "hybrid") -> Dict[str, Any]:
+    health = calculate_plan_health(tasks)
+    base_options = [
+        {
+            "strategy": "extend",
+            "summary": "Protect scope and move the deadline or schedule more time.",
+            "impact": "Lowest quality risk, higher calendar cost.",
+        },
+        {
+            "strategy": "descope",
+            "summary": "Keep the deadline and reduce non-critical deliverables.",
+            "impact": "Fastest recovery, lower feature completeness.",
+        },
+        {
+            "strategy": "crunch",
+            "summary": "Keep scope and deadline by increasing daily effort.",
+            "impact": "Useful briefly, high burnout risk.",
+        },
+        {
+            "strategy": "hybrid",
+            "summary": "Prioritize critical path, descope optional work, and add a review checkpoint.",
+            "impact": "Balanced recovery path for most goals.",
+        },
+    ]
+    recommended = strategy if strategy in {o["strategy"] for o in base_options} else "hybrid"
+    if health["score"] < 0.55 and recommended == "crunch":
+        recommended = "hybrid"
+    return {
+        "trigger": trigger,
+        "health": health,
+        "recommended_strategy": recommended,
+        "options": base_options,
+        "changes": [
+            "Review blocked or failed tasks first",
+            "Move highest priority critical-path tasks to the next execution batch",
+            "Schedule a checkpoint after the next completed task",
+        ],
+        "generated_at": datetime.utcnow().isoformat(),
+        "goal_id": str(getattr(goal, "id", "")),
+    }

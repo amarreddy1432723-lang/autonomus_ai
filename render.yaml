@@ -1,0 +1,128 @@
+services:
+  - type: web
+    name: my-ai-auth
+    runtime: python
+    rootDir: backend
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python -m alembic upgrade head
+    startCommand: uvicorn services.auth.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: my-ai-production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: my-ai-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: my-ai-redis
+          property: connectionString
+
+  - type: web
+    name: my-ai-goals
+    runtime: python
+    rootDir: backend
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn services.goals.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: my-ai-production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: my-ai-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: my-ai-redis
+          property: connectionString
+
+  - type: web
+    name: my-ai-agent
+    runtime: python
+    rootDir: backend
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn services.agent.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: my-ai-production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: my-ai-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: my-ai-redis
+          property: connectionString
+
+  - type: keyvalue
+    name: my-ai-redis
+    region: oregon
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: my-ai-db
+    region: oregon
+    plan: starter
+    databaseName: my_ai_db
+    user: my_ai
+    ipAllowList: []
+
+envVarGroups:
+  - name: my-ai-production
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ALLOW_DEMO_USER
+        value: "false"
+      - key: ALLOW_DEV_AUTH_FALLBACK
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: APP_ENCRYPTION_KEY
+        generateValue: true
+      - key: DB_CONNECT_TIMEOUT_SECONDS
+        value: "10"
+      - key: LLM_PROVIDER
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: EMBEDDING_PROVIDER
+        sync: false
+      - key: EMBEDDING_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_HOST
+        sync: false
+      - key: PINECONE_INDEX
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false

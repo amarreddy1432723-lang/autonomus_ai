@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    root: process.cwd(),
+  },
   async rewrites() {
     const authUrl = process.env.NEXT_PUBLIC_AUTH_URL || 'http://localhost:8001';
     const goalsUrl = process.env.NEXT_PUBLIC_GOALS_URL || 'http://localhost:8002';
@@ -42,6 +45,18 @@ const nextConfig: NextConfig = {
       {
         source: '/api/v1/agents/:path*',
         destination: `${agentUrl}/api/v1/agents/:path*`,
+      },
+      {
+        source: '/api/v1/memories/:path*',
+        destination: `${agentUrl}/api/v1/memories/:path*`,
+      },
+      {
+        source: '/api/v1/news/:path*',
+        destination: `${agentUrl}/api/v1/news/:path*`,
+      },
+      {
+        source: '/api/v1/sessions/:path*',
+        destination: `${agentUrl}/api/v1/sessions/:path*`,
       },
     ];
   },

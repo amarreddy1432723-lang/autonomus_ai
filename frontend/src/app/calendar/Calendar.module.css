@@ -13,7 +13,7 @@
 .title {
   font-size: var(--text-2xl);
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: 0;
 }
 
 .calendarCard {
@@ -35,6 +35,19 @@
 .dateTitle {
   font-size: var(--text-base);
   font-weight: 700;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
 }
 
 .btnGroup {
@@ -123,4 +136,20 @@
 
 .eventMeeting {
   background-color: var(--color-agent-memory);
+}
+
+@media (max-width: 720px) {
+  .viewToggle {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dayHeader {
+    display: none;
+  }
 }

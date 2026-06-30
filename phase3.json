@@ -1,0 +1,147 @@
+{
+  "phase": 3,
+  "name": "ai architecture",
+  "last_updated": "2026-06-30",
+  "source_last_updated": "2026-06-28",
+  "status": "implemented_as_architecture_contract",
+  "agent_model": "hub-and-spoke",
+  "universal_agent_contract": {
+    "states": ["IDLE", "VALIDATING", "THINKING", "EXECUTING", "WAITING", "RESUMING", "SUCCEEDED", "FAILED", "REJECTED", "DEAD_LETTER"],
+    "lifecycle": ["receive", "validate", "think", "act", "reflect", "publish"],
+    "failure_path": ["retry", "escalate", "dead_letter"],
+    "outputs": ["result", "events", "memories", "next_agents"]
+  },
+  "agents": [
+    {
+      "id": "central_brain",
+      "name": "Central Brain Agent",
+      "role": "orchestrator",
+      "implemented": true,
+      "module": "backend/services/agent/brain.py",
+      "responsibilities": ["intent_classification", "context_assembly", "agent_routing", "risk_awareness", "tool_coordination"]
+    },
+    {
+      "id": "planner",
+      "name": "Planner Agent",
+      "role": "strategist",
+      "implemented": true,
+      "module": "backend/services/agent/planner.py",
+      "responsibilities": ["goal_decomposition", "dependency_mapping", "time_estimation", "risk_assessment", "adaptive_replanning"]
+    },
+    {
+      "id": "memory",
+      "name": "Memory Agent",
+      "role": "librarian",
+      "implemented": true,
+      "module": "backend/services/agent/memory_agent.py",
+      "responsibilities": ["memory_extraction", "deduplication", "hybrid_retrieval", "compression", "expiry", "vector_sync", "graph_sync"]
+    },
+    {
+      "id": "research",
+      "name": "Research Agent",
+      "role": "information specialist",
+      "implemented": true,
+      "module": "backend/services/agent/tools.py",
+      "responsibilities": ["live_news", "web_search", "source_collection", "tool_result_sanitization"]
+    },
+    {
+      "id": "coding",
+      "name": "Coding Agent",
+      "role": "software specialist",
+      "implemented": false,
+      "module": null,
+      "responsibilities": ["code_generation", "code_review", "repo_editing", "test_execution"]
+    },
+    {
+      "id": "task",
+      "name": "Task Agent",
+      "role": "task executor/coordinator",
+      "implemented": true,
+      "module": "backend/services/agent/executor.py",
+      "responsibilities": ["queued_task_execution", "status_updates", "execution_logging"]
+    },
+    {
+      "id": "scheduler",
+      "name": "Scheduler Agent",
+      "role": "time manager",
+      "implemented": true,
+      "module": "backend/services/goals/main.py",
+      "responsibilities": ["schedule_records", "next_run_tracking", "calendar_views"]
+    },
+    {
+      "id": "reflection",
+      "name": "Reflection Agent",
+      "role": "learning reviewer",
+      "implemented": true,
+      "module": "backend/services/agent/reflection.py",
+      "responsibilities": ["after_action_review", "pattern_extraction", "weekly_digest"]
+    },
+    {
+      "id": "learning",
+      "name": "Learning Agent",
+      "role": "profile optimizer",
+      "implemented": true,
+      "module": "backend/services/shared/models.py",
+      "responsibilities": ["feedback_patterns", "work_patterns", "model_confidence", "user_profile_updates"]
+    },
+    {
+      "id": "notification",
+      "name": "Notification Agent",
+      "role": "alert router",
+      "implemented": true,
+      "module": "backend/services/agent/proactive.py",
+      "responsibilities": ["notification_records", "priority_alerts", "proactive_suggestions"]
+    },
+    {
+      "id": "execution",
+      "name": "Execution Agent",
+      "role": "hands",
+      "implemented": true,
+      "module": "backend/services/agent/executor.py",
+      "responsibilities": ["tool_invocation", "permission_check", "output_capture", "audit_recording"]
+    },
+    {
+      "id": "approval",
+      "name": "Approval Agent",
+      "role": "gatekeeper",
+      "implemented": true,
+      "module": "backend/services/agent/autonomy.py",
+      "responsibilities": ["risk_classification", "approval_requests", "timeout_safe_default", "trust_rules", "audit_logging"]
+    }
+  ],
+  "risk_model": {
+    "levels": ["LOW", "HIGH", "CRITICAL"],
+    "low": "read, analyze, draft, and reversible internal changes",
+    "high": "external communication, production changes, calendar writes, browser control",
+    "critical": "financial actions, deletion, credential use, irreversible data changes",
+    "safe_default": "reject_on_timeout"
+  },
+  "tool_registry_policy": [
+    {"tool": "web_search", "risk": "LOW", "approval_required": "never"},
+    {"tool": "read_url", "risk": "LOW", "approval_required": "never"},
+    {"tool": "read_file", "risk": "LOW", "approval_required": "never within allowed scope"},
+    {"tool": "write_file", "risk": "MEDIUM", "approval_required": "outside sandbox"},
+    {"tool": "run_code", "risk": "MEDIUM", "approval_required": "network/filesystem access"},
+    {"tool": "send_email", "risk": "HIGH", "approval_required": "always"},
+    {"tool": "calendar_write", "risk": "HIGH", "approval_required": "first time or user preference"},
+    {"tool": "git_push", "risk": "HIGH", "approval_required": "always for main/master"},
+    {"tool": "api_call", "risk": "MEDIUM", "approval_required": "if mutating state"},
+    {"tool": "browser_control", "risk": "HIGH", "approval_required": "always"}
+  ],
+  "communication_map": {
+    "brain_dispatches_to": ["planner", "memory", "research", "coding", "task", "scheduler", "approval", "notification", "reflection"],
+    "all_agents_use_memory": true,
+    "high_risk_calls_route_to_approval": true,
+    "execution_logs_results": true
+  },
+  "design_principles": [
+    "Single Responsibility",
+    "Stateless Agents",
+    "Idempotent Actions",
+    "Observable",
+    "Graceful Degradation",
+    "Human Primacy",
+    "Explainability"
+  ],
+  "gap_policy": "The MVP implements several specialist agents as modules inside the agent/goals services. Missing standalone agent services remain target architecture until scale requires deployment separation."
+}
