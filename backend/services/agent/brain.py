@@ -24,7 +24,11 @@ def get_llm() -> BaseChatModel:
 
 # 1. Intent Classification Node
 def intent_node(state: AgentState, config: RunnableConfig) -> dict:
-    llm = get_llm()
+    cfg = config.get("configurable", {}) if config else {}
+    provider = cfg.get("llm_provider")
+    model = cfg.get("llm_model")
+    llm = get_chat_llm(role="reasoning", provider=provider, model=model)
+    
     last_user_message = ""
     for msg in reversed(state["messages"]):
         if msg.type == "human":
@@ -76,20 +80,63 @@ def context_node(state: AgentState, config: RunnableConfig) -> dict:
 
 # 3. Reasoning Node
 def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
-    llm = get_chat_llm(role="reasoning")
+    cfg = config.get("configurable", {}) if config else {}
+    provider = cfg.get("llm_provider")
+    model = cfg.get("llm_model")
+    session_id = cfg.get("session_id")
+    
+    llm = get_chat_llm(role="reasoning", provider=provider, model=model)
     
     # Bind tools to model
     tools = [web_search, live_news, read_file, memory_read]
     llm_with_tools = llm.bind_tools(tools)
     
+    # Query Database for Goal context if session_id is a valid UUID
+    goal_context = ""
+    if session_id and session_id != "default":
+        from services.shared.database import SessionLocal
+        from services.shared.models import Goal
+        from uuid import UUID
+        
+        db = SessionLocal()
+        try:
+            goal_uuid = UUID(session_id)
+            goal = db.query(Goal).filter(Goal.id == goal_uuid).first()
+            if goal:
+                goal_context = (
+                    f"ACTIVE GOAL CONTEXT:\n"
+                    f"- Title: {goal.title}\n"
+                    f"- Description: {goal.description or 'No description provided.'}\n"
+                    f"- Category: {goal.category or 'general'}\n"
+                    f"- Status: {goal.status or 'active'}\n"
+                    f"- Progress: {goal.progress_pct or 0.0}%\n"
+                )
+                if goal.tasks:
+                    goal_context += "- Interlinked Tasks:\n"
+                    for task in goal.tasks:
+                        status_char = "x" if task.status == "completed" else " "
+                        goal_context += f"  * [{status_char}] {task.title} (Status: {task.status or 'pending'})\n"
+        except Exception as e:
+            print(f"[Brain] Error retrieving active goal context: {e}")
+        finally:
+            db.close()
+
     system_prompt = (
         "You are the Central Brain of the Autonomous Personal AI Agent.\n"
         f"Active User ID: {state.get('user_id')}\n"
         f"Classified Intent: {state.get('intent')}\n\n"
+    )
+    
+    if goal_context:
+        system_prompt += f"{goal_context}\n"
+        
+    system_prompt += (
         "RELEVANT MEMORY CONTEXT FROM DATABASE:\n"
         f"{state.get('memories') or 'No relevant memories found.'}\n\n"
         "Guidelines:\n"
-        "- Respond helpful and concise.\n"
+        "- Respond in a highly professional, detailed, and structured manner. Use formatted markdown tables, bold highlights, and clean bullet lists where appropriate to make information clear.\n"
+        "- When in an Active Goal Context, make sure your reasoning and answers are tightly aligned with the goal description and current task statuses. Explicitly reference completed vs pending tasks to show progress and guide the user.\n"
+        "- If a student or user asks you to explain something with an image or a video, you MUST use the web_search tool to find direct, high-quality image URLs (e.g. ending in .png, .jpg, .gif, or SVG) or YouTube video/embed links. Embed them directly in your response using markdown syntax: `![Description](image_url)` for images, or `[Video: Title](youtube_url)` for videos. Encourage the user to inspect/play the media directly inside the chat interface rather than navigating to external sites.\n"
         "- Use the memory context to personalize your responses. If a memory says User's name is X, address them as X.\n"
         "- Call live_news for current news, recent events, latest announcements, or anything that may have changed recently.\n"
         "- Call web_search for broader web lookup, pricing, docs, or non-news research.\n"

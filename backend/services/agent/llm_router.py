@@ -21,9 +21,9 @@ from .config import settings
 #  Chat / Reasoning LLM
 # ─────────────────────────────────────────────────────────────
 
-def get_chat_llm(role: str = "default") -> BaseChatModel:
+def get_chat_llm(role: str = "default", provider: str | None = None, model: str | None = None) -> BaseChatModel:
     """
-    Returns the appropriate chat LLM for a given role.
+    Returns the appropriate chat LLM for a given role, or overrides with client-specified provider and model.
 
     Roles:
       'reasoning'  — brain.py, reflection.py, proactive.py
@@ -33,28 +33,36 @@ def get_chat_llm(role: str = "default") -> BaseChatModel:
       'default'    — fallback for any uncategorised use
 
     Provider priority for each call:
-      1. Read LLM_PROVIDER from .env
-      2. Read role-specific model override (APPROVAL_LLM_MODEL, EXTRACTION_LLM_MODEL)
-      3. Fallback to LLM_MODEL
-      4. Ultimate fallback: MockChatOpenAI for local dev
+      1. Explicit provider/model parameters passed to this function
+      2. Read LLM_PROVIDER from .env
+      3. Read role-specific model override (APPROVAL_LLM_MODEL, EXTRACTION_LLM_MODEL)
+      4. Fallback to LLM_MODEL
+      5. Ultimate fallback: MockChatOpenAI for local dev
     """
     is_mock = (
         not settings.OPENAI_API_KEY
         or settings.OPENAI_API_KEY == "mock-openai-key-for-local-dev-only"
     )
 
-    provider = getattr(settings, "LLM_PROVIDER", "").strip().lower()
-    base_model = getattr(settings, "LLM_MODEL", "gpt-4o-mini").strip()
-
-    # Per-role model overrides
-    if role == "approval":
-        override = getattr(settings, "APPROVAL_LLM_MODEL", None)
-        model = (override or base_model).strip()
-    elif role == "extraction":
-        override = getattr(settings, "EXTRACTION_LLM_MODEL", None)
-        model = (override or base_model).strip()
+    if not provider:
+        provider = getattr(settings, "LLM_PROVIDER", "").strip().lower()
     else:
-        model = base_model
+        provider = provider.strip().lower()
+
+    if not model:
+        base_model = getattr(settings, "LLM_MODEL", "gpt-4o-mini").strip()
+
+        # Per-role model overrides
+        if role == "approval":
+            override = getattr(settings, "APPROVAL_LLM_MODEL", None)
+            model = (override or base_model).strip()
+        elif role == "extraction":
+            override = getattr(settings, "EXTRACTION_LLM_MODEL", None)
+            model = (override or base_model).strip()
+        else:
+            model = base_model
+    else:
+        model = model.strip()
 
     # If no explicit provider is set, infer from existing key availability
     if not provider:

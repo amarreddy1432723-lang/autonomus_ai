@@ -60,8 +60,17 @@ class ChatRequest(BaseModel):
     user_id: str
     messages: List[ChatMessage]
     session_id: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
 
-async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[ChatMessage], session_id: str = "default"):
+async def chat_stream_generator(
+    user_id: str,
+    prompt: str,
+    chat_history: List[ChatMessage],
+    session_id: str = "default",
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
     
@@ -79,12 +88,20 @@ async def chat_stream_generator(user_id: str, prompt: str, chat_history: List[Ch
         "user_id": user_id
     }
     
+    config = {
+        "configurable": {
+            "session_id": session_id,
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+        }
+    }
+    
     assistant_text = []
     stm = RedisShortTermMemoryStore()
     stm.append_event(user_id, session_id, {"role": "user", "content": prompt})
 
     try:
-        async for event in brain_agent.astream_events(input_state, version="v2"):
+        async for event in brain_agent.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event")
             node_name = event.get("metadata", {}).get("langgraph_node", "")
             
@@ -139,7 +156,14 @@ async def chat_endpoint(request: ChatRequest):
     history = request.messages[:-1]
     
     return StreamingResponse(
-        chat_stream_generator(request.user_id, prompt, history, request.session_id or "default"),
+        chat_stream_generator(
+            request.user_id,
+            prompt,
+            history,
+            request.session_id or "default",
+            request.llm_provider,
+            request.llm_model,
+        ),
         media_type="text/event-stream"
     )
 
