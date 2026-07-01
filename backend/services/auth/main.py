@@ -14,7 +14,7 @@ from services.shared.api import clamp_pagination
 from services.shared.security import (
     dev_auth_fallback_enabled,
     encrypt_secret,
-    resolve_user_id_from_auth,
+    resolve_user_id_from_auth_or_clerk,
     secret_fingerprint,
 )
 from .schemas import (
@@ -61,16 +61,19 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 def get_current_user_id(
     token: str | None = Depends(oauth2_scheme),
     x_user_id: str | None = Header(None, alias="x-user-id"),
+    db: Session = Depends(get_db),
 ) -> UUID:
     authorization = f"Bearer {token}" if token else None
-    return resolve_user_id_from_auth(authorization, x_user_id, settings.JWT_SECRET, settings.JWT_ALGORITHM)
+    return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, settings.JWT_SECRET, settings.JWT_ALGORITHM)
 
 def require_scopes(*required_scopes: str):
     def dependency(
         authorization: str | None = Header(None),
         x_user_id: str | None = Header(None, alias="x-user-id"),
+        db: Session = Depends(get_db),
     ) -> UUID:
-        return resolve_user_id_from_auth(
+        return resolve_user_id_from_auth_or_clerk(
+            db,
             authorization,
             x_user_id,
             settings.JWT_SECRET,

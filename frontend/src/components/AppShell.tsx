@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { 
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
-  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X
+  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import styles from './AppShell.module.css';
@@ -27,6 +27,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const navItems = useMemo(() => [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
     { label: 'Chat', icon: MessageSquare, href: '/chat' },
+    { label: 'Workspace', icon: Code2, href: '/workspace' },
     { label: 'Goals', icon: Target, href: '/goals' },
     { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
     { label: 'Memory', icon: BrainCircuit, href: '/memory' },

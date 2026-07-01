@@ -4,7 +4,7 @@ import jwt
 from uuid import UUID
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional
@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from services.shared.database import get_db
-from services.shared.models import Memory
+from services.shared.models import FileReference, Memory
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
 from services.shared.api import clamp_pagination, install_api_foundation
-from services.shared.security import resolve_user_id_from_auth
+from services.shared.security import resolve_user_id_from_auth_or_clerk
 from .schemas import (
     MemoryCreate,
     MemoryExtractRequest,
@@ -50,9 +50,10 @@ register_error_handlers(app)
 
 def get_current_user_id(
     authorization: str | None = Header(None), 
-    x_user_id: str | None = Header(None, alias="x-user-id")
+    x_user_id: str | None = Header(None, alias="x-user-id"),
+    db: Session = Depends(get_db),
 ) -> UUID:
-    return resolve_user_id_from_auth(authorization, x_user_id, JWT_SECRET_KEY, JWT_ALGORITHM)
+    return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, JWT_SECRET_KEY, JWT_ALGORITHM)
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"
@@ -65,6 +66,7 @@ class ChatRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     persist: bool = True
+    file_ids: List[str] = Field(default_factory=list)
 
 EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
     "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
@@ -100,6 +102,15 @@ class TrainingExampleRequest(BaseModel):
     quality_status: str = "candidate"
     source: str = "chat"
 
+class CodeSessionCreate(BaseModel):
+    title: str = "Code workspace"
+    file_ids: List[str] = Field(default_factory=list)
+
+class CodeInstructionRequest(BaseModel):
+    instruction: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
 def _training_data_path(filename: str) -> Path:
     root = Path(__file__).resolve().parents[3]
     path = root / "training" / "data" / filename
@@ -114,6 +125,7 @@ async def chat_stream_generator(
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
     persist: bool = True,
+    file_ids: Optional[List[str]] = None,
 ):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
@@ -129,8 +141,18 @@ async def chat_stream_generator(
 
     input_state = {
         "messages": formatted_messages,
-        "user_id": user_id
+        "user_id": user_id,
+        "file_context": "",
     }
+
+    if file_ids:
+        from services.shared.database import SessionLocal
+        from .file_service import file_context_for_prompt
+        db = SessionLocal()
+        try:
+            input_state["file_context"] = file_context_for_prompt(db, UUID(user_id), file_ids, prompt)
+        finally:
+            db.close()
     
     config = {
         "configurable": {
@@ -189,12 +211,40 @@ async def chat_stream_generator(
                 extract_memories(UUID(user_id), "\n".join([prompt, final_text]))
             except Exception:
                 pass
-        yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
+        usage_payload = {}
+        db = None
+        try:
+            from services.shared.database import SessionLocal
+            from .usage import record_usage
+            db = SessionLocal()
+            usage = record_usage(
+                db=db,
+                user_id=UUID(user_id),
+                route="/api/v1/agents/chat",
+                provider=llm_provider,
+                model=llm_model,
+                session_id=session_id,
+                prompt_text="\n".join([m.content for m in chat_history] + [prompt, input_state.get("file_context") or ""]),
+                completion_text=final_text,
+                file_ids=file_ids or [],
+            )
+            usage_payload = {
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "estimated_cost_usd": float(usage.estimated_cost_usd or 0),
+            }
+        except Exception:
+            pass
+        finally:
+            if db:
+                db.close()
+        yield f"event: done\ndata: {json.dumps({'status': 'completed', 'usage': usage_payload})}\n\n"
     except Exception as e:
         yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
 @app.post("/api/v1/agents/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, user_id: UUID = Depends(get_current_user_id)):
     if not request.messages:
         raise HTTPException(status_code=400, detail="Messages list cannot be empty")
         
@@ -204,13 +254,14 @@ async def chat_endpoint(request: ChatRequest):
     
     return StreamingResponse(
         chat_stream_generator(
-            request.user_id,
+            str(user_id),
             prompt,
             history,
             request.session_id or "default",
             llm_provider,
             llm_model,
             request.persist,
+            request.file_ids,
         ),
         media_type="text/event-stream"
     )
@@ -244,6 +295,135 @@ def capture_training_example(
         handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
     return {"status": "captured", "quality_status": status_value}
+
+@app.post("/api/v1/files", status_code=201)
+async def upload_file(
+    upload: UploadFile = File(...),
+    owner_type: str = "chat",
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .file_service import create_file_reference, extract_file_to_chunks
+
+    record = await create_file_reference(db, user_id, upload, owner_type=owner_type)
+    extraction = extract_file_to_chunks(db, user_id, record.id)
+    return {
+        "id": str(record.id),
+        "filename": record.filename,
+        "content_type": record.content_type,
+        "size_bytes": record.size_bytes,
+        "status": record.status,
+        "storage_provider": record.storage_provider,
+        "extraction": extraction,
+    }
+
+@app.get("/api/v1/files")
+def list_files(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    records = db.query(FileReference).filter(
+        FileReference.user_id == user_id,
+        FileReference.status == "active",
+    ).order_by(FileReference.created_at.desc()).all()
+    return [
+        {
+            "id": str(record.id),
+            "filename": record.filename,
+            "content_type": record.content_type,
+            "size_bytes": record.size_bytes,
+            "metadata": record.metadata_json or {},
+            "created_at": record.created_at,
+        }
+        for record in records
+    ]
+
+@app.get("/api/v1/files/{file_id}")
+def get_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .file_service import get_file_text
+
+    record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {
+        "id": str(record.id),
+        "filename": record.filename,
+        "content_type": record.content_type,
+        "size_bytes": record.size_bytes,
+        "metadata": record.metadata_json or {},
+        "preview": get_file_text(db, user_id, file_id)[:8000],
+    }
+
+@app.delete("/api/v1/files/{file_id}")
+def delete_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .file_service import delete_object
+
+    record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    delete_object(record.object_key)
+    record.status = "deleted"
+    db.commit()
+    return {"status": "deleted"}
+
+@app.post("/api/v1/files/{file_id}/extract")
+def extract_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .file_service import extract_file_to_chunks
+    from .usage import record_usage
+
+    result = extract_file_to_chunks(db, user_id, file_id)
+    record_usage(db, user_id, "/api/v1/files/extract", None, "file-extractor", None, "", "", [str(file_id)], result)
+    return result
+
+@app.get("/api/v1/usage/summary")
+def get_usage_summary(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .usage import usage_summary
+
+    return usage_summary(db, user_id)
+
+@app.post("/api/v1/code/sessions", status_code=201)
+def create_code_session_endpoint(
+    request: CodeSessionCreate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import create_code_session
+
+    session = create_code_session(db, user_id, request.title, request.file_ids)
+    return {"id": str(session.id), "title": session.title, "file_ids": session.file_ids, "status": session.status}
+
+@app.get("/api/v1/code/sessions/{session_id}/files")
+def list_code_session_files(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import code_files, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    return [{"id": str(record.id), "filename": record.filename, "size_bytes": record.size_bytes} for record in code_files(db, user_id, session)]
+
+@app.post("/api/v1/code/sessions/{session_id}/plan")
+def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import generate_plan, get_code_session
+    from .usage import record_usage
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    plan = generate_plan(db, user_id, session, request.instruction, provider, model)
+    record_usage(db, user_id, "/api/v1/code/plan", provider, model, str(session_id), request.instruction, plan, session.file_ids)
+    return {"plan": plan}
+
+@app.post("/api/v1/code/sessions/{session_id}/patch")
+def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import generate_patch, get_code_session
+    from .usage import record_usage
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    patch = generate_patch(db, user_id, session, request.instruction, provider, model)
+    record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
+    return {"patch": patch}
+
+@app.post("/api/v1/code/sessions/{session_id}/apply")
+def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import apply_patch_payload, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    return apply_patch_payload(db, user_id, session)
 
 class CompressRequest(BaseModel):
     user_id: str

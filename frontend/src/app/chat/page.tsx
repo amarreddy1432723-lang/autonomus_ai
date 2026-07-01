@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import AppShell from '../../components/AppShell';
 import { useChatStore, useAppStore } from '../../store';
-import { apiRequest, createApiHeaders } from '../../utils/api';
+import { apiRequest, createApiHeadersAsync } from '../../utils/api';
 import styles from './Chat.module.css';
 import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit, X, ImageIcon } from 'lucide-react';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
@@ -16,6 +16,19 @@ const MODEL_OPTIONS = [
 ] as const;
 
 type ModelOption = typeof MODEL_OPTIONS[number];
+
+type UploadedFile = {
+  id: string;
+  filename: string;
+  content_type?: string;
+  size_bytes?: number;
+  extraction?: { chunk_count?: number; token_count?: number };
+};
+
+type UsageSummary = {
+  last_24h?: { total_tokens: number; estimated_cost_usd: number };
+  all_time?: { total_tokens: number; estimated_cost_usd: number };
+};
 
 const extractMediaUrls = (content: string) => {
   const urls = new Set<string>();
@@ -35,6 +48,9 @@ export default function ChatPage() {
   const [goals, setGoals] = useState<any[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<ModelOption['id']>('autonomus-ai-v1');
   const [trainingCaptureStatus, setTrainingCaptureStatus] = useState<Record<string, 'saved' | 'error' | 'saving'>>({});
+  const [selectedFiles, setSelectedFiles] = useState<UploadedFile[]>([]);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [imageViewer, setImageViewer] = useState<{
     url: string;
     alt: string;
@@ -61,6 +77,19 @@ export default function ChatPage() {
   useEffect(() => {
     localStorage.setItem('my_ai_selected_model_id', selectedModelId);
   }, [selectedModelId]);
+
+  const loadUsageSummary = async () => {
+    try {
+      const data = await apiRequest('/api/v1/usage/summary');
+      setUsageSummary(data);
+    } catch {
+      setUsageSummary(null);
+    }
+  };
+
+  useEffect(() => {
+    loadUsageSummary();
+  }, []);
 
   // Load goals on mount
   useEffect(() => {
@@ -206,6 +235,10 @@ export default function ChatPage() {
   };
 
   const applyPromptTemplate = (kind: 'file' | 'url' | 'task' | 'goal') => {
+    if (kind === 'file') {
+      document.getElementById('chat-file-upload')?.click();
+      return;
+    }
     const templates = {
       file: 'Read file ',
       url: 'Review this URL and summarize the useful actions: ',
@@ -213,6 +246,29 @@ export default function ChatPage() {
       goal: 'Create a goal and break it into tasks: '
     };
     setInput(templates[kind]);
+  };
+
+  const uploadFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setIsUploadingFile(true);
+    try {
+      const uploaded: UploadedFile[] = [];
+      for (const file of Array.from(files)) {
+        const formData = new FormData();
+        formData.append('upload', file);
+        const result = await apiRequest('/api/v1/files', {
+          method: 'POST',
+          body: formData,
+        });
+        uploaded.push(result);
+      }
+      setSelectedFiles((current) => [...current, ...uploaded]);
+      await loadUsageSummary();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsUploadingFile(false);
+    }
   };
 
   const streamChatResponse = async (
@@ -230,8 +286,9 @@ export default function ChatPage() {
       llm_provider: selectedModel.provider,
       llm_model: selectedModel.model,
       persist: options.persist ?? true,
+      file_ids: selectedFiles.map((file) => file.id),
     };
-    const headers = createApiHeaders({
+    const headers = await createApiHeadersAsync({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
@@ -255,6 +312,7 @@ export default function ChatPage() {
     let accumulatedContent = '';
     let accumulatedThoughts: string[] = [];
     let streamError = '';
+    let usage: any = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -292,6 +350,8 @@ export default function ChatPage() {
             } else if (currentEvent === 'error') {
               streamError = payload.error || 'Agent stream failed';
               throw new Error(streamError);
+            } else if (currentEvent === 'done') {
+              usage = payload.usage || null;
             }
           } catch (err) {
             if (currentEvent === 'error') {
@@ -306,7 +366,7 @@ export default function ChatPage() {
       throw new Error(streamError);
     }
 
-    return { content: accumulatedContent, thoughts: accumulatedThoughts };
+    return { content: accumulatedContent, thoughts: accumulatedThoughts, usage };
   };
 
   const explainImage = async (image: { url: string; alt: string }) => {
@@ -403,6 +463,7 @@ export default function ChatPage() {
         modelName: selectedModel.model
       };
       addMessage(assistantMsg);
+      await loadUsageSummary();
 
       // Save complete history including assistant response to local storage
       const finalHistory = [...updatedHistoryWithUser, assistantMsg];
@@ -449,6 +510,11 @@ export default function ChatPage() {
       <div className={styles.chatContainer}>
         <div className={styles.chatHeader}>
           <span className={styles.chatTitle}>Chat Session</span>
+          {usageSummary?.last_24h && (
+            <span className={styles.usageBadge}>
+              {usageSummary.last_24h.total_tokens.toLocaleString()} tokens today · ${usageSummary.last_24h.estimated_cost_usd.toFixed(4)}
+            </span>
+          )}
           <div className={styles.headerControls}>
             <div className={styles.selectorWrapper}>
               <span>Active Model:</span>
@@ -574,7 +640,32 @@ export default function ChatPage() {
 
         {/* INPUT BOX */}
         <form onSubmit={handleSend} className={styles.inputArea}>
+          {selectedFiles.length > 0 && (
+            <div className={styles.fileChipRow}>
+              {selectedFiles.map((file) => (
+                <button
+                  key={file.id}
+                  type="button"
+                  className={styles.fileChip}
+                  onClick={() => setSelectedFiles((current) => current.filter((item) => item.id !== file.id))}
+                  title="Remove file from this chat context"
+                >
+                  <span>{file.filename}</span>
+                  {file.extraction?.token_count ? <span>{file.extraction.token_count} tokens</span> : null}
+                  <X size={12} />
+                </button>
+              ))}
+            </div>
+          )}
           <div className={styles.inputRow}>
+            <input
+              id="chat-file-upload"
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => uploadFiles(event.target.files)}
+              accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css,.pdf,.docx,.xlsx"
+            />
             <textarea
               className={styles.textInput}
               rows={2}
@@ -598,7 +689,7 @@ export default function ChatPage() {
             </button>
           </div>
           <div className={styles.optionsRow}>
-            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('file')}>File</button>
+            <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('file')}>{isUploadingFile ? 'Uploading...' : 'File'}</button>
             <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('url')}>URL</button>
             <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('task')}>Task</button>
             <button type="button" className={styles.optionBtn} onClick={() => applyPromptTemplate('goal')}>Goal</button>

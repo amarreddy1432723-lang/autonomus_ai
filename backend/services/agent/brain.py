@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     user_id: str
     intent: str
     memories: str
+    file_context: str
 
 def get_llm() -> BaseChatModel:
     """Backward-compatible shim — delegates to llm_router."""
@@ -222,6 +223,8 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         )
         
     system_prompt += (
+        "UPLOADED FILE CONTEXT:\n"
+        f"{state.get('file_context') or 'No uploaded file context selected.'}\n\n"
         "RELEVANT MEMORY CONTEXT FROM DATABASE:\n"
         f"{state.get('memories') or 'No relevant memories found.'}\n\n"
         "Guidelines:\n"
@@ -276,6 +279,8 @@ def tool_node(state: AgentState) -> dict:
         
         # Inject user_id if tool is memory_read
         if tool_name == "memory_read":
+            tool_args["user_id"] = state.get("user_id")
+        if tool_name == "read_file":
             tool_args["user_id"] = state.get("user_id")
             
         executor = tool_map.get(tool_name)

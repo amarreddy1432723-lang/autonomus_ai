@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     AUTONOMUS_LLM_BASE_URL: Optional[str] = os.getenv("AUTONOMUS_LLM_BASE_URL")
     AUTONOMUS_LLM_API_KEY: str = os.getenv("AUTONOMUS_LLM_API_KEY", os.getenv("LLM_API_KEY", "not-needed"))
 
+    # ── Files / object storage ───────────────────────────────
+    FILE_STORAGE_PROVIDER: str = os.getenv("FILE_STORAGE_PROVIDER", "local")  # local | s3
+    FILE_STORAGE_LOCAL_DIR: str = os.getenv("FILE_STORAGE_LOCAL_DIR", "uploads")
+    S3_ENDPOINT_URL: Optional[str] = os.getenv("S3_ENDPOINT_URL")
+    S3_BUCKET: Optional[str] = os.getenv("S3_BUCKET")
+    S3_ACCESS_KEY_ID: Optional[str] = os.getenv("S3_ACCESS_KEY_ID")
+    S3_SECRET_ACCESS_KEY: Optional[str] = os.getenv("S3_SECRET_ACCESS_KEY")
+    S3_REGION: str = os.getenv("S3_REGION", "auto")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

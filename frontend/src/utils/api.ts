@@ -26,6 +26,9 @@ export function getServiceUrl(path: string): string {
   }
   if (
     path.startsWith('/api/v1/agents') ||
+    path.startsWith('/api/v1/files') ||
+    path.startsWith('/api/v1/usage') ||
+    path.startsWith('/api/v1/code') ||
     path.startsWith('/api/v1/memories') ||
     path.startsWith('/api/v1/news') ||
     path.startsWith('/api/v1/sessions')
@@ -62,9 +65,32 @@ export function createApiHeaders(options: RequestInit = {}): Headers {
   return headers;
 }
 
+async function getClerkToken(): Promise<string | null> {
+  if (typeof window === 'undefined') return null;
+  const clerk = (window as any).Clerk;
+  try {
+    if (clerk?.session?.getToken) {
+      return await clerk.session.getToken();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function createApiHeadersAsync(options: RequestInit = {}): Promise<Headers> {
+  const headers = createApiHeaders(options);
+  const clerkToken = await getClerkToken();
+  if (clerkToken) {
+    headers.set('Authorization', `Bearer ${clerkToken}`);
+    headers.delete('x-user-id');
+  }
+  return headers;
+}
+
 export async function apiRequest(path: string, options: RequestInit = {}): Promise<any> {
   const url = getServiceUrl(path);
-  const headers = createApiHeaders(options);
+  const headers = await createApiHeadersAsync(options);
 
   const response = await fetch(url, { ...options, headers });
   

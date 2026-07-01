@@ -10,7 +10,7 @@ from services.shared.models import Goal, Task, Approval, Schedule, Project, Memo
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
 from services.shared.api import clamp_pagination, install_api_foundation
-from services.shared.security import resolve_user_id_from_auth
+from services.shared.security import resolve_user_id_from_auth_or_clerk
 from services.agent.planner import (
     build_structured_plan,
     calculate_plan_health,
@@ -44,9 +44,10 @@ register_error_handlers(app)
 
 def get_current_user_id(
     authorization: str | None = Header(None), 
-    x_user_id: str | None = Header(None, alias="x-user-id")
+    x_user_id: str | None = Header(None, alias="x-user-id"),
+    db: Session = Depends(get_db),
 ) -> UUID:
-    return resolve_user_id_from_auth(authorization, x_user_id, settings.JWT_SECRET_KEY, settings.JWT_ALGORITHM)
+    return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, settings.JWT_SECRET_KEY, settings.JWT_ALGORITHM)
 
 @app.post("/api/v1/goals", response_model=GoalResponse, status_code=201)
 def create_goal(goal_in: GoalCreate, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

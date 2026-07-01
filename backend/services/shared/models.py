@@ -37,6 +37,9 @@ class User(Base):
     sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
     subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
     file_references = relationship("FileReference", back_populates="user", cascade="all, delete-orphan")
+    file_chunks = relationship("FileChunk", back_populates="user", cascade="all, delete-orphan")
+    usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
+    code_sessions = relationship("CodeSession", back_populates="user", cascade="all, delete-orphan")
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
@@ -96,6 +99,57 @@ class FileReference(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="file_references")
+
+class FileChunk(Base):
+    __tablename__ = "file_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_id = Column(UUID(as_uuid=True), ForeignKey("file_references.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    token_count = Column(Integer, default=0)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="file_chunks")
+    file = relationship("FileReference")
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    route = Column(String(255), nullable=False)
+    model = Column(String(255), nullable=True)
+    provider = Column(String(100), nullable=True)
+    session_id = Column(String(255), nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    estimated_cost_usd = Column(Numeric(12, 6), default=0.0)
+    file_ids = Column(JSON, default=list)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="usage_events")
+
+class CodeSession(Base):
+    __tablename__ = "code_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(255), nullable=False)
+    file_ids = Column(JSON, default=list)
+    status = Column(String(50), default="active")
+    plan_text = Column(Text, nullable=True)
+    patch_text = Column(Text, nullable=True)
+    applied_at = Column(DateTime(timezone=True), nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="code_sessions")
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -471,6 +525,12 @@ Index("idx_subscriptions_next_billing", Subscription.next_billing_at)
 Index("idx_file_references_user_owner", FileReference.user_id, FileReference.owner_type, FileReference.owner_id)
 Index("idx_file_references_user_status", FileReference.user_id, FileReference.status)
 Index("idx_file_references_checksum", FileReference.checksum_sha256)
+Index("idx_file_chunks_file_index", FileChunk.file_id, FileChunk.chunk_index)
+Index("idx_file_chunks_user_file", FileChunk.user_id, FileChunk.file_id)
+UsageEvent.__table__.append_constraint(CheckConstraint("total_tokens >= 0", name="ck_usage_total_tokens_non_negative"))
+Index("idx_usage_user_created", UsageEvent.user_id, UsageEvent.created_at)
+Index("idx_usage_user_session", UsageEvent.user_id, UsageEvent.session_id)
+Index("idx_code_sessions_user_status", CodeSession.user_id, CodeSession.status)
 
 Goal.__table__.append_constraint(CheckConstraint("priority BETWEEN 1 AND 5", name="ck_goals_priority_range"))
 Goal.__table__.append_constraint(CheckConstraint("progress_pct BETWEEN 0.0 AND 1.0", name="ck_goals_progress_pct_range"))

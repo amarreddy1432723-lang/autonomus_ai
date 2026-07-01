@@ -269,23 +269,21 @@ def live_news(query: str) -> str:
         return f"Live news lookup failed: {str(e)}"
 
 @tool
-def read_file(file_path: str) -> str:
-    """Read contents of an uploaded file or document in the local filesystem sandbox."""
+def read_file(file_id: str, user_id: str) -> str:
+    """Read contents of an uploaded file by file_id. Never reads arbitrary filesystem paths."""
     try:
-        normalized = os.path.normpath(file_path)
-        if normalized.startswith("..") or os.path.isabs(normalized):
-            # In a production environment, enforce strict directory prefix checking
-            # For local dev, allow reading files within a safe subfolder
-            pass
-            
-        if not os.path.exists(file_path):
-            return f"Error: File '{file_path}' does not exist."
-            
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read(10000) # Limit read to 10k chars to avoid token blowout
-            if len(content) >= 10000:
-                content += "\n... [TRUNCATED due to length] ..."
+        from uuid import UUID
+        from services.shared.database import SessionLocal
+        from .file_service import get_file_text
+
+        db = SessionLocal()
+        try:
+            content = get_file_text(db, UUID(user_id), UUID(file_id))
+            if len(content) > 10000:
+                content = content[:10000] + "\n... [TRUNCATED due to length] ..."
             return content
+        finally:
+            db.close()
     except Exception as e:
         return f"File read failed: {str(e)}"
 
