@@ -7,10 +7,34 @@ import {
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus
+  LogIn, UserPlus, LogOut
 } from 'lucide-react';
+import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
 import styles from './AppShell.module.css';
+
+function ClerkUserSection() {
+  const { isSignedIn } = useAuth();
+  if (isSignedIn) {
+    return (
+      <div className={styles.avatar}>
+        <UserButton />
+      </div>
+    );
+  }
+  return (
+    <>
+      <Link href="/sign-in" className={styles.authLink}>
+        <LogIn size={15} />
+        <span>Login</span>
+      </Link>
+      <Link href="/sign-up" className={`${styles.authLink} ${styles.authLinkPrimary}`}>
+        <UserPlus size={15} />
+        <span>Sign up</span>
+      </Link>
+    </>
+  );
+}
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -24,6 +48,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isDemoSignedIn, setIsDemoSignedIn] = useState(false);
+
+  useEffect(() => {
+    const hasDemoCookie = typeof document !== 'undefined' && document.cookie.includes('my-ai.mock_token');
+    setIsDemoSignedIn(hasDemoCookie);
+  }, []);
+
+  const handleDemoSignOut = () => {
+    document.cookie = 'my-ai.mock_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    setIsDemoSignedIn(false);
+    router.push('/sign-in');
+  };
 
   const navItems = useMemo(() => [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
@@ -120,14 +156,33 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         
         <div className={styles.topbarActions}>
-          <Link href="/sign-in" className={styles.authLink}>
-            <LogIn size={15} />
-            <span>Login</span>
-          </Link>
-          <Link href="/sign-up" className={`${styles.authLink} ${styles.authLinkPrimary}`}>
-            <UserPlus size={15} />
-            <span>Sign up</span>
-          </Link>
+          {typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? (
+            <ClerkUserSection />
+          ) : (
+            <>
+              {isDemoSignedIn ? (
+                <button 
+                  onClick={handleDemoSignOut}
+                  className={styles.authLink}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+                >
+                  <LogOut size={15} />
+                  <span>Sign out</span>
+                </button>
+              ) : (
+                <>
+                  <Link href="/sign-in" className={styles.authLink}>
+                    <LogIn size={15} />
+                    <span>Login</span>
+                  </Link>
+                  <Link href="/sign-up" className={`${styles.authLink} ${styles.authLinkPrimary}`}>
+                    <UserPlus size={15} />
+                    <span>Sign up</span>
+                  </Link>
+                </>
+              )}
+            </>
+          )}
 
           <div className={styles.agentIndicator}>
             <span className={styles.pulseDot} />
@@ -149,7 +204,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Activity size={18} />
           </button>
           
-          <div className={styles.avatar}>AM</div>
+          {!(typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && isDemoSignedIn && (
+            <div className={styles.avatar} title="Demo User">DU</div>
+          )}
         </div>
       </header>
 
