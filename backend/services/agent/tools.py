@@ -1,6 +1,7 @@
 import os
 import httpx
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 from langchain_core.tools import tool
@@ -33,6 +34,14 @@ def _normalize_job_item(item: dict, source: str) -> dict:
         apply_url = item.get("url")
         published_at = item.get("created_at")
         tags = item.get("tags") or []
+
+    if isinstance(published_at, (int, float)):
+        try:
+            published_at = datetime.fromtimestamp(published_at, tz=timezone.utc).isoformat()
+        except Exception:
+            published_at = None
+    elif published_at is not None:
+        published_at = str(published_at)
 
     return {
         "title": _clean_text(title),
