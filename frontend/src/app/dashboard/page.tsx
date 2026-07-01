@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '../../utils/api';
 import AppShell from '../../components/AppShell';
 import styles from './Dashboard.module.css';
-import { Newspaper, Play, RefreshCw, TrendingUp, ShieldCheck, Cpu } from 'lucide-react';
+import { BriefcaseBusiness, ExternalLink, Newspaper, Play, RefreshCw, TrendingUp, ShieldCheck, Cpu } from 'lucide-react';
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
@@ -52,6 +52,31 @@ export default function DashboardPage() {
               published_at: new Date().toISOString(),
               link: '',
               snippet: error instanceof Error ? error.message : 'Retry once network access is available.'
+            }
+          ]
+        };
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: liveJobs, refetch: refetchJobs, isFetching: jobsFetching } = useQuery({
+    queryKey: ['live-jobs', 'ai-engineer-remote'],
+    queryFn: async () => {
+      try {
+        return await apiRequest('/api/v1/jobs/live?query=AI%20engineer%20remote&limit=5');
+      } catch (error) {
+        return {
+          query: 'AI engineer remote',
+          items: [
+            {
+              title: 'Job notifications need attention',
+              company: 'Agent service',
+              location: 'Remote',
+              apply_url: '',
+              source: 'Job service',
+              published_at: new Date().toISOString(),
+              tags: [error instanceof Error ? error.message : 'Retry once the job feed is available.']
             }
           ]
         };
@@ -214,32 +239,74 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className={styles.card}>
-            <div className={styles.cardHeader}>
-              <div className={styles.cardTitle}>
-                <Newspaper size={16} color="var(--color-info)" />
-                <span>Live AI News</span>
+          <div className={styles.liveGrid}>
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <div className={styles.cardTitle}>
+                  <Newspaper size={16} color="var(--color-info)" />
+                  <span>Live AI News</span>
+                </div>
+                <button className={styles.iconButton} onClick={() => refetchNews()} type="button" title="Refresh live news">
+                  <RefreshCw size={14} className={newsFetching ? styles.spin : ''} />
+                </button>
               </div>
-              <button className={styles.iconButton} onClick={() => refetchNews()} type="button" title="Refresh live news">
-                <RefreshCw size={14} className={newsFetching ? styles.spin : ''} />
-              </button>
+
+              <div className={styles.newsList}>
+                {liveNews?.items?.map((item: any) => (
+                  <a
+                    className={styles.newsItem}
+                    href={item.link || undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    key={`${item.title}-${item.source}`}
+                  >
+                    <span className={styles.newsTitle}>{item.title}</span>
+                    <span className={styles.newsMeta}>
+                      {item.source} · {item.published_at ? new Date(item.published_at).toLocaleString() : 'recent'}
+                    </span>
+                  </a>
+                ))}
+              </div>
             </div>
 
-            <div className={styles.newsList}>
-              {liveNews?.items?.map((item: any) => (
-                <a
-                  className={styles.newsItem}
-                  href={item.link || undefined}
-                  target="_blank"
-                  rel="noreferrer"
-                  key={`${item.title}-${item.source}`}
-                >
-                  <span className={styles.newsTitle}>{item.title}</span>
-                  <span className={styles.newsMeta}>
-                    {item.source} · {item.published_at ? new Date(item.published_at).toLocaleString() : 'recent'}
-                  </span>
-                </a>
-              ))}
+            <div className={styles.card}>
+              <div className={styles.cardHeader}>
+                <div className={styles.cardTitle}>
+                  <BriefcaseBusiness size={16} color="var(--color-success)" />
+                  <span>New Job Alerts</span>
+                </div>
+                <button className={styles.iconButton} onClick={() => refetchJobs()} type="button" title="Refresh job alerts">
+                  <RefreshCw size={14} className={jobsFetching ? styles.spin : ''} />
+                </button>
+              </div>
+
+              <div className={styles.newsList}>
+                {liveJobs?.items?.map((job: any) => (
+                  <div className={styles.jobItem} key={`${job.title}-${job.company}-${job.apply_url}`}>
+                    <div className={styles.jobBody}>
+                      <span className={styles.newsTitle}>{job.title}</span>
+                      <span className={styles.newsMeta}>
+                        {job.company} · {job.location} · {job.published_at ? new Date(job.published_at).toLocaleDateString() : 'recent'}
+                      </span>
+                      {job.tags?.length > 0 && (
+                        <div className={styles.tagRow}>
+                          {job.tags.slice(0, 3).map((tag: string) => (
+                            <span className={styles.jobTag} key={tag}>{tag}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {job.apply_url ? (
+                      <a className={styles.applyLink} href={job.apply_url} target="_blank" rel="noreferrer">
+                        <ExternalLink size={12} />
+                        Apply
+                      </a>
+                    ) : (
+                      <span className={styles.disabledApply}>Unavailable</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

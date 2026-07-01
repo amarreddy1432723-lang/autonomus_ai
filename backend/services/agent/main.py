@@ -439,6 +439,19 @@ class NewsResponse(BaseModel):
     query: str
     items: List[NewsItem]
 
+class JobItem(BaseModel):
+    title: str
+    company: str
+    location: str
+    apply_url: str
+    source: str
+    published_at: str | None = None
+    tags: List[str] = Field(default_factory=list)
+
+class JobsResponse(BaseModel):
+    query: str
+    items: List[JobItem]
+
 @app.post("/api/v1/memories/compress")
 def trigger_memory_compression(request: CompressRequest):
     from uuid import UUID
@@ -510,6 +523,20 @@ def get_live_news(
         return {"query": query, "items": items}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Live news lookup failed: {e}")
+
+@app.get("/api/v1/jobs/live", response_model=JobsResponse)
+def get_live_jobs(
+    query: str = "AI engineer remote",
+    limit: int = 8,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .tools import fetch_live_jobs
+
+    try:
+        items = fetch_live_jobs(query, limit=limit)
+        return {"query": query, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Live job lookup failed: {e}")
 
 @app.get("/api/v1/agents/autonomy/status")
 def autonomy_status(

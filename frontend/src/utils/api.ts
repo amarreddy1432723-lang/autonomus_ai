@@ -31,6 +31,7 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/code') ||
     path.startsWith('/api/v1/memories') ||
     path.startsWith('/api/v1/news') ||
+    path.startsWith('/api/v1/jobs') ||
     path.startsWith('/api/v1/sessions')
   ) {
     return AGENT_URL + path;

@@ -18,6 +18,46 @@ def _normalize_news_item(item: dict) -> dict:
         "published_at": item.get("published_at") or item.get("date") or item.get("publishedDate"),
     }
 
+def _normalize_job_item(item: dict, source: str) -> dict:
+    if source == "remotive":
+        title = item.get("title")
+        company = item.get("company_name")
+        location = item.get("candidate_required_location") or item.get("job_type") or "Remote"
+        apply_url = item.get("url")
+        published_at = item.get("publication_date")
+        tags = item.get("tags") or []
+    else:
+        title = item.get("title")
+        company = item.get("company_name")
+        location = item.get("location") or "Remote"
+        apply_url = item.get("url")
+        published_at = item.get("created_at")
+        tags = item.get("tags") or []
+
+    return {
+        "title": _clean_text(title),
+        "company": _clean_text(company) or "Hiring company",
+        "location": _clean_text(location) or "Remote",
+        "apply_url": apply_url or "",
+        "source": "Remotive" if source == "remotive" else "Arbeitnow",
+        "published_at": published_at,
+        "tags": [_clean_text(str(tag)) for tag in tags[:5] if _clean_text(str(tag))],
+    }
+
+def _job_matches_query(item: dict, query: str) -> bool:
+    ignored_terms = {"remote", "job", "jobs", "role", "roles", "hiring"}
+    terms = [term for term in query.lower().replace("/", " ").split() if len(term) > 2 and term not in ignored_terms]
+    if not terms:
+        return True
+    searchable = " ".join([
+        str(item.get("title") or ""),
+        str(item.get("company_name") or ""),
+        str(item.get("candidate_required_location") or ""),
+        str(item.get("location") or ""),
+        " ".join(item.get("tags") or []),
+    ]).lower()
+    return any(term in searchable for term in terms)
+
 def _is_image_query(query: str) -> bool:
     query_lower = query.lower()
     return any(word in query_lower for word in ["image", "images", "picture", "photo", "diagram", "visual", "illustration", "gif"])
@@ -214,6 +254,59 @@ def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
         })
 
     return items
+
+def fetch_live_jobs(query: str = "AI engineer", limit: int = 8) -> list[dict]:
+    """
+    Fetch recent job posts from public job boards.
+    Returns application links that the frontend can open directly.
+    """
+    query = _clean_text(query) or "AI engineer"
+    limit = max(1, min(limit, 20))
+    jobs: list[dict] = []
+
+    try:
+        response = httpx.get(
+            "https://remotive.com/api/remote-jobs",
+            params={"search": query, "limit": limit},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        for item in response.json().get("jobs", [])[:limit]:
+            if not _job_matches_query(item, query):
+                continue
+            normalized = _normalize_job_item(item, "remotive")
+            if normalized["title"] and normalized["apply_url"]:
+                jobs.append(normalized)
+    except Exception:
+        pass
+
+    if len(jobs) < limit:
+        try:
+            response = httpx.get("https://www.arbeitnow.com/api/job-board-api", timeout=10.0)
+            response.raise_for_status()
+            for item in response.json().get("data", []):
+                if not _job_matches_query(item, query):
+                    continue
+                normalized = _normalize_job_item(item, "arbeitnow")
+                if normalized["title"] and normalized["apply_url"]:
+                    jobs.append(normalized)
+                if len(jobs) >= limit:
+                    break
+        except Exception:
+            pass
+
+    seen: set[str] = set()
+    unique_jobs: list[dict] = []
+    for job in jobs:
+        key = job["apply_url"] or f"{job['company']}:{job['title']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_jobs.append(job)
+        if len(unique_jobs) >= limit:
+            break
+
+    return unique_jobs
 
 @tool
 def web_search(query: str) -> str:

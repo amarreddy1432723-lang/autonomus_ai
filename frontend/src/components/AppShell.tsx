@@ -6,7 +6,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { 
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
-  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2
+  Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
+  LogIn, UserPlus
 } from 'lucide-react';
 import { useAppStore } from '../store';
 import styles from './AppShell.module.css';
@@ -119,6 +120,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         
         <div className={styles.topbarActions}>
+          <Link href="/sign-in" className={styles.authLink}>
+            <LogIn size={15} />
+            <span>Login</span>
+          </Link>
+          <Link href="/sign-up" className={`${styles.authLink} ${styles.authLinkPrimary}`}>
+            <UserPlus size={15} />
+            <span>Sign up</span>
+          </Link>
+
           <div className={styles.agentIndicator}>
             <span className={styles.pulseDot} />
             <span>AI Online</span>
