@@ -78,6 +78,14 @@ export default function ChatPage() {
     localStorage.setItem('my_ai_selected_model_id', selectedModelId);
   }, [selectedModelId]);
 
+  useEffect(() => {
+    const handoffPrompt = sessionStorage.getItem('interview_to_chat_prompt');
+    if (handoffPrompt) {
+      setInput(handoffPrompt);
+      sessionStorage.removeItem('interview_to_chat_prompt');
+    }
+  }, []);
+
   const loadUsageSummary = async () => {
     try {
       const data = await apiRequest('/api/v1/usage/summary');

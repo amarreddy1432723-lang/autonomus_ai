@@ -4,6 +4,19 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: process.cwd(),
   },
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(self), geolocation=()',
+          },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     const authUrl = process.env.NEXT_PUBLIC_AUTH_URL || 'http://localhost:8001';
     const goalsUrl = process.env.NEXT_PUBLIC_GOALS_URL || 'http://localhost:8002';
