@@ -1,7 +1,7 @@
 """file usage code workspace
 
 Revision ID: f7a1c2d9e8b3
-Revises: 5d3e4fdd4bfe
+Revises: 3c9a0b8f2d6e
 Create Date: 2026-07-01 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "f7a1c2d9e8b3"
-down_revision = "5d3e4fdd4bfe"
+down_revision = "3c9a0b8f2d6e"
 branch_labels = None
 depends_on = None
 
