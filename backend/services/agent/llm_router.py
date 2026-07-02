@@ -71,6 +71,7 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         else:
             provider = "mock"
 
+    primary_llm = None
     try:
         # ── Autonomus AI (own OpenAI-compatible model endpoint) ──
         if provider in {"autonomus", "autonomous"}:
@@ -79,40 +80,42 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
             if active_ft_model:
                 from langchain_openai import ChatOpenAI
                 openai_key = getattr(settings, "OPENAI_API_KEY", "")
-                return ChatOpenAI(
+                primary_llm = ChatOpenAI(
                     model=active_ft_model,
                     openai_api_key=openai_key,
                     temperature=0.2,
                 )
-
-            from langchain_openai import ChatOpenAI
-            llm_base_url = (
-                getattr(settings, "AUTONOMUS_LLM_BASE_URL", None)
-                or getattr(settings, "LLM_BASE_URL", None)
-            )
-            if not llm_base_url:
-                fallback_provider = getattr(settings, "FALLBACK_LLM_PROVIDER", None)
-                fallback_model = getattr(settings, "FALLBACK_LLM_MODEL", None)
-                if fallback_provider:
-                    return get_chat_llm(role=role, provider=fallback_provider, model=fallback_model)
-                if getattr(settings, "GROQ_API_KEY", None):
-                    return get_chat_llm(role=role, provider="groq", model="llama-3.3-70b-versatile")
-                if not is_mock:
-                    return get_chat_llm(role=role, provider="openai", model="gpt-4o-mini")
-                from .mock_llm import MockChatOpenAI
-                return MockChatOpenAI()
-            llm_api_key = getattr(settings, "AUTONOMUS_LLM_API_KEY", None) or getattr(settings, "LLM_API_KEY", "not-needed")
-            return ChatOpenAI(
-                model=model or "autonomus-ai-v1",
-                base_url=llm_base_url,
-                api_key=llm_api_key,
-                temperature=0.2,
-            )
+            else:
+                from langchain_openai import ChatOpenAI
+                llm_base_url = (
+                    getattr(settings, "AUTONOMUS_LLM_BASE_URL", None)
+                    or getattr(settings, "LLM_BASE_URL", None)
+                )
+                if not llm_base_url:
+                    fallback_provider = getattr(settings, "FALLBACK_LLM_PROVIDER", None)
+                    fallback_model = getattr(settings, "FALLBACK_LLM_MODEL", None)
+                    if fallback_provider:
+                        primary_llm = get_chat_llm(role=role, provider=fallback_provider, model=fallback_model)
+                    elif getattr(settings, "GROQ_API_KEY", None):
+                        primary_llm = get_chat_llm(role=role, provider="groq", model="llama-3.3-70b-versatile")
+                    elif not is_mock:
+                        primary_llm = get_chat_llm(role=role, provider="openai", model="gpt-4o-mini")
+                    else:
+                        from .mock_llm import MockChatOpenAI
+                        primary_llm = MockChatOpenAI()
+                else:
+                    llm_api_key = getattr(settings, "AUTONOMUS_LLM_API_KEY", None) or getattr(settings, "LLM_API_KEY", "not-needed")
+                    primary_llm = ChatOpenAI(
+                        model=model or "autonomus-ai-v1",
+                        base_url=llm_base_url,
+                        api_key=llm_api_key,
+                        temperature=0.2,
+                    )
 
         # ── OpenAI ────────────────────────────────────────────────
-        if provider == "openai":
+        elif provider == "openai":
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
+            primary_llm = ChatOpenAI(
                 model=model or "gpt-4o-mini",
                 temperature=0.2,
                 api_key=settings.OPENAI_API_KEY,
@@ -122,7 +125,7 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         elif provider == "anthropic":
             from langchain_anthropic import ChatAnthropic
             anthropic_key = getattr(settings, "ANTHROPIC_API_KEY", "")
-            return ChatAnthropic(
+            primary_llm = ChatAnthropic(
                 model=model or "claude-3-5-haiku-20241022",
                 anthropic_api_key=anthropic_key,
                 temperature=0.2,
@@ -132,7 +135,7 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         elif provider == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
             google_key = getattr(settings, "GOOGLE_API_KEY", "")
-            return ChatGoogleGenerativeAI(
+            primary_llm = ChatGoogleGenerativeAI(
                 model=model or "gemini-1.5-flash",
                 google_api_key=google_key,
                 temperature=0.2,
@@ -142,8 +145,8 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         elif provider == "groq":
             from langchain_groq import ChatGroq
             groq_key = getattr(settings, "GROQ_API_KEY", "")
-            return ChatGroq(
-                model=model or "llama-3.1-70b-versatile",
+            primary_llm = ChatGroq(
+                model=model or "llama-3.3-70b-versatile",
                 groq_api_key=groq_key,
                 temperature=0.2,
             )
@@ -152,7 +155,7 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         elif provider == "ollama":
             from langchain_ollama import ChatOllama
             base_url = getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434")
-            return ChatOllama(
+            primary_llm = ChatOllama(
                 model=model or "llama3.1:8b",
                 base_url=base_url,
                 temperature=0.2,
@@ -163,18 +166,63 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
             from langchain_openai import ChatOpenAI
             llm_base_url = getattr(settings, "LLM_BASE_URL", "http://localhost:8000/v1")
             llm_api_key = getattr(settings, "LLM_API_KEY", "not-needed")
-            return ChatOpenAI(
+            primary_llm = ChatOpenAI(
                 model=model or "autonomus-ai-v1",
                 base_url=llm_base_url,
                 api_key=llm_api_key,
                 temperature=0.2,
             )
-    except ImportError as exc:
-        print(f"[LLM Router] Provider '{provider}' is not installed ({exc}). Falling back to mock LLM.")
+    except Exception as exc:
+        print(f"[LLM Router] Provider '{provider}' initialization failed ({exc}). Falling back to mock LLM.")
 
-    # ── Mock (local dev, no API keys, or missing optional provider package) ──
-    from .mock_llm import MockChatOpenAI
-    return MockChatOpenAI()
+    if primary_llm is None:
+        from .mock_llm import MockChatOpenAI
+        primary_llm = MockChatOpenAI()
+
+    # ── Wrap with Rate-Limit Fallbacks to make the app unlimited ──
+    fallbacks = []
+
+    # 1. Google Gemini (very generous free tier quotas)
+    if provider != "google" and getattr(settings, "GOOGLE_API_KEY", None):
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            fallbacks.append(ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                google_api_key=settings.GOOGLE_API_KEY,
+                temperature=0.2,
+            ))
+        except Exception:
+            pass
+
+    # 2. OpenAI gpt-4o-mini
+    if provider != "openai" and getattr(settings, "OPENAI_API_KEY", None) and "mock-key" not in settings.OPENAI_API_KEY:
+        try:
+            from langchain_openai import ChatOpenAI
+            fallbacks.append(ChatOpenAI(
+                model="gpt-4o-mini",
+                api_key=settings.OPENAI_API_KEY,
+                temperature=0.2,
+            ))
+        except Exception:
+            pass
+
+    # 3. Groq (8b instant as a quick fallback if needed)
+    if provider != "groq" and getattr(settings, "GROQ_API_KEY", None):
+        try:
+            from langchain_groq import ChatGroq
+            fallbacks.append(ChatGroq(
+                model="llama-3.1-8b-instant",
+                groq_api_key=settings.GROQ_API_KEY,
+                temperature=0.2,
+            ))
+        except Exception:
+            pass
+
+    if fallbacks:
+        # Wrap primary LLM with fallbacks dynamically
+        return primary_llm.with_fallbacks(fallbacks)
+
+    return primary_llm
 
 
 # ─────────────────────────────────────────────────────────────
