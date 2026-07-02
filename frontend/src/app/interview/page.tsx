@@ -424,9 +424,16 @@ export default function InterviewPage() {
       body: JSON.stringify(body),
       signal,
     });
+    if (response.redirected || response.url.includes('/sign-in')) {
+      throw new Error('Please sign in again before generating interview answers.');
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       throw new Error(detail || 'Interview answer request failed');
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      throw new Error('The agent API returned a web page instead of an answer stream. Please sign in again or check the agent service URL.');
     }
     if (!response.body) throw new Error('Interview answer stream was empty');
 
@@ -462,6 +469,10 @@ export default function InterviewPage() {
           }
         }
       }
+    }
+
+    if (!accumulated.trim()) {
+      throw new Error('The agent returned an empty answer. Try a different model or check the agent service logs.');
     }
 
     return accumulated;

@@ -320,8 +320,16 @@ export default function ChatPage() {
       body: JSON.stringify(body)
     });
 
+    if (response.redirected || response.url.includes('/sign-in')) {
+      throw new Error('Please sign in again before generating an answer.');
+    }
     if (!response.ok) {
-      throw new Error('Chat request failed');
+      const detail = await response.text().catch(() => '');
+      throw new Error(detail || 'Chat request failed');
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      throw new Error('The agent API returned a web page instead of an answer stream. Please sign in again or check the agent service URL.');
     }
     if (!response.body) {
       throw new Error('Chat response did not include a stream');
@@ -386,6 +394,9 @@ export default function ChatPage() {
 
     if (streamError) {
       throw new Error(streamError);
+    }
+    if (!accumulatedContent.trim()) {
+      throw new Error('The agent returned an empty answer. Try a different model or check the agent service logs.');
     }
 
     return { content: accumulatedContent, thoughts: accumulatedThoughts, usage };

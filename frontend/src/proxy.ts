@@ -23,8 +23,10 @@ export default function proxy(request: NextRequest, event: any) {
   // Mock authentication fallback for demo mode
   const isProtected = !isPublicRoute(request);
   const mockToken = request.cookies.get('my-ai.mock_token')?.value;
+  const isApiRoute = request.nextUrl.pathname.startsWith('/api/');
+  const hasDemoUserHeader = !!request.headers.get('x-user-id');
 
-  if (isProtected && !mockToken) {
+  if (isProtected && !mockToken && !(isApiRoute && hasDemoUserHeader)) {
     const signInUrl = new URL('/sign-in', request.url);
     return NextResponse.redirect(signInUrl);
   }
