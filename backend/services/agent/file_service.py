@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +19,14 @@ from .config import settings
 SUPPORTED_EXTENSIONS = {
     ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".tsx", ".html", ".css",
     ".pdf", ".docx", ".xlsx",
+}
+
+PROFILE_SECTION_KEYWORDS = {
+    "education": ("education", "academic", "qualification", "degree", "university", "college", "school"),
+    "skills": ("skill", "technology", "tools", "framework", "language", "technical"),
+    "projects": ("project", "portfolio", "built", "developed", "implemented"),
+    "experience": ("experience", "intern", "employment", "work", "role", "responsibility"),
+    "achievements": ("achievement", "award", "certification", "metric", "impact", "rank", "score"),
 }
 
 
@@ -204,6 +213,91 @@ def chunk_text(text: str, max_tokens: int = 700) -> Iterable[tuple[str, int]]:
         yield content, estimate_tokens(content)
 
 
+def _clean_resume_line(line: str) -> str:
+    return re.sub(r"\s+", " ", line.replace("\t", " ")).strip(" -•|")
+
+
+def _unique_limited(lines: list[str], limit: int) -> list[str]:
+    seen: set[str] = set()
+    selected: list[str] = []
+    for raw in lines:
+        line = _clean_resume_line(raw)
+        if len(line) < 3:
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(line[:280])
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def build_candidate_profile(text: str, filename: str, token_count: int) -> dict:
+    lines = [_clean_resume_line(line) for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    compact_lines = [line for line in lines if 3 <= len(line) <= 220]
+
+    profile: dict[str, object] = {
+        "status": "stored",
+        "filename": filename,
+        "source_tokens": token_count,
+        "candidate_summary": " ".join(_unique_limited(compact_lines[:8], 8))[:900],
+        "education": [],
+        "skills": [],
+        "projects": [],
+        "experience": [],
+        "achievements": [],
+        "missing_details": [],
+    }
+
+    for section, keywords in PROFILE_SECTION_KEYWORDS.items():
+        matched: list[str] = []
+        for index, line in enumerate(compact_lines):
+            lowered = line.lower()
+            if any(keyword in lowered for keyword in keywords):
+                matched.extend(compact_lines[max(0, index - 1): index + 5])
+        profile[section] = _unique_limited(matched, 12 if section in {"projects", "experience"} else 8)
+
+    skills = profile.get("skills") or []
+    projects = profile.get("projects") or []
+    experience = profile.get("experience") or []
+    missing: list[str] = []
+    if not skills:
+        missing.append("Specific technical skills are not clearly listed.")
+    if not projects:
+        missing.append("Project details are not clearly listed.")
+    if not experience:
+        missing.append("Experience or internship details are not clearly listed.")
+    profile["missing_details"] = missing
+    return profile
+
+
+def candidate_profile_to_prompt(profile: dict) -> str:
+    if not profile:
+        return ""
+
+    def section(title: str, value: object) -> str:
+        if isinstance(value, list):
+            lines = [str(item).strip() for item in value if str(item).strip()]
+            return f"{title}:\n" + "\n".join(f"- {line}" for line in lines) if lines else ""
+        text = str(value or "").strip()
+        return f"{title}:\n{text}" if text else ""
+
+    blocks = [
+        f"STORED CANDIDATE PROFILE: {profile.get('filename', 'uploaded resume')}",
+        section("Candidate summary", profile.get("candidate_summary")),
+        section("Education", profile.get("education")),
+        section("Skills", profile.get("skills")),
+        section("Projects", profile.get("projects")),
+        section("Experience", profile.get("experience")),
+        section("Achievements / metrics", profile.get("achievements")),
+        section("Missing details to avoid inventing", profile.get("missing_details")),
+    ]
+    return "\n\n".join(block for block in blocks if block)
+
+
 def extract_file_to_chunks(db: Session, user_id: UUID, file_id: UUID) -> dict:
     record = db.query(FileReference).filter(
         FileReference.id == file_id,
@@ -226,9 +320,22 @@ def extract_file_to_chunks(db: Session, user_id: UUID, file_id: UUID) -> dict:
             metadata_json={"filename": record.filename},
         ))
     db.add_all(chunks)
-    record.metadata_json = {**(record.metadata_json or {}), "extracted": True, "chunk_count": len(chunks)}
+    total_tokens = sum(c.token_count or 0 for c in chunks)
+    profile = build_candidate_profile(text, record.filename, total_tokens)
+    record.metadata_json = {
+        **(record.metadata_json or {}),
+        "extracted": True,
+        "chunk_count": len(chunks),
+        "token_count": total_tokens,
+        "candidate_profile": profile,
+    }
     db.commit()
-    return {"file_id": str(record.id), "chunk_count": len(chunks), "token_count": sum(c.token_count or 0 for c in chunks)}
+    return {
+        "file_id": str(record.id),
+        "chunk_count": len(chunks),
+        "token_count": total_tokens,
+        "candidate_profile_stored": True,
+    }
 
 
 def file_context_for_prompt(db: Session, user_id: UUID, file_ids: list[str], query: str, limit: int = 8) -> str:
@@ -242,6 +349,26 @@ def file_context_for_prompt(db: Session, user_id: UUID, file_ids: list[str], que
             continue
     if not parsed_ids:
         return ""
+
+    records = db.query(FileReference).filter(
+        FileReference.user_id == user_id,
+        FileReference.id.in_(parsed_ids),
+        FileReference.status == "active",
+    ).all()
+    profile_blocks = []
+    for record in records:
+        profile = (record.metadata_json or {}).get("candidate_profile") or {}
+        prompt_profile = candidate_profile_to_prompt(profile)
+        if prompt_profile:
+            profile_blocks.append(prompt_profile)
+
+    query_lower = (query or "").lower()
+    needs_specific_chunks = any(
+        phrase in query_lower
+        for phrase in ("exact", "specific", "full resume", "line", "section", "all details", "verbatim")
+    )
+    if profile_blocks and not needs_specific_chunks:
+        return "\n\n---\n\n".join(profile_blocks)
 
     query_terms = {term.lower() for term in (query or "").split() if len(term) > 2}
     chunks = db.query(FileChunk, FileReference.filename).join(
@@ -259,6 +386,7 @@ def file_context_for_prompt(db: Session, user_id: UUID, file_ids: list[str], que
     ranked.sort(key=lambda item: (item[0], -(item[1].chunk_index or 0)), reverse=True)
 
     blocks = []
+    blocks.extend(profile_blocks)
     for _, chunk, filename in ranked[:limit]:
         blocks.append(f"FILE: {filename}\nCHUNK: {chunk.chunk_index}\n{chunk.content}")
     return "\n\n---\n\n".join(blocks)

@@ -307,6 +307,7 @@ async def upload_file(
 
     record = await create_file_reference(db, user_id, upload, owner_type=owner_type)
     extraction = extract_file_to_chunks(db, user_id, record.id)
+    db.refresh(record)
     return {
         "id": str(record.id),
         "filename": record.filename,
@@ -314,6 +315,7 @@ async def upload_file(
         "size_bytes": record.size_bytes,
         "status": record.status,
         "storage_provider": record.storage_provider,
+        "metadata": record.metadata_json or {},
         "extraction": extraction,
     }
 
@@ -369,7 +371,10 @@ def extract_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db
     from .usage import record_usage
 
     result = extract_file_to_chunks(db, user_id, file_id)
+    record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
     record_usage(db, user_id, "/api/v1/files/extract", None, "file-extractor", None, "", "", [str(file_id)], result)
+    if record:
+        result["metadata"] = record.metadata_json or {}
     return result
 
 @app.get("/api/v1/usage/summary")

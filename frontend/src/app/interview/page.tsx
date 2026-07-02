@@ -34,7 +34,12 @@ type UploadedResume = {
   filename: string;
   content_type?: string;
   size_bytes?: number;
-  extraction?: { chunk_count?: number; token_count?: number };
+  extraction?: { chunk_count?: number; token_count?: number; candidate_profile_stored?: boolean };
+  metadata?: {
+    candidate_profile?: { status?: string };
+    token_count?: number;
+    chunk_count?: number;
+  };
 };
 
 type CandidateMemory = {
@@ -111,6 +116,7 @@ export default function InterviewPage() {
   const transcript = [liveQuestion, liveAnswer].filter(Boolean).join('\n').trim();
   const canUseSpeech = micState !== 'unsupported';
   const hasResumeContext = Boolean(resume?.id);
+  const hasCandidateProfile = Boolean(resume?.metadata?.candidate_profile || resume?.extraction?.candidate_profile_stored);
 
   useEffect(() => {
     const saved = localStorage.getItem('my_ai_selected_model_id');
@@ -616,7 +622,7 @@ export default function InterviewPage() {
       });
       resumeRef.current = result;
       setResume(result);
-      setStatusText('Resume context active');
+      setStatusText(result?.metadata?.candidate_profile ? 'Candidate profile stored' : 'Resume context active');
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Resume upload failed');
     } finally {
@@ -775,7 +781,11 @@ export default function InterviewPage() {
               <FileText size={16} />
               <span className={styles.resumeName}>{resume.filename}</span>
               <span className={styles.resumeMeta}>
-                {resume.extraction?.token_count ? `${resume.extraction.token_count.toLocaleString()} tokens` : 'Extracted'}
+                {hasCandidateProfile
+                  ? 'Candidate profile stored'
+                  : resume.extraction?.token_count
+                    ? `${resume.extraction.token_count.toLocaleString()} tokens`
+                    : 'Extracted'}
               </span>
               <button className={styles.iconOnlyButton} type="button" onClick={removeResume} aria-label="Remove resume">
                 <X size={14} />
@@ -891,6 +901,10 @@ export default function InterviewPage() {
                   <div className={styles.contextRow}>
                     <span>Resume</span>
                     <strong>{resume?.filename || 'Not uploaded'}</strong>
+                  </div>
+                  <div className={styles.contextRow}>
+                    <span>Stored profile</span>
+                    <strong>{hasCandidateProfile ? 'Ready' : resume ? 'Building from resume' : 'Not ready'}</strong>
                   </div>
                   <div className={styles.contextRow}>
                     <span>Saved memories</span>
