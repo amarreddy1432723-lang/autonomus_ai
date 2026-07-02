@@ -84,6 +84,20 @@ export default function ChatPage() {
       setInput(handoffPrompt);
       sessionStorage.removeItem('interview_to_chat_prompt');
     }
+    const handoffFiles = sessionStorage.getItem('interview_to_chat_files');
+    if (handoffFiles) {
+      try {
+        const parsedFiles = JSON.parse(handoffFiles);
+        if (Array.isArray(parsedFiles)) {
+          setSelectedFiles((current) => {
+            const existingIds = new Set(current.map((file) => file.id));
+            const incoming = parsedFiles.filter((file: UploadedFile) => file?.id && !existingIds.has(file.id));
+            return [...current, ...incoming];
+          });
+        }
+      } catch {}
+      sessionStorage.removeItem('interview_to_chat_files');
+    }
   }, []);
 
   const loadUsageSummary = async () => {

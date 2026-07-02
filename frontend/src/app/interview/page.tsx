@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bot, Clipboard, Copy, Eraser, Mic, MicOff, Pause, Save, Send } from 'lucide-react';
+import { Bot, Clipboard, Copy, Eraser, FileText, Mic, MicOff, Pause, Save, Send, Upload, X } from 'lucide-react';
 import AppShell from '../../components/AppShell';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -23,6 +23,15 @@ type InterviewTurn = {
   question: string;
   answer: string;
   createdAt: string;
+  resumeFilename?: string;
+};
+
+type UploadedResume = {
+  id: string;
+  filename: string;
+  content_type?: string;
+  size_bytes?: number;
+  extraction?: { chunk_count?: number; token_count?: number };
 };
 
 type SpeechRecognitionLike = {
@@ -51,6 +60,11 @@ export default function InterviewPage() {
   const [currentAnswer, setCurrentAnswer] = useState('');
   const [history, setHistory] = useState<InterviewTurn[]>([]);
   const [statusText, setStatusText] = useState('Ready to listen');
+  const [resume, setResume] = useState<UploadedResume | null>(null);
+  const [isUploadingResume, setIsUploadingResume] = useState(false);
+  const [targetRole, setTargetRole] = useState('');
+  const [targetCompany, setTargetCompany] = useState('');
+  const [projectNotes, setProjectNotes] = useState('');
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const shouldListenRef = useRef(false);
@@ -59,10 +73,17 @@ export default function InterviewPage() {
   const lastProcessedRef = useRef('');
   const currentQuestionRef = useRef('');
   const finalTranscriptRef = useRef('');
+  const resumeRef = useRef<UploadedResume | null>(null);
+  const targetRoleRef = useRef('');
+  const targetCompanyRef = useRef('');
+  const projectNotesRef = useRef('');
+  const selectedModelRef = useRef<ModelOption>(MODEL_OPTIONS[0]);
+  const selectedGoalIdRef = useRef('interview');
 
   const selectedModel = MODEL_OPTIONS.find((option) => option.id === selectedModelId) || MODEL_OPTIONS[0];
   const transcript = [finalTranscript, interimTranscript].filter(Boolean).join(' ').trim();
   const canUseSpeech = micState !== 'unsupported';
+  const hasResumeContext = Boolean(resume?.id && (resume.extraction?.chunk_count ?? 0) > 0);
 
   useEffect(() => {
     const saved = localStorage.getItem('my_ai_selected_model_id');
@@ -78,6 +99,30 @@ export default function InterviewPage() {
   useEffect(() => {
     finalTranscriptRef.current = finalTranscript;
   }, [finalTranscript]);
+
+  useEffect(() => {
+    resumeRef.current = resume;
+  }, [resume]);
+
+  useEffect(() => {
+    targetRoleRef.current = targetRole;
+  }, [targetRole]);
+
+  useEffect(() => {
+    targetCompanyRef.current = targetCompany;
+  }, [targetCompany]);
+
+  useEffect(() => {
+    projectNotesRef.current = projectNotes;
+  }, [projectNotes]);
+
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    selectedGoalIdRef.current = selectedGoalId;
+  }, [selectedGoalId]);
 
   useEffect(() => {
     const fetchGoals = async () => {
@@ -172,6 +217,11 @@ export default function InterviewPage() {
   const processQuestion = async (question: string) => {
     const normalized = normalizeQuestion(question);
     if (normalized.length < 18 || normalized === lastProcessedRef.current) return;
+    const activeResume = resumeRef.current;
+    if (!activeResume?.id || (activeResume.extraction?.chunk_count ?? 0) <= 0) {
+      setStatusText('Upload a resume before generating interview answers.');
+      return;
+    }
 
     lastProcessedRef.current = normalized;
     currentQuestionRef.current = normalized;
@@ -183,12 +233,19 @@ export default function InterviewPage() {
     const hiddenPrompt = [
       'You are Autonomus AI in private interview coach mode.',
       'The user is in a live interview and needs a visible, concise answer they can read quickly.',
+      'Answer as the candidate in first person. Ground the answer in the uploaded resume and projects whenever possible.',
+      'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
       'Do not mention that you are listening. Do not ask follow-up questions unless absolutely necessary.',
       'For behavioral questions, use a compact STAR-style answer. For technical questions, use short structured bullets.',
+      'For project questions, choose the most relevant project from the resume and mention stack, impact, tradeoffs, and personal contribution when available.',
       'Keep the answer practical, confident, and under 180 words unless the question requires code or a longer explanation.',
+      targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
+      targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
+      projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
+      activeResume.filename ? `Resume file in context: ${activeResume.filename}` : '',
       '',
       `Interview question or prompt: ${normalized}`,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -204,6 +261,7 @@ export default function InterviewPage() {
             question: normalized,
             answer,
             createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            resumeFilename: activeResume.filename,
           },
           ...items,
         ].slice(0, 8));
@@ -229,11 +287,11 @@ export default function InterviewPage() {
     const body = {
       user_id: '00000000-0000-0000-0000-000000000000',
       messages: [{ role: 'user', content: prompt }],
-      session_id: selectedGoalId,
-      llm_provider: selectedModel.provider,
-      llm_model: selectedModel.model,
+      session_id: selectedGoalIdRef.current,
+      llm_provider: selectedModelRef.current.provider,
+      llm_model: selectedModelRef.current.model,
       persist: false,
-      file_ids: [],
+      file_ids: resumeRef.current?.id ? [resumeRef.current.id] : [],
     };
     const headers = await createApiHeadersAsync({
       headers: { 'Content-Type': 'application/json' },
@@ -281,6 +339,10 @@ export default function InterviewPage() {
   };
 
   const startListening = () => {
+    if (!hasResumeContext) {
+      setStatusText('Upload and extract your resume before starting.');
+      return;
+    }
     if (!recognitionRef.current) {
       setMicState('unsupported');
       return;
@@ -324,9 +386,42 @@ export default function InterviewPage() {
   const submitManualPrompt = () => {
     const value = normalizeQuestion(manualPrompt);
     if (!value) return;
+    if (!hasResumeContext) {
+      setStatusText('Upload and extract your resume before generating answers.');
+      return;
+    }
     setFinalTranscript((current) => `${current} ${value}`.trim());
     setManualPrompt('');
     void processQuestion(value);
+  };
+
+  const uploadResume = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setIsUploadingResume(true);
+    setStatusText('Uploading and extracting resume');
+    try {
+      const formData = new FormData();
+      formData.append('upload', file);
+      const result = await apiRequest('/api/v1/files', {
+        method: 'POST',
+        body: formData,
+      });
+      resumeRef.current = result;
+      setResume(result);
+      setStatusText('Resume context active');
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : 'Resume upload failed');
+    } finally {
+      setIsUploadingResume(false);
+    }
+  };
+
+  const removeResume = () => {
+    pauseListening();
+    resumeRef.current = null;
+    setResume(null);
+    setStatusText('Resume removed. Upload a resume to continue.');
   };
 
   const copyAnswer = async () => {
@@ -344,7 +439,7 @@ export default function InterviewPage() {
         type: 'fact',
         memory_type: 'interview_note',
         importance: 5,
-        tags: ['interview', 'coach'],
+        tags: ['interview', 'coach', resume?.filename || 'resume'],
       }),
     });
     setStatusText('Saved to memory');
@@ -356,8 +451,12 @@ export default function InterviewPage() {
       '',
       `Question: ${currentQuestion || transcript}`,
       currentAnswer ? `Current suggested answer: ${currentAnswer}` : '',
+      resume?.filename ? `Resume context: ${resume.filename}` : '',
     ].filter(Boolean).join('\n');
     sessionStorage.setItem('interview_to_chat_prompt', payload);
+    if (resume) {
+      sessionStorage.setItem('interview_to_chat_files', JSON.stringify([resume]));
+    }
     router.push('/chat');
   };
 
@@ -387,7 +486,7 @@ export default function InterviewPage() {
                 Pause
               </button>
             ) : (
-              <button className={styles.primaryButton} type="button" onClick={startListening} disabled={!canUseSpeech}>
+              <button className={styles.primaryButton} type="button" onClick={startListening} disabled={!canUseSpeech || !hasResumeContext}>
                 <Mic size={15} />
                 Start Listening
               </button>
@@ -418,6 +517,61 @@ export default function InterviewPage() {
             </select>
           </label>
         </div>
+
+        <section className={styles.setupPanel}>
+          <div className={styles.setupHeader}>
+            <div>
+              <h2 className={styles.setupTitle}>Resume context required</h2>
+              <p className={styles.setupSubtitle}>Upload your resume first. Autonomus AI will answer as you, using your resume and projects as the main source.</p>
+            </div>
+            <input
+              id="interview-resume-upload"
+              hidden
+              type="file"
+              accept=".pdf,.docx,.txt,.md"
+              onChange={(event) => uploadResume(event.target.files)}
+            />
+            <button
+              className={styles.primaryButton}
+              type="button"
+              onClick={() => document.getElementById('interview-resume-upload')?.click()}
+              disabled={isUploadingResume}
+            >
+              <Upload size={15} />
+              {isUploadingResume ? 'Uploading...' : 'Upload Resume'}
+            </button>
+          </div>
+
+          {resume ? (
+            <div className={styles.resumeChip}>
+              <FileText size={16} />
+              <span className={styles.resumeName}>{resume.filename}</span>
+              <span className={styles.resumeMeta}>
+                {resume.extraction?.token_count ? `${resume.extraction.token_count.toLocaleString()} tokens` : 'Extracted'}
+              </span>
+              <button className={styles.iconOnlyButton} type="button" onClick={removeResume} aria-label="Remove resume">
+                <X size={14} />
+              </button>
+            </div>
+          ) : (
+            <div className={styles.notice}>Start Listening is locked until a resume is uploaded and extracted.</div>
+          )}
+
+          <div className={styles.profileGrid}>
+            <label className={styles.fieldLabel}>
+              <span>Target role</span>
+              <input className={styles.textField} value={targetRole} onChange={(event) => setTargetRole(event.target.value)} placeholder="Frontend Engineer, Data Analyst..." />
+            </label>
+            <label className={styles.fieldLabel}>
+              <span>Company</span>
+              <input className={styles.textField} value={targetCompany} onChange={(event) => setTargetCompany(event.target.value)} placeholder="Optional company name" />
+            </label>
+            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
+              <span>Extra project notes</span>
+              <textarea className={styles.notesField} value={projectNotes} onChange={(event) => setProjectNotes(event.target.value)} placeholder="Optional: add project details, metrics, tech stack, or stories not present in the resume." />
+            </label>
+          </div>
+        </section>
 
         {micState === 'unsupported' && (
           <div className={styles.notice}>
@@ -456,7 +610,7 @@ export default function InterviewPage() {
                   onChange={(event) => setManualPrompt(event.target.value)}
                   placeholder="Paste or type the interviewer question here..."
                 />
-                <button className={styles.button} type="button" onClick={submitManualPrompt} disabled={!manualPrompt.trim()}>
+                <button className={styles.button} type="button" onClick={submitManualPrompt} disabled={!manualPrompt.trim() || !hasResumeContext}>
                   <Send size={14} />
                   Generate Answer
                 </button>
@@ -467,6 +621,7 @@ export default function InterviewPage() {
           <section className={styles.panel}>
             <div className={styles.panelHeader}>
               <span>Visible Answer Coach</span>
+              {hasResumeContext && <span className={styles.contextActive}>Resume context active</span>}
               <div className={styles.answerActions}>
                 <button className={styles.button} type="button" onClick={copyAnswer} disabled={!currentAnswer.trim()}>
                   <Copy size={14} />
@@ -500,6 +655,7 @@ export default function InterviewPage() {
                       <div className={styles.historyQuestion}>
                         <Bot size={13} /> {turn.question}
                       </div>
+                      {turn.resumeFilename && <div className={styles.historyMeta}>Resume: {turn.resumeFilename}</div>}
                       <div className={styles.historyAnswer}>{turn.answer}</div>
                     </div>
                   ))}
