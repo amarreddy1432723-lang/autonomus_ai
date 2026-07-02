@@ -116,6 +116,17 @@ def intent_node(state: AgentState, config: RunnableConfig) -> dict:
 
 # 2. Context Retrieval Node
 def context_node(state: AgentState, config: RunnableConfig) -> dict:
+    cfg = config.get("configurable", {}) if config else {}
+    session_id = cfg.get("session_id")
+    interview_style = cfg.get("interview_style")
+    
+    intent = state.get("intent")
+    if not intent:
+        if session_id == "interview" or interview_style:
+            intent = "interview"
+        else:
+            intent = "general_chat"
+
     user_id = state.get("user_id")
     last_user_message = ""
     for msg in reversed(state["messages"]):
@@ -135,7 +146,7 @@ def context_node(state: AgentState, config: RunnableConfig) -> dict:
         except Exception as e:
             print(f"Failed parsing UUID in context node: {e}")
             
-    return {"memories": memories_text}
+    return {"memories": memories_text, "intent": intent}
 
 # 3. Reasoning Node
 def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -365,8 +376,24 @@ workflow.add_node("retrieve_context", context_node)
 workflow.add_node("reason", reasoning_node)
 workflow.add_node("tools", tool_node)
 
+# 6. Start Routing logic
+def route_start(state: AgentState, config: RunnableConfig) -> str:
+    cfg = config.get("configurable", {}) if config else {}
+    session_id = cfg.get("session_id")
+    interview_style = cfg.get("interview_style")
+    if session_id == "interview" or interview_style:
+        return "retrieve_context"
+    return "classify_intent"
+
 # Add Edges
-workflow.add_edge(START, "classify_intent")
+workflow.add_conditional_edges(
+    START,
+    route_start,
+    {
+        "classify_intent": "classify_intent",
+        "retrieve_context": "retrieve_context"
+    }
+)
 workflow.add_edge("classify_intent", "retrieve_context")
 workflow.add_edge("retrieve_context", "reason")
 
