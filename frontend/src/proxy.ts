@@ -5,8 +5,7 @@ const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/api/public(.*)',
-  '/api/v1/health(.*)',
-  '/api/v1/jobs/live(.*)'
+  '/api/v1(.*)'
 ]);
 
 const hasClerkKeys = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
