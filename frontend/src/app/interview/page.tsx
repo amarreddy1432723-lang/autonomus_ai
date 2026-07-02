@@ -383,13 +383,16 @@ export default function InterviewPage() {
       hasCandidateAnswer
         ? 'The user has heard an interviewer question and then gave their own spoken answer.'
         : 'The user has captured only the interviewer question. Generate a direct suggested answer the candidate can say now.',
-      'Use the interviewer question, candidate answer if present, uploaded resume, saved memories, prepared company context, project notes, and recent turns to produce coaching.',
+      'Use the interviewer question, candidate answer if present, uploaded resume, saved memories, prepared company context, project notes, and recent turns.',
       'Prefer evidence from resume, project notes, saved candidate memories, recent Q&A, and company prep before using general interview structure.',
       'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
       hasCandidateAnswer
         ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
-        : 'Return only **Suggested Answer** with a short first-person answer the candidate can say aloud. Keep it 45-80 words unless the question clearly needs a technical explanation.',
-      'The answer must be first person, interview-ready, concise, and grounded in resume/projects.',
+        : 'Return only the answer text. Do not include a heading, bullets, markdown sections, or commentary.',
+      hasCandidateAnswer
+        ? 'The improved answer must be first person, interview-ready, concise, and grounded in resume/projects.'
+        : 'The answer must be first person, interview-ready, natural, and grounded in resume/projects. Keep it 45-80 words unless the question clearly needs a technical explanation.',
+      'Use simple human language. Do not say "Here is", "I would say", "As an AI", or describe the answer.',
       'For behavioral questions, improve the answer with STAR. For technical/project questions, include stack, contribution, tradeoffs, and impact when available.',
       targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
       targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
