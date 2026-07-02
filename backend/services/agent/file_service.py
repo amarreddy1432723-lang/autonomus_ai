@@ -350,6 +350,28 @@ def file_context_for_prompt(db: Session, user_id: UUID, file_ids: list[str], que
     if not parsed_ids:
         return ""
 
+    # 1. Fetch chunks for the files first to check total document size
+    chunks = db.query(FileChunk, FileReference.filename).join(
+        FileReference, FileReference.id == FileChunk.file_id
+    ).filter(
+        FileChunk.user_id == user_id,
+        FileChunk.file_id.in_(parsed_ids),
+    ).all()
+
+    # 2. If the total chunks is small (e.g. <= 20, typical for resumes and short files),
+    # return the entire original text content in sequential order to preserve structured bullet points
+    if len(chunks) <= 20:
+        chunks_sorted = sorted(chunks, key=lambda item: (item[0].file_id, item[0].chunk_index))
+        blocks = []
+        current_file = None
+        for chunk, filename in chunks_sorted:
+            if filename != current_file:
+                current_file = filename
+                blocks.append(f"=== FULL FILE: {filename} ===")
+            blocks.append(chunk.content)
+        return "\n\n".join(blocks)
+
+    # 3. If file size is large, fall back to candidate profile extraction or term-based search chunks
     records = db.query(FileReference).filter(
         FileReference.user_id == user_id,
         FileReference.id.in_(parsed_ids),
@@ -371,13 +393,6 @@ def file_context_for_prompt(db: Session, user_id: UUID, file_ids: list[str], que
         return "\n\n---\n\n".join(profile_blocks)
 
     query_terms = {term.lower() for term in (query or "").split() if len(term) > 2}
-    chunks = db.query(FileChunk, FileReference.filename).join(
-        FileReference, FileReference.id == FileChunk.file_id
-    ).filter(
-        FileChunk.user_id == user_id,
-        FileChunk.file_id.in_(parsed_ids),
-    ).all()
-
     ranked = []
     for chunk, filename in chunks:
         content_lower = chunk.content.lower()

@@ -130,18 +130,6 @@
   gap: var(--space-4);
 }
 
-.setupActions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.helperText {
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-}
-
 .setupTitle {
   font-size: var(--text-base);
   font-weight: 800;
@@ -427,61 +415,6 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-4);
-}
-
-.contextList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.contextRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-primary);
-  padding: var(--space-2) var(--space-3);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-}
-
-.contextRow strong {
-  color: var(--color-text-primary);
-  font-weight: 800;
-  text-align: right;
-}
-
-.memoryList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.memoryItem {
-  max-height: 74px;
-  overflow: hidden;
-  border-left: 2px solid var(--color-accent-primary);
-  background: var(--color-bg-primary);
-  color: var(--color-text-secondary);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-xs);
-  line-height: 1.45;
-}
-
-.companyPrepBox {
-  max-height: 220px;
-  overflow-y: auto;
-  margin-top: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-primary);
-  padding: var(--space-3);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
 }
 
 .manualInput {
