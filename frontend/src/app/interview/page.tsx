@@ -322,8 +322,9 @@ export default function InterviewPage() {
   const generateCoaching = async (question: string, candidateAnswer: string) => {
     const normalized = normalizeQuestion(question);
     const normalizedAnswer = normalizeQuestion(candidateAnswer);
-    if (normalized.length < 8 || normalizedAnswer.length < 8) {
-      setStatusText('Capture both the interviewer question and your answer first.');
+    const hasCandidateAnswer = normalizedAnswer.length >= 8;
+    if (normalized.length < 8) {
+      setStatusText('Capture the interviewer question first.');
       return;
     }
     const activeResume = resumeRef.current;
@@ -335,7 +336,7 @@ export default function InterviewPage() {
     currentQuestionRef.current = normalized;
     setCurrentQuestion(normalized);
     setTurnState('generating_feedback');
-    setStatusText('Generating feedback and improved answer');
+    setStatusText(hasCandidateAnswer ? 'Generating feedback and improved answer' : 'Generating suggested interview answer');
     setIsGenerating(true);
     setCurrentCoaching('');
     const relevantMemories = candidateMemoriesRef.current.slice(0, 6);
@@ -343,11 +344,15 @@ export default function InterviewPage() {
 
     const hiddenPrompt = [
       'You are Autonomus AI in real interview coach mode.',
-      'The user has heard an interviewer question and then gave their own spoken answer.',
-      'Use the interviewer question, the candidate answer, uploaded resume, saved memories, prepared company context, project notes, and recent turns to produce coaching.',
+      hasCandidateAnswer
+        ? 'The user has heard an interviewer question and then gave their own spoken answer.'
+        : 'The user has captured only the interviewer question. Generate a direct suggested answer the candidate can say now.',
+      'Use the interviewer question, candidate answer if present, uploaded resume, saved memories, prepared company context, project notes, and recent turns to produce coaching.',
       'Prefer evidence from resume, project notes, saved candidate memories, recent Q&A, and company prep before using general interview structure.',
       'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
-      'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.',
+      hasCandidateAnswer
+        ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
+        : 'Return markdown with exactly these sections: **Suggested Answer**, **Resume Points Used**, **Missing Details To Add**, **Possible Follow-Up**.',
       'The Improved Answer must be first person, interview-ready, concise, and grounded in resume/projects.',
       'For behavioral questions, improve the answer with STAR. For technical/project questions, include stack, contribution, tradeoffs, and impact when available.',
       targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
@@ -363,7 +368,7 @@ export default function InterviewPage() {
         : '',
       '',
       `Interviewer question: ${normalized}`,
-      `Candidate answer: ${normalizedAnswer}`,
+      hasCandidateAnswer ? `Candidate answer: ${normalizedAnswer}` : 'Candidate answer: Not provided yet. Create the best resume-grounded answer directly.',
     ].filter(Boolean).join('\n');
 
     const controller = new AbortController();
@@ -378,7 +383,7 @@ export default function InterviewPage() {
           {
             id: `${Date.now()}`,
             question: normalized,
-            candidateAnswer: normalizedAnswer,
+            candidateAnswer: hasCandidateAnswer ? normalizedAnswer : '(Suggested answer generated before candidate answer)',
             coaching,
             createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             resumeFilename: activeResume.filename,
@@ -869,7 +874,7 @@ export default function InterviewPage() {
                       {captureTarget === 'answer' && interimTranscript && <span className={styles.interimText}> {interimTranscript}</span>}
                     </>
                   ) : (
-                    <span className={styles.placeholder}>After marking the question, start your answer and speak naturally.</span>
+                    <span className={styles.placeholder}>Optional: speak your own answer for coaching, or generate a resume-based answer directly.</span>
                   )}
                 </div>
               </div>
@@ -884,8 +889,8 @@ export default function InterviewPage() {
                 <button className={styles.button} type="button" onClick={finishMyAnswer} disabled={!hasResumeContext || !liveAnswer.trim()}>
                   Finish My Answer
                 </button>
-                <button className={styles.primaryButton} type="button" onClick={generateCurrentCoaching} disabled={!hasResumeContext || !questionTranscript.trim() || !answerTranscript.trim() || isGenerating}>
-                  Generate Coaching
+                <button className={styles.primaryButton} type="button" onClick={generateCurrentCoaching} disabled={!hasResumeContext || !questionTranscript.trim() || isGenerating}>
+                  {answerTranscript.trim() ? 'Generate Coaching' : 'Generate Answer'}
                 </button>
                 <button className={styles.button} type="button" onClick={nextQuestion}>
                   Next Question
