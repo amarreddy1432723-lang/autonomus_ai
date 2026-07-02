@@ -210,6 +210,15 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         f"Active User ID: {state.get('user_id')}\n"
         f"Classified Intent: {state.get('intent')}\n\n"
     )
+
+    is_interview_session = session_id == "interview"
+    if is_interview_session:
+        system_prompt += (
+            "INTERVIEW ASSIST MODE:\n"
+            "- Answer directly as the candidate in first person.\n"
+            "- Do not call tools or invent tool names.\n"
+            "- Keep answers concise, natural, and ready to say aloud.\n\n"
+        )
     
     if goal_context:
         system_prompt += f"{goal_context}\n"
@@ -250,7 +259,7 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
             
     messages = [SystemMessage(content=system_prompt)] + sanitized_messages
 
-    if is_media_teaching_request:
+    if is_media_teaching_request or is_interview_session:
         response = llm.invoke(messages)
     else:
         tools = [web_search, live_news, read_file, memory_read]
