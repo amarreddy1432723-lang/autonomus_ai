@@ -143,6 +143,10 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
     provider = cfg.get("llm_provider")
     model = cfg.get("llm_model")
     session_id = cfg.get("session_id")
+    interview_style = cfg.get("interview_style")
+    target_role = cfg.get("target_role")
+    target_company = cfg.get("target_company")
+    project_notes = cfg.get("project_notes")
     
     llm = get_chat_llm(role="reasoning", provider=provider, model=model)
     
@@ -211,17 +215,47 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         f"Classified Intent: {state.get('intent')}\n\n"
     )
 
-    is_interview_session = session_id == "interview"
+    is_interview_session = session_id == "interview" or bool(interview_style or target_role or target_company)
     if is_interview_session:
+        # Prepare Style Preset Guideline
+        style_guideline = ""
+        if interview_style == "technical":
+            style_guideline = (
+                "- TECHNICAL EXPLANATION STYLE: Focus heavily on technical details, architecture, algorithms, specific library choices, and engineering metrics. Avoid high-level abstractions; speak with concrete engineering depth."
+            )
+        elif interview_style == "star":
+            style_guideline = (
+                "- STAR METHOD STYLE: Structure your response cleanly using the Situation, Task, Action, Result framework. Outline the exact challenge, your specific personal contributions, and highlight quantitative metrics or engineering results."
+            )
+        elif interview_style == "fresher":
+            style_guideline = (
+                "- FRESHER FRIENDLY STYLE: Focus on academic projects, internships, core computer science fundamentals, quick adaptability, passion, and strong collaborative team attitude. Emphasize ability to ramp up fast."
+            )
+        elif interview_style == "confident":
+            style_guideline = (
+                "- CONFIDENT but NATURAL STYLE: Speak with high ownership, leadership skills, strong initiative, and positive outcome-oriented language. Emphasize product vision, problem solving, and collaborative engineering."
+            )
+        else: # "short" or default
+            style_guideline = (
+                "- SHORT/NATURAL STYLE: Keep the answer extremely concise, spoken-ready, and dynamic (45-60 seconds speaking speed, max 100-140 words). Go straight to the answer without fluff."
+            )
+
         system_prompt += (
-            "INTERVIEW ASSIST MODE:\n"
-            "- Answer directly as the candidate in first person.\n"
+            "INTERVIEW ASSIST MODE (HUMAN PERSONA RULES):\n"
+            "- Answer directly as the candidate in the first person ('I', 'my', 'we').\n"
+            "- Do NOT say 'As an AI...', 'Here is the answer...', 'I would say...', or output introductory or metacontext remarks. Simply say the answer directly.\n"
+            "- Avoid long, structured markdown bullet lists, bold asterisks, or headers. Real people do not speak in bullet lists or markdown. Use natural paragraphs and spoken sentence transitions.\n"
+            "- Avoid generic templates or exaggerated, robotic claims. Use practical examples from the resume and project notes.\n"
             "- Do not call tools or invent tool names.\n"
-            "- Keep answers concise, natural, and ready to say aloud.\n"
-            "- Use human spoken English, not chatbot wording.\n"
-            "- Do not say 'Here is', 'I would say', 'As an AI', or explain what you are doing.\n"
-            "- Prefer one polished answer paragraph unless feedback is explicitly requested.\n\n"
+            f"{style_guideline}\n"
         )
+        if target_role:
+            system_prompt += f"- Target role: {target_role}\n"
+        if target_company:
+            system_prompt += f"- Target company: {target_company}\n"
+        if project_notes:
+            system_prompt += f"- Candidate extra project notes:\n{project_notes}\n"
+        system_prompt += "\n"
     
     if goal_context:
         system_prompt += f"{goal_context}\n"

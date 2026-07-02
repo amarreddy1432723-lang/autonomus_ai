@@ -86,6 +86,7 @@ export default function InterviewPage() {
   const [targetRole, setTargetRole] = useState('');
   const [targetCompany, setTargetCompany] = useState('');
   const [projectNotes, setProjectNotes] = useState('');
+  const [selectedStyle, setSelectedStyle] = useState('short');
   const [candidateMemories, setCandidateMemories] = useState<CandidateMemory[]>([]);
   const [isLoadingMemories, setIsLoadingMemories] = useState(false);
   const [companyPrep, setCompanyPrep] = useState('');
@@ -111,6 +112,7 @@ export default function InterviewPage() {
   const companyPrepRef = useRef('');
   const selectedModelRef = useRef<ModelOption>(MODEL_OPTIONS[0]);
   const selectedGoalIdRef = useRef('interview');
+  const selectedStyleRef = useRef('short');
 
   const selectedModel = MODEL_OPTIONS.find((option) => option.id === selectedModelId) || MODEL_OPTIONS[0];
   const liveQuestion = captureTarget === 'question' && interimTranscript ? `${questionTranscript} ${interimTranscript}`.trim() : questionTranscript;
@@ -178,6 +180,10 @@ export default function InterviewPage() {
   useEffect(() => {
     selectedModelRef.current = selectedModel;
   }, [selectedModel]);
+
+  useEffect(() => {
+    selectedStyleRef.current = selectedStyle;
+  }, [selectedStyle]);
 
   useEffect(() => {
     selectedGoalIdRef.current = selectedGoalId;
@@ -457,6 +463,10 @@ export default function InterviewPage() {
       llm_model: selectedModelRef.current.model,
       persist: false,
       file_ids: resumeRef.current?.id ? [resumeRef.current.id] : [],
+      interview_style: selectedStyleRef.current,
+      target_role: targetRoleRef.current,
+      target_company: targetCompanyRef.current,
+      project_notes: projectNotesRef.current,
     };
     const headers = await createApiHeadersAsync({
       headers: { 'Content-Type': 'application/json' },
@@ -803,6 +813,16 @@ export default function InterviewPage() {
               {goals.map((goal) => (
                 <option key={goal.id} value={goal.id}>{goal.title}</option>
               ))}
+            </select>
+          </label>
+          <label className={styles.selector}>
+            <span>Answer Style</span>
+            <select className={styles.select} value={selectedStyle} onChange={(event) => setSelectedStyle(event.target.value)}>
+              <option value="short">Short Interview Answer</option>
+              <option value="confident">Confident but Natural</option>
+              <option value="technical">Technical Explanation</option>
+              <option value="star">HR/Behavioral STAR</option>
+              <option value="fresher">Fresher Friendly</option>
             </select>
           </label>
         </div>

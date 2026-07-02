@@ -67,6 +67,10 @@ class ChatRequest(BaseModel):
     llm_model: Optional[str] = None
     persist: bool = True
     file_ids: List[str] = Field(default_factory=list)
+    interview_style: Optional[str] = None
+    target_role: Optional[str] = None
+    target_company: Optional[str] = None
+    project_notes: Optional[str] = None
 
 EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
     "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
@@ -126,6 +130,10 @@ async def chat_stream_generator(
     llm_model: Optional[str] = None,
     persist: bool = True,
     file_ids: Optional[List[str]] = None,
+    interview_style: Optional[str] = None,
+    target_role: Optional[str] = None,
+    target_company: Optional[str] = None,
+    project_notes: Optional[str] = None,
 ):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
@@ -159,6 +167,10 @@ async def chat_stream_generator(
             "session_id": session_id,
             "llm_provider": llm_provider,
             "llm_model": llm_model,
+            "interview_style": interview_style,
+            "target_role": target_role,
+            "target_company": target_company,
+            "project_notes": project_notes,
         }
     }
     
@@ -262,6 +274,10 @@ async def chat_endpoint(request: ChatRequest, user_id: UUID = Depends(get_curren
             llm_model,
             request.persist,
             request.file_ids,
+            request.interview_style,
+            request.target_role,
+            request.target_company,
+            request.project_notes,
         ),
         media_type="text/event-stream"
     )

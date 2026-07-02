@@ -235,43 +235,53 @@ def _unique_limited(lines: list[str], limit: int) -> list[str]:
 
 
 def build_candidate_profile(text: str, filename: str, token_count: int) -> dict:
-    lines = [_clean_resume_line(line) for line in (text or "").splitlines()]
-    lines = [line for line in lines if line]
-    compact_lines = [line for line in lines if 3 <= len(line) <= 220]
+    from .llm_router import get_chat_llm
+    from langchain_core.messages import HumanMessage
+    import json
 
-    profile: dict[str, object] = {
-        "status": "stored",
-        "filename": filename,
-        "source_tokens": token_count,
-        "candidate_summary": " ".join(_unique_limited(compact_lines[:8], 8))[:900],
-        "education": [],
-        "skills": [],
-        "projects": [],
-        "experience": [],
-        "achievements": [],
-        "missing_details": [],
-    }
+    llm = get_chat_llm(role="reasoning")
+    prompt = (
+        "You are an expert HR candidate profile parser. Analyze the following resume text and construct a structured candidate profile.\n"
+        "Return the output STRICTLY as a JSON object with the following keys:\n"
+        "- candidate_name: (string - candidate's name or title if name is not found)\n"
+        "- education: (list of strings summarizing degrees, schools, years)\n"
+        "- skills: (list of strings of top technical/soft skills)\n"
+        "- projects: (list of strings summarizing best projects with tech stack and metrics/outcomes)\n"
+        "- experience: (list of strings summarizing work experience, company, role, duration)\n"
+        "- strengths: (list of strings outlining candidate strengths)\n"
+        "- missing_details: (list of strings representing details like missing dates, metrics, or credentials that would make the profile stronger)\n\n"
+        f"Resume text:\n{text}"
+    )
 
-    for section, keywords in PROFILE_SECTION_KEYWORDS.items():
-        matched: list[str] = []
-        for index, line in enumerate(compact_lines):
-            lowered = line.lower()
-            if any(keyword in lowered for keyword in keywords):
-                matched.extend(compact_lines[max(0, index - 1): index + 5])
-        profile[section] = _unique_limited(matched, 12 if section in {"projects", "experience"} else 8)
-
-    skills = profile.get("skills") or []
-    projects = profile.get("projects") or []
-    experience = profile.get("experience") or []
-    missing: list[str] = []
-    if not skills:
-        missing.append("Specific technical skills are not clearly listed.")
-    if not projects:
-        missing.append("Project details are not clearly listed.")
-    if not experience:
-        missing.append("Experience or internship details are not clearly listed.")
-    profile["missing_details"] = missing
-    return profile
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)], response_format={"type": "json_object"})
+        data = json.loads(response.content)
+        return {
+            "status": "stored",
+            "filename": filename,
+            "source_tokens": token_count,
+            "candidate_summary": f"Profile of {data.get('candidate_name', 'Candidate')} specializing in {', '.join(data.get('skills', [])[:5])}",
+            "education": data.get("education") or [],
+            "skills": data.get("skills") or [],
+            "projects": data.get("projects") or [],
+            "experience": data.get("experience") or [],
+            "strengths": data.get("strengths") or [],
+            "missing_details": data.get("missing_details") or [],
+        }
+    except Exception as e:
+        print(f"LLM resume profile generation failed: {e}. Falling back to empty profile.")
+        return {
+            "status": "failed",
+            "filename": filename,
+            "source_tokens": token_count,
+            "candidate_summary": "Failed to parse resume with LLM.",
+            "education": [],
+            "skills": [],
+            "projects": [],
+            "experience": [],
+            "strengths": [],
+            "missing_details": [],
+        }
 
 
 def candidate_profile_to_prompt(profile: dict) -> str:
