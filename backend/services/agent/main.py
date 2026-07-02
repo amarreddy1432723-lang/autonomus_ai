@@ -312,6 +312,22 @@ def capture_training_example(
 
     return {"status": "captured", "quality_status": status_value}
 
+@app.post("/api/v1/training/train")
+def trigger_self_training(user_id: UUID = Depends(get_current_user_id)):
+    from .training_service import start_self_training_job
+    return start_self_training_job()
+
+@app.get("/api/v1/training/jobs")
+def get_self_training_jobs(user_id: UUID = Depends(get_current_user_id)):
+    from .training_service import sync_job_statuses
+    return sync_job_statuses()
+
+@app.get("/api/v1/training/active-model")
+def get_active_model(user_id: UUID = Depends(get_current_user_id)):
+    from .training_service import get_active_finetuned_model
+    model = get_active_finetuned_model()
+    return {"active_finetuned_model": model or "None"}
+
 @app.post("/api/v1/files", status_code=201)
 async def upload_file(
     upload: UploadFile = File(...),

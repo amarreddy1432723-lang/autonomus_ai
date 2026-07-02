@@ -74,6 +74,17 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
     try:
         # ── Autonomus AI (own OpenAI-compatible model endpoint) ──
         if provider in {"autonomus", "autonomous"}:
+            from .training_service import get_active_finetuned_model
+            active_ft_model = get_active_finetuned_model()
+            if active_ft_model:
+                from langchain_openai import ChatOpenAI
+                openai_key = getattr(settings, "OPENAI_API_KEY", "")
+                return ChatOpenAI(
+                    model=active_ft_model,
+                    openai_api_key=openai_key,
+                    temperature=0.2,
+                )
+
             from langchain_openai import ChatOpenAI
             llm_base_url = (
                 getattr(settings, "AUTONOMUS_LLM_BASE_URL", None)

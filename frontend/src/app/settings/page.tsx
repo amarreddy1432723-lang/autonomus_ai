@@ -33,12 +33,18 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'profile' | 'notifications'>('autonomy');
+  const [activeTab, setActiveTab] = useState<'autonomy' | 'profile' | 'notifications' | 'training'>('autonomy');
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
   const [loadingAutonomy, setLoadingAutonomy] = useState(true);
   const [autonomyError, setAutonomyError] = useState('');
+
+  // Self-training States
+  const [trainingJobs, setTrainingJobs] = useState<any[]>([]);
+  const [activeFinetunedModel, setActiveFinetunedModel] = useState<string>('None');
+  const [isTrainingInFlight, setIsTrainingInFlight] = useState(false);
+  const [trainingError, setTrainingError] = useState('');
 
   const loadAutonomyStatus = async () => {
     setLoadingAutonomy(true);
@@ -53,8 +59,34 @@ export default function SettingsPage() {
     }
   };
 
+  const loadTrainingData = async () => {
+    try {
+      const activeModelData = await apiRequest('/api/v1/training/active-model');
+      setActiveFinetunedModel(activeModelData.active_finetuned_model);
+      const jobsData = await apiRequest('/api/v1/training/jobs');
+      setTrainingJobs(jobsData);
+    } catch (err) {
+      console.error('Error loading training details:', err);
+    }
+  };
+
+  const triggerSelfTraining = async () => {
+    setIsTrainingInFlight(true);
+    setTrainingError('');
+    try {
+      const newJob = await apiRequest('/api/v1/training/train', { method: 'POST' });
+      alert(`Fine-tuning job ${newJob.job_id} successfully triggered on OpenAI!`);
+      await loadTrainingData();
+    } catch (err) {
+      setTrainingError(err instanceof Error ? err.message : 'Failed to trigger training job.');
+    } finally {
+      setIsTrainingInFlight(false);
+    }
+  };
+
   useEffect(() => {
     loadAutonomyStatus();
+    loadTrainingData();
   }, []);
 
   const updateAutonomyLevel = async (autonomy_level: AutonomyLevel) => {
@@ -127,10 +159,122 @@ export default function SettingsPage() {
             <button style={tabButtonStyle('notifications')} onClick={() => setActiveTab('notifications')}>
               <Bell size={14} /> Notifications
             </button>
+            <button style={tabButtonStyle('training')} onClick={() => setActiveTab('training')}>
+              <RefreshCw size={14} /> Model Self-Training
+            </button>
           </div>
 
           {/* Settings Content Area */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {activeTab === 'training' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center' }}>
+                  <div>
+                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>Autonomus AI Self-Training Loop</h2>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                      Train your personal instance of Autonomus AI using approved chat responses and resume corrections.
+                    </span>
+                  </div>
+                  <button
+                    onClick={loadTrainingData}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+                  >
+                    <RefreshCw size={14} /> Sync Statuses
+                  </button>
+                </div>
+
+                <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px' }}>
+                  <span style={{ display: 'block', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>Active Fine-Tuned Model</span>
+                  <strong style={{ display: 'block', fontSize: 'var(--text-base)', marginTop: '4px', wordBreak: 'break-all', color: activeFinetunedModel !== 'None' ? 'var(--color-accent-primary)' : 'var(--color-text-primary)' }}>
+                    {activeFinetunedModel}
+                  </strong>
+                  {activeFinetunedModel === 'None' && (
+                    <span style={{ display: 'block', color: 'var(--color-text-secondary)', fontSize: '10px', marginTop: '4px' }}>
+                      Using default base model fallback (Groq Llama-3.3 / OpenAI gpt-4o-mini). Train a model below to activate custom fine-tuning.
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>Trigger Self-Training Job</h3>
+                  <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: 0 }}>
+                    Starts an OpenAI fine-tuning run (uses `gpt-4o-mini` as base). Requires at least 10 approved examples. 
+                    Examples are gathered when you click \"Train Autonomus\" on chat answers.
+                  </p>
+                  <button
+                    onClick={triggerSelfTraining}
+                    disabled={isTrainingInFlight}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      background: 'var(--color-accent-primary)',
+                      border: '1px solid ' + (isTrainingInFlight ? 'var(--color-border)' : 'var(--color-accent-primary)'),
+                      color: 'white',
+                      padding: '10px 16px',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer',
+                      fontSize: 'var(--text-xs)',
+                      fontWeight: 700,
+                      width: 'fit-content'
+                    }}
+                  >
+                    {isTrainingInFlight ? 'Starting Fine-Tuning Job...' : 'Start OpenAI Fine-Tuning Run'}
+                  </button>
+                  {trainingError && (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: '#ef4444' }}>
+                      <AlertTriangle size={14} /> {trainingError}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '8px' }}>
+                  <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>Fine-Tuning Jobs History</h3>
+                  <div style={{ overflowX: 'auto', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-xs)', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--color-bg-tertiary)', borderBottom: '1px solid var(--color-border)' }}>
+                          <th style={{ padding: '8px 12px' }}>Job ID</th>
+                          <th style={{ padding: '8px 12px' }}>Status</th>
+                          <th style={{ padding: '8px 12px' }}>Created At</th>
+                          <th style={{ padding: '8px 12px' }}>Fine-Tuned Model</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {trainingJobs.map((job) => (
+                          <tr key={job.job_id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{job.job_id}</td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <span style={{
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                fontSize: '10px',
+                                fontWeight: 600,
+                                background: job.status === 'succeeded' ? 'rgba(34, 197, 94, 0.2)' : job.status === 'failed' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(234, 179, 8, 0.2)',
+                                color: job.status === 'succeeded' ? '#22c55e' : job.status === 'failed' ? '#ef4444' : '#eab308'
+                              }}>
+                                {job.status}
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>{new Date(job.created_at).toLocaleString()}</td>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', wordBreak: 'break-all' }}>{job.fine_tuned_model || '—'}</td>
+                          </tr>
+                        ))}
+                        {trainingJobs.length === 0 && (
+                          <tr>
+                            <td colSpan={4} style={{ padding: '16px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>
+                              No training jobs recorded yet.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'autonomy' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
