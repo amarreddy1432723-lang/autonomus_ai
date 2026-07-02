@@ -110,7 +110,7 @@ export default function InterviewPage() {
   const liveAnswer = captureTarget === 'answer' && interimTranscript ? `${answerTranscript} ${interimTranscript}`.trim() : answerTranscript;
   const transcript = [liveQuestion, liveAnswer].filter(Boolean).join('\n').trim();
   const canUseSpeech = micState !== 'unsupported';
-  const hasResumeContext = Boolean(resume?.id && (resume.extraction?.chunk_count ?? 0) > 0);
+  const hasResumeContext = Boolean(resume?.id);
 
   useEffect(() => {
     const saved = localStorage.getItem('my_ai_selected_model_id');
@@ -321,7 +321,7 @@ export default function InterviewPage() {
       return;
     }
     const activeResume = resumeRef.current;
-    if (!activeResume?.id || (activeResume.extraction?.chunk_count ?? 0) <= 0) {
+    if (!activeResume?.id) {
       setStatusText('Upload a resume before generating interview answers.');
       return;
     }
@@ -332,7 +332,8 @@ export default function InterviewPage() {
     setStatusText('Generating feedback and improved answer');
     setIsGenerating(true);
     setCurrentCoaching('');
-    const relevantMemories = await refreshCandidateMemories(normalized, normalizedAnswer);
+    const relevantMemories = candidateMemoriesRef.current.slice(0, 6);
+    void refreshCandidateMemories(normalized, normalizedAnswer);
 
     const hiddenPrompt = [
       'You are Autonomus AI in real interview coach mode.',
@@ -417,7 +418,10 @@ export default function InterviewPage() {
       body: JSON.stringify(body),
       signal,
     });
-    if (!response.ok) throw new Error('Interview answer request failed');
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(detail || 'Interview answer request failed');
+    }
     if (!response.body) throw new Error('Interview answer stream was empty');
 
     const reader = response.body.getReader();
@@ -438,7 +442,12 @@ export default function InterviewPage() {
         if (trimmed.startsWith('event:')) {
           currentEvent = trimmed.slice(6).trim();
         } else if (trimmed.startsWith('data:')) {
-          const payload = JSON.parse(trimmed.slice(5).trim());
+          let payload: { token?: string; error?: string };
+          try {
+            payload = JSON.parse(trimmed.slice(5).trim());
+          } catch {
+            continue;
+          }
           if (currentEvent === 'token') {
             accumulated += payload.token || '';
             onToken(accumulated);
@@ -454,7 +463,7 @@ export default function InterviewPage() {
 
   const startListening = () => {
     if (!hasResumeContext) {
-      setStatusText('Upload and extract your resume before starting.');
+      setStatusText('Upload your resume before starting.');
       return;
     }
     if (!recognitionRef.current) {
@@ -508,13 +517,21 @@ export default function InterviewPage() {
     const value = normalizeQuestion(manualPrompt);
     if (!value) return;
     if (!hasResumeContext) {
-      setStatusText('Upload and extract your resume before generating answers.');
+      setStatusText('Upload your resume before generating answers.');
       return;
     }
     if (captureTarget === 'question') {
-      setQuestionTranscript((current) => `${current} ${value}`.trim());
+      setQuestionTranscript((current) => {
+        const next = `${current} ${value}`.trim();
+        questionTranscriptRef.current = next;
+        return next;
+      });
     } else {
-      setAnswerTranscript((current) => `${current} ${value}`.trim());
+      setAnswerTranscript((current) => {
+        const next = `${current} ${value}`.trim();
+        answerTranscriptRef.current = next;
+        return next;
+      });
     }
     setManualPrompt('');
   };
@@ -765,7 +782,7 @@ export default function InterviewPage() {
               </button>
             </div>
           ) : (
-            <div className={styles.notice}>Start Listening is locked until a resume is uploaded and extracted.</div>
+            <div className={styles.notice}>Start Listening is locked until a resume is uploaded.</div>
           )}
 
           <div className={styles.profileGrid}>
