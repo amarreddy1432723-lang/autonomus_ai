@@ -127,6 +127,9 @@ def context_node(state: AgentState, config: RunnableConfig) -> dict:
         else:
             intent = "general_chat"
 
+    if session_id == "interview" or interview_style:
+        return {"memories": "", "intent": intent}
+
     user_id = state.get("user_id")
     last_user_message = ""
     for msg in reversed(state["messages"]):
