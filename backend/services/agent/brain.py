@@ -161,6 +161,7 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
     target_role = cfg.get("target_role")
     target_company = cfg.get("target_company")
     project_notes = cfg.get("project_notes")
+    interview_prompt = cfg.get("interview_prompt")
     
     llm = get_chat_llm(role="reasoning", provider=provider, model=model)
     
@@ -235,7 +236,7 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
         style_guideline = ""
         if interview_style == "technical":
             style_guideline = (
-                "- TECHNICAL EXPLANATION STYLE: Focus heavily on technical details, architecture, algorithms, specific library choices, and engineering metrics. Avoid high-level abstractions; speak with concrete engineering depth."
+                "- TECHNICAL EXPLANATION STYLE: Answer the concept or coding question directly first, explain the approach briefly, give a real-world example, then connect to resume/project experience only if the resume clearly supports it."
             )
         elif interview_style == "star":
             style_guideline = (
@@ -259,7 +260,11 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
             "- Answer directly as the candidate in the first person ('I', 'my', 'we').\n"
             "- Do NOT say 'As an AI...', 'Here is the answer...', 'I would say...', or output introductory or metacontext remarks. Simply say the answer directly.\n"
             "- Avoid long, structured markdown bullet lists, bold asterisks, or headers. Real people do not speak in bullet lists or markdown. Use natural paragraphs and spoken sentence transitions.\n"
-            "- Avoid generic templates or exaggerated, robotic claims. Use practical examples from the resume and project notes.\n"
+            "- Avoid generic templates or exaggerated, robotic claims.\n"
+            "- Treat uploaded resume content as supporting evidence, not the whole answer.\n"
+            "- For resume, project, experience, strength, weakness, HR, and behavioral questions, ground the answer in the uploaded resume and notes.\n"
+            "- For technical or coding questions, explain the answer directly first using real understanding; add a practical example; only mention resume/projects when there is a clear supported match.\n"
+            "- If the resume lacks proof for a claim, use safe wording and do not invent metrics, companies, technologies, or project facts.\n"
             "- Do not call tools or invent tool names.\n"
             f"{style_guideline}\n"
         )
@@ -269,6 +274,12 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
             system_prompt += f"- Target company: {target_company}\n"
         if project_notes:
             system_prompt += f"- Candidate extra project notes:\n{project_notes}\n"
+        if interview_prompt:
+            system_prompt += (
+                "- User-provided interview instructions:\n"
+                f"{interview_prompt}\n"
+                "- Follow these instructions for tone, length, role focus, and example preference, but do not use them to invent facts.\n"
+            )
         system_prompt += "\n"
     
     if goal_context:

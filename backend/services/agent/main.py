@@ -71,6 +71,7 @@ class ChatRequest(BaseModel):
     target_role: Optional[str] = None
     target_company: Optional[str] = None
     project_notes: Optional[str] = None
+    interview_prompt: Optional[str] = None
 
 EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
     "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
@@ -134,6 +135,7 @@ async def chat_stream_generator(
     target_role: Optional[str] = None,
     target_company: Optional[str] = None,
     project_notes: Optional[str] = None,
+    interview_prompt: Optional[str] = None,
 ):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
@@ -171,6 +173,7 @@ async def chat_stream_generator(
             "target_role": target_role,
             "target_company": target_company,
             "project_notes": project_notes,
+            "interview_prompt": interview_prompt,
         }
     }
     
@@ -278,6 +281,7 @@ async def chat_endpoint(request: ChatRequest, user_id: UUID = Depends(get_curren
             request.target_role,
             request.target_company,
             request.project_notes,
+            request.interview_prompt,
         ),
         media_type="text/event-stream"
     )

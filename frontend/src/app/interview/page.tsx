@@ -86,6 +86,7 @@ export default function InterviewPage() {
   const [targetRole, setTargetRole] = useState('');
   const [targetCompany, setTargetCompany] = useState('');
   const [projectNotes, setProjectNotes] = useState('');
+  const [interviewPrompt, setInterviewPrompt] = useState('');
   const [selectedStyle, setSelectedStyle] = useState('short');
   const [candidateMemories, setCandidateMemories] = useState<CandidateMemory[]>([]);
   const [isLoadingMemories, setIsLoadingMemories] = useState(false);
@@ -108,6 +109,7 @@ export default function InterviewPage() {
   const targetRoleRef = useRef('');
   const targetCompanyRef = useRef('');
   const projectNotesRef = useRef('');
+  const interviewPromptRef = useRef('');
   const candidateMemoriesRef = useRef<CandidateMemory[]>([]);
   const companyPrepRef = useRef('');
   const selectedModelRef = useRef<ModelOption>(MODEL_OPTIONS[0]);
@@ -168,6 +170,10 @@ export default function InterviewPage() {
   useEffect(() => {
     projectNotesRef.current = projectNotes;
   }, [projectNotes]);
+
+  useEffect(() => {
+    interviewPromptRef.current = interviewPrompt;
+  }, [interviewPrompt]);
 
   useEffect(() => {
     candidateMemoriesRef.current = candidateMemories;
@@ -303,6 +309,7 @@ export default function InterviewPage() {
     targetRoleRef.current,
     targetCompanyRef.current,
     projectNotesRef.current,
+    interviewPromptRef.current,
     'interview resume project experience'
   ].filter(Boolean).join(' ');
 
@@ -390,7 +397,9 @@ export default function InterviewPage() {
         ? 'The user has heard an interviewer question and then gave their own spoken answer.'
         : 'The user has captured only the interviewer question. Answer as the candidate would naturally respond in the interview.',
       'Use the interviewer question, candidate answer if present, uploaded resume, saved memories, prepared company context, project notes, and recent turns.',
-      'Prefer evidence from resume, project notes, saved candidate memories, recent Q&A, and company prep before using general interview structure.',
+      'Use the resume as supporting evidence, not as the entire answer.',
+      'For resume, project, HR, behavioral, strengths, and experience questions, prefer evidence from resume, project notes, saved candidate memories, recent Q&A, and company prep.',
+      'For technical or coding questions, answer the actual concept or coding approach directly first, then give a brief explanation and a real-world example. Connect to resume/projects only when clearly relevant.',
       'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
       hasCandidateAnswer
         ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
@@ -399,10 +408,11 @@ export default function InterviewPage() {
         ? 'The improved answer must be first person, interview-ready, concise, and grounded in resume/projects.'
         : 'The answer must be first person, interview-ready, natural, and grounded in resume/projects. Keep it 45-80 words unless the question clearly needs a technical explanation.',
       'Use simple human language with natural contractions where appropriate. Do not say "Here is", "I would say", "As an AI", "based on the resume", or describe the answer.',
-      'For behavioral questions, improve the answer with STAR. For technical/project questions, include stack, contribution, tradeoffs, and impact when available.',
+      'For behavioral questions, improve the answer with compact STAR. For project questions, include stack, contribution, tradeoffs, and impact when available. For coding questions, include logic, edge cases, and spoken explanation, not a long essay.',
       targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
       targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
       projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
+      interviewPromptRef.current.trim() ? `Interview instructions from candidate: ${interviewPromptRef.current.trim()}` : '',
       activeResume.filename ? `Resume file in context: ${activeResume.filename}` : '',
       relevantMemories.length
         ? `Relevant saved candidate memories:\n${relevantMemories.map((memory, index) => `${index + 1}. ${memory.content}`).join('\n')}`
@@ -467,6 +477,7 @@ export default function InterviewPage() {
       target_role: targetRoleRef.current,
       target_company: targetCompanyRef.current,
       project_notes: projectNotesRef.current,
+      interview_prompt: interviewPromptRef.current,
     };
     const headers = await createApiHeadersAsync({
       headers: { 'Content-Type': 'application/json' },
@@ -883,6 +894,10 @@ export default function InterviewPage() {
               <span>Extra project notes</span>
               <textarea className={styles.notesField} value={projectNotes} onChange={(event) => setProjectNotes(event.target.value)} placeholder="Optional: add project details, metrics, tech stack, or stories not present in the resume." />
             </label>
+            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
+              <span>Interview instructions</span>
+              <textarea className={styles.notesField} value={interviewPrompt} onChange={(event) => setInterviewPrompt(event.target.value)} placeholder="Optional: answer like a fresher frontend developer, keep under 60 seconds, use React examples when possible." />
+            </label>
           </div>
           <div className={styles.setupActions}>
             <button className={styles.button} type="button" onClick={prepareCompanyContext} disabled={!targetCompany.trim() || isPreparingCompany}>
@@ -966,6 +981,10 @@ export default function InterviewPage() {
                   <div className={styles.contextRow}>
                     <span>Project notes</span>
                     <strong>{projectNotes.trim() ? 'Included' : 'Empty'}</strong>
+                  </div>
+                  <div className={styles.contextRow}>
+                    <span>Instructions</span>
+                    <strong>{interviewPrompt.trim() ? 'Included' : 'Empty'}</strong>
                   </div>
                   <div className={styles.contextRow}>
                     <span>Company prep</span>
