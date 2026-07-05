@@ -60,6 +60,10 @@ const nextConfig: NextConfig = {
         destination: `${agentUrl}/api/v1/agents/:path*`,
       },
       {
+        source: '/api/v1/interview/:path*',
+        destination: `${agentUrl}/api/v1/interview/:path*`,
+      },
+      {
         source: '/api/v1/memories/:path*',
         destination: `${agentUrl}/api/v1/memories/:path*`,
       },

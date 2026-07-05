@@ -15,6 +15,21 @@ const MODEL_OPTIONS = [
   { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', provider: 'google', model: 'gemini-1.5-flash' }
 ] as const;
 
+const PLAN_TABS = [
+  { id: 'behavioral', label: 'Behavioral', heading: '## Behavioral / HR' },
+  { id: 'technical', label: 'Technical', heading: '## Technical' },
+  { id: 'company', label: 'Company', heading: '## Company-Specific' },
+  { id: 'questions', label: 'Questions', heading: '## Questions To Ask The Interviewer' },
+] as const;
+
+const extractPlanSection = (content: string, heading: string) => {
+  if (!content.trim()) return '';
+  const start = content.indexOf(heading);
+  if (start < 0) return content;
+  const next = content.indexOf('\n## ', start + heading.length);
+  return content.slice(start, next > start ? next : undefined).trim();
+};
+
 type ModelOption = typeof MODEL_OPTIONS[number];
 type MicState = 'idle' | 'listening' | 'paused' | 'unsupported' | 'permission-denied' | 'error';
 type TurnState = 'waiting_for_question' | 'question_detected' | 'listening_to_candidate_answer' | 'generating_feedback' | 'ready_for_next_question';
@@ -85,9 +100,14 @@ export default function InterviewPage() {
   const [isUploadingResume, setIsUploadingResume] = useState(false);
   const [targetRole, setTargetRole] = useState('');
   const [targetCompany, setTargetCompany] = useState('');
+  const [jobDescription, setJobDescription] = useState('');
   const [projectNotes, setProjectNotes] = useState('');
   const [interviewPrompt, setInterviewPrompt] = useState('');
   const [selectedStyle, setSelectedStyle] = useState('short');
+  const [interviewPlan, setInterviewPlan] = useState('');
+  const [activePlanTab, setActivePlanTab] = useState<typeof PLAN_TABS[number]['id']>('behavioral');
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
   const [candidateMemories, setCandidateMemories] = useState<CandidateMemory[]>([]);
   const [isLoadingMemories, setIsLoadingMemories] = useState(false);
   const [companyPrep, setCompanyPrep] = useState('');
@@ -194,6 +214,17 @@ export default function InterviewPage() {
   useEffect(() => {
     selectedGoalIdRef.current = selectedGoalId;
   }, [selectedGoalId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'h') {
+        event.preventDefault();
+        setIsFocusMode((current) => !current);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   useEffect(() => {
     const fetchGoals = async () => {
@@ -365,6 +396,78 @@ export default function InterviewPage() {
       setStatusText(error instanceof Error ? error.message : 'Company preparation failed');
     } finally {
       setIsPreparingCompany(false);
+    }
+  };
+
+  const generateInterviewPlan = async () => {
+    if (!resumeRef.current?.id) {
+      setStatusText('Upload your resume before generating an interview plan.');
+      return;
+    }
+    setIsPlanning(true);
+    setInterviewPlan('');
+    setStatusText('Preparing interview plan');
+
+    const body = {
+      resume_id: resumeRef.current.id,
+      target_role: targetRoleRef.current,
+      target_company: targetCompanyRef.current,
+      job_description: jobDescription,
+    };
+    const headers = await createApiHeadersAsync({
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    try {
+      const response = await fetch('/api/v1/interview/plan', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(detail || 'Interview plan request failed');
+      }
+      if (!response.body) throw new Error('Interview plan stream was empty');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = '';
+      let accumulated = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('event:')) {
+            currentEvent = trimmed.slice(6).trim();
+          } else if (trimmed.startsWith('data:')) {
+            let payload: { token?: string; error?: string };
+            try {
+              payload = JSON.parse(trimmed.slice(5).trim());
+            } catch {
+              continue;
+            }
+            if (currentEvent === 'token') {
+              accumulated += payload.token || '';
+              setInterviewPlan(accumulated);
+            } else if (currentEvent === 'error') {
+              throw new Error(payload.error || 'Interview plan failed');
+            }
+          }
+        }
+      }
+      setStatusText('Interview plan ready');
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : 'Interview plan failed');
+    } finally {
+      setIsPlanning(false);
     }
   };
 
@@ -779,7 +882,7 @@ export default function InterviewPage() {
 
   return (
     <AppShell>
-      <div className={styles.page}>
+      <div className={`${styles.page} ${isFocusMode ? styles.focusMode : ''}`}>
         <header className={styles.header}>
           <div className={styles.titleBlock}>
             <h1 className={styles.title}>Interview Assist</h1>
@@ -804,6 +907,9 @@ export default function InterviewPage() {
             <button className={styles.button} type="button" onClick={clearSession}>
               <Eraser size={15} />
               Clear
+            </button>
+            <button className={styles.button} type="button" onClick={() => setIsFocusMode((current) => !current)}>
+              {isFocusMode ? 'Full View' : 'Focus'}
             </button>
           </div>
         </header>
@@ -891,6 +997,10 @@ export default function InterviewPage() {
               <input className={styles.textField} value={targetCompany} onChange={(event) => setTargetCompany(event.target.value)} placeholder="Optional company name" />
             </label>
             <label className={`${styles.fieldLabel} ${styles.wideField}`}>
+              <span>Job description</span>
+              <textarea className={styles.notesField} value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} placeholder="Optional: paste the role description, requirements, or interview email here." />
+            </label>
+            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
               <span>Extra project notes</span>
               <textarea className={styles.notesField} value={projectNotes} onChange={(event) => setProjectNotes(event.target.value)} placeholder="Optional: add project details, metrics, tech stack, or stories not present in the resume." />
             </label>
@@ -900,11 +1010,33 @@ export default function InterviewPage() {
             </label>
           </div>
           <div className={styles.setupActions}>
+            <button className={styles.primaryButton} type="button" onClick={generateInterviewPlan} disabled={!resume || isPlanning}>
+              {isPlanning ? 'Planning...' : 'Generate Interview Plan'}
+            </button>
             <button className={styles.button} type="button" onClick={prepareCompanyContext} disabled={!targetCompany.trim() || isPreparingCompany}>
               {isPreparingCompany ? 'Preparing...' : 'Prepare Company Questions'}
             </button>
             <span className={styles.helperText}>Fetch likely company/role themes once, then reuse them for faster answers.</span>
           </div>
+          {interviewPlan && (
+            <div className={styles.planPanel}>
+              <div className={styles.planTabs}>
+                {PLAN_TABS.map((tab) => (
+                  <button
+                    className={activePlanTab === tab.id ? styles.planTabActive : styles.planTab}
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActivePlanTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.planContent}>
+                <MarkdownRenderer content={extractPlanSection(interviewPlan, PLAN_TABS.find((tab) => tab.id === activePlanTab)?.heading || PLAN_TABS[0].heading)} />
+              </div>
+            </div>
+          )}
         </section>
 
         {micState === 'unsupported' && (
@@ -981,6 +1113,10 @@ export default function InterviewPage() {
                   <div className={styles.contextRow}>
                     <span>Project notes</span>
                     <strong>{projectNotes.trim() ? 'Included' : 'Empty'}</strong>
+                  </div>
+                  <div className={styles.contextRow}>
+                    <span>Job description</span>
+                    <strong>{jobDescription.trim() ? 'Included' : 'Empty'}</strong>
                   </div>
                   <div className={styles.contextRow}>
                     <span>Instructions</span>

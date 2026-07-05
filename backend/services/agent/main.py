@@ -107,6 +107,12 @@ class TrainingExampleRequest(BaseModel):
     quality_status: str = "candidate"
     source: str = "chat"
 
+class InterviewPlanRequest(BaseModel):
+    resume_id: Optional[str] = None
+    target_role: str = ""
+    target_company: str = ""
+    job_description: str = ""
+
 class CodeSessionCreate(BaseModel):
     title: str = "Code workspace"
     file_ids: List[str] = Field(default_factory=list)
@@ -315,6 +321,36 @@ def capture_training_example(
         handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
     return {"status": "captured", "quality_status": status_value}
+
+@app.post("/api/v1/interview/plan")
+async def interview_plan_endpoint(
+    request: InterviewPlanRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .file_service import get_file_text
+    from .interview_planner import build_interview_plan, stream_plan_text
+
+    resume_text = ""
+    if request.resume_id:
+        try:
+            resume_text = get_file_text(db, user_id, UUID(str(request.resume_id)))
+        except Exception:
+            resume_text = ""
+
+    plan = build_interview_plan(
+        resume_text=resume_text,
+        target_role=request.target_role,
+        target_company=request.target_company,
+        job_description=request.job_description,
+    )
+
+    async def event_stream():
+        for chunk in stream_plan_text(plan):
+            yield f"event: token\ndata: {json.dumps({'token': chunk})}\n\n"
+        yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 @app.post("/api/v1/training/train")
 def trigger_self_training(user_id: UUID = Depends(get_current_user_id)):
