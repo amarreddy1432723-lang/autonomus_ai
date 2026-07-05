@@ -531,56 +531,71 @@ export default function InterviewPage() {
     const relevantMemories = candidateMemoriesRef.current.slice(0, 6);
     void refreshCandidateMemories(normalized, normalizedAnswer);
 
-    // Detect if this is a coding/technical question so we can allow code blocks
+    // Detect if this is a coding/technical concept question
     const CODING_SIGNALS = [
       'write', 'code', 'implement', 'function', 'program', 'algorithm', 'leetcode',
       'reverse', 'sort', 'array', 'string', 'loop', 'recursion', 'complexity',
       'data structure', 'linked list', 'tree', 'graph', 'dynamic programming',
       'lambda', 'decorator', 'class', 'object', 'inheritance', 'polymorphism',
       'sql', 'query', 'api', 'rest', 'http', 'async', 'promise', 'callback',
-      'debug', 'fix', 'error', 'exception', 'output', 'print', 'return'
+      'debug', 'fix', 'error', 'exception', 'output', 'print', 'return',
+      'explain', 'what is', 'difference between', 'how does', 'define', 'shallow', 'deep copy'
+    ];
+    // Detect if the question explicitly asks about the candidate's experience / projects
+    const PROJECT_SIGNALS = [
+      'your project', 'tell me about yourself', 'your experience', 'have you worked',
+      'your background', 'your role', 'what did you do', 'you built', 'you developed',
+      'strengths', 'weaknesses', 'why should we hire', 'where do you see yourself',
+      'challenge you faced', 'conflict', 'achievement', 'internship', 'contribution',
+      'worked on', 'tell me about a time', 'describe a situation', 'your team',
+      'how did you handle', 'greatest', 'proudest', 'resume', 'career'
     ];
     const lowerQ = normalized.toLowerCase();
     const isCodingQuestion = CODING_SIGNALS.some((sig) => lowerQ.includes(sig));
+    const isProjectQuestion = PROJECT_SIGNALS.some((sig) => lowerQ.includes(sig));
+
+    // Build the project/resume usage rule based on question type
+    const projectUsageRule = isProjectQuestion
+      ? 'This question explicitly asks about the candidate\'s background, experience, or projects. USE the uploaded resume, project notes, and saved memories as the PRIMARY source for the answer. Ground every claim in the resume.'
+      : isCodingQuestion
+        ? 'STRICT RULE: This is a pure concept or coding question. Answer it directly with knowledge — do NOT mention the resume, projects, or personal experience at all. No phrases like "In my project...", "I used this in...", or "In my experience...". Just answer the concept cleanly.'
+        : 'This is a general question. Use your knowledge to answer directly. Only bring in the resume or projects if the question clearly and directly references personal experience.';
 
     const hiddenPrompt = [
       'You are Autonomus AI in real interview coach mode.',
       hasCandidateAnswer
         ? 'The user has heard an interviewer question and then gave their own spoken answer.'
         : 'The user has captured only the interviewer question. Answer as the candidate would naturally respond in the interview.',
-      'Use the interviewer question, candidate answer if present, uploaded resume, saved memories, prepared company context, project notes, and recent turns.',
-      'Use the resume as supporting evidence, not as the entire answer.',
-      'For resume, project, HR, behavioral, strengths, and experience questions, prefer evidence from resume, project notes, saved candidate memories, recent Q&A, and company prep.',
-      'For technical or coding questions, answer the actual concept or coding approach directly first, then give a brief explanation and a real-world example. Connect to resume/projects only when clearly relevant.',
-      'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
+      projectUsageRule,
+      'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, use safe wording.',
       hasCandidateAnswer
         ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
         : isCodingQuestion
-          ? 'OUTPUT FORMAT FOR CODING QUESTION: 1) One short spoken sentence introducing your answer (no heading). 2) A clean markdown code block (```language\n...\n```) with the solution. 3) Two to three sentences explaining the logic, time complexity, and a use-case. Do NOT write a long essay. Do NOT use bullet lists outside the explanation. Keep total answer under 150 words plus the code block.'
-          : 'Return only the spoken answer text in natural paragraphs. Do not include a heading, bullets, markdown sections, coaching notes, or commentary.',
+          ? 'OUTPUT FORMAT FOR CODING QUESTION: 1) One short spoken sentence introducing your answer (no heading). 2) A clean markdown code block (```language\n...\n```) with the solution. 3) Two to three sentences explaining the logic, time complexity, and a use-case. No project references. No filler. Under 150 words plus the code block.'
+          : 'Return only the spoken answer in natural paragraphs. No headings, bullets, markdown sections, coaching notes, or commentary.',
       hasCandidateAnswer
         ? 'The improved answer must be first person, interview-ready, concise, and grounded in resume/projects.'
         : isCodingQuestion
-          ? 'Keep the spoken parts first-person and interview-natural. The code block must be complete and runnable. Do not pad with filler sentences.'
-          : 'The answer must be first person, interview-ready, natural, and grounded in resume/projects. Keep it 45-80 words unless the question clearly needs a technical explanation.',
-      'Use simple human language with natural contractions where appropriate. Do not say "Here is", "I would say", "As an AI", "based on the resume", or describe the answer.',
-      'CRITICAL: Never say "there has been a misunderstanding", "the question seems to be", "I think you mean", or any meta-commentary about the question quality. If the question text is unclear or contains noise, extract the most reasonable interview question from it and answer that directly without mentioning the noise.',
-      'For behavioral questions, use compact STAR. For project questions, include stack, contribution, tradeoffs, and impact when available. For coding questions, produce a clean code block followed by a spoken explanation — never inline code in prose.',
+          ? 'The spoken intro and explanation must be first-person and natural. The code block must be complete and runnable. Zero project references.'
+          : 'The answer must be first person, interview-ready, natural, and concise (45-80 words for HR/behavioral; up to 120 words for explanatory concept questions).',
+      'Use simple human language with natural contractions. Do not say "Here is", "I would say", "As an AI", "based on the resume".',
+      'CRITICAL: Never say "there has been a misunderstanding", "the question seems to be", or any meta-commentary. Extract the best-guess question from noise and answer it directly.',
+      'For behavioral questions, use compact STAR format in natural spoken language. For coding/concept questions, explain clearly and directly — no STAR, no project stories.',
       targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
       targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
-      projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
-      interviewPromptRef.current.trim() ? `Interview instructions from candidate: ${interviewPromptRef.current.trim()}` : '',
-      activeResume.filename ? `Resume file in context: ${activeResume.filename}` : '',
-      relevantMemories.length
+      isProjectQuestion && projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
+      isProjectQuestion && interviewPromptRef.current.trim() ? `Interview instructions from candidate: ${interviewPromptRef.current.trim()}` : '',
+      isProjectQuestion && activeResume.filename ? `Resume file in context: ${activeResume.filename}` : '',
+      isProjectQuestion && relevantMemories.length
         ? `Relevant saved candidate memories:\n${relevantMemories.map((memory, index) => `${index + 1}. ${memory.content}`).join('\n')}`
         : '',
       companyPrepRef.current.trim() ? `Prepared company/interview context:\n${companyPrepRef.current.trim()}` : '',
       historyRef.current.length
-        ? `Recent interview turns:\n${historyRef.current.slice(0, 5).map((turn, index) => `${index + 1}. Q: ${turn.question}\nCandidate answer: ${turn.candidateAnswer}\nCoach output: ${turn.coaching}`).join('\n\n')}`
+        ? `Recent interview turns:\n${historyRef.current.slice(0, 5).map((turn, index) => `${index + 1}. Q: ${turn.question}\nCoach output: ${turn.coaching}`).join('\n\n')}`
         : '',
       '',
       `Interviewer question: ${normalized}`,
-      hasCandidateAnswer ? `Candidate answer: ${normalizedAnswer}` : 'Candidate answer: Not provided yet. Create the best resume-grounded answer directly.',
+      hasCandidateAnswer ? `Candidate answer: ${normalizedAnswer}` : 'Candidate answer: Not provided yet. Generate the best answer based on the rules above.',
     ].filter(Boolean).join('\n');
 
     const controller = new AbortController();
