@@ -531,6 +531,18 @@ export default function InterviewPage() {
     const relevantMemories = candidateMemoriesRef.current.slice(0, 6);
     void refreshCandidateMemories(normalized, normalizedAnswer);
 
+    // Detect if this is a coding/technical question so we can allow code blocks
+    const CODING_SIGNALS = [
+      'write', 'code', 'implement', 'function', 'program', 'algorithm', 'leetcode',
+      'reverse', 'sort', 'array', 'string', 'loop', 'recursion', 'complexity',
+      'data structure', 'linked list', 'tree', 'graph', 'dynamic programming',
+      'lambda', 'decorator', 'class', 'object', 'inheritance', 'polymorphism',
+      'sql', 'query', 'api', 'rest', 'http', 'async', 'promise', 'callback',
+      'debug', 'fix', 'error', 'exception', 'output', 'print', 'return'
+    ];
+    const lowerQ = normalized.toLowerCase();
+    const isCodingQuestion = CODING_SIGNALS.some((sig) => lowerQ.includes(sig));
+
     const hiddenPrompt = [
       'You are Autonomus AI in real interview coach mode.',
       hasCandidateAnswer
@@ -543,13 +555,17 @@ export default function InterviewPage() {
       'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, give safe wording and briefly mark what detail should be filled in later.',
       hasCandidateAnswer
         ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
-        : 'Return only the spoken answer text. Do not include a heading, bullets, markdown sections, coaching notes, or commentary.',
+        : isCodingQuestion
+          ? 'OUTPUT FORMAT FOR CODING QUESTION: 1) One short spoken sentence introducing your answer (no heading). 2) A clean markdown code block (```language\n...\n```) with the solution. 3) Two to three sentences explaining the logic, time complexity, and a use-case. Do NOT write a long essay. Do NOT use bullet lists outside the explanation. Keep total answer under 150 words plus the code block.'
+          : 'Return only the spoken answer text in natural paragraphs. Do not include a heading, bullets, markdown sections, coaching notes, or commentary.',
       hasCandidateAnswer
         ? 'The improved answer must be first person, interview-ready, concise, and grounded in resume/projects.'
-        : 'The answer must be first person, interview-ready, natural, and grounded in resume/projects. Keep it 45-80 words unless the question clearly needs a technical explanation.',
+        : isCodingQuestion
+          ? 'Keep the spoken parts first-person and interview-natural. The code block must be complete and runnable. Do not pad with filler sentences.'
+          : 'The answer must be first person, interview-ready, natural, and grounded in resume/projects. Keep it 45-80 words unless the question clearly needs a technical explanation.',
       'Use simple human language with natural contractions where appropriate. Do not say "Here is", "I would say", "As an AI", "based on the resume", or describe the answer.',
       'CRITICAL: Never say "there has been a misunderstanding", "the question seems to be", "I think you mean", or any meta-commentary about the question quality. If the question text is unclear or contains noise, extract the most reasonable interview question from it and answer that directly without mentioning the noise.',
-      'For behavioral questions, improve the answer with compact STAR. For project questions, include stack, contribution, tradeoffs, and impact when available. For coding questions, include logic, edge cases, and spoken explanation, not a long essay.',
+      'For behavioral questions, use compact STAR. For project questions, include stack, contribution, tradeoffs, and impact when available. For coding questions, produce a clean code block followed by a spoken explanation — never inline code in prose.',
       targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
       targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
       projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
