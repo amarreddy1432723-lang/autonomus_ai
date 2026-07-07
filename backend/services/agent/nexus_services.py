@@ -105,6 +105,115 @@ def _safe_slug(value: str) -> str:
     return slug or "nexus-task"
 
 
+def classify_task_type(prompt: str) -> str:
+    lowered = prompt.lower()
+    if any(term in lowered for term in ["debug", "stack trace", "error", "exception", "failing test"]):
+        return "debug"
+    if any(term in lowered for term in ["code", "function", "api", "component", "typescript", "python", "sql", "bug"]):
+        return "code"
+    if any(term in lowered for term in ["design", "ui", "ux", "landing page", "animation", "layout"]):
+        return "design"
+    if any(term in lowered for term in ["research", "latest", "compare", "pricing", "news", "competitor"]):
+        return "research"
+    if any(term in lowered for term in ["interview", "resume", "tell me about yourself", "behavioral"]):
+        return "interview"
+    if any(term in lowered for term in ["deploy", "vercel", "railway", "render", "netlify"]):
+        return "deploy"
+    return "general"
+
+
+def choose_model_for_task(task_type: str, speed_priority: bool = True) -> dict[str, str]:
+    if speed_priority and task_type in {"interview", "general", "research"}:
+        return {"provider": "groq", "model": "llama-3.3-70b-versatile", "reason": "Fast first-token response for live interaction."}
+    if task_type in {"code", "debug"}:
+        return {"provider": "openai", "model": "gpt-4o-mini", "reason": "Code and debugging benefit from stronger structured reasoning."}
+    if task_type == "design":
+        return {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "reason": "Design and writing benefit from critique-style language."}
+    return {"provider": "autonomus", "model": "autonomus-ai-v1", "reason": "Default branded model with private fallback routing."}
+
+
+def score_answer(prompt: str, answer: str) -> dict[str, Any]:
+    score = 50
+    lowered = answer.lower()
+    if len(answer.strip()) > 120:
+        score += 10
+    if any(marker in lowered for marker in ["example", "for example", "because", "tradeoff", "edge case"]):
+        score += 12
+    if "as an ai" in lowered or "i cannot" in lowered:
+        score -= 12
+    if any(term in prompt.lower() for term in ["code", "debug", "api"]) and "```" in answer:
+        score += 8
+    if len(answer) > 3000:
+        score -= 8
+    score = max(0, min(100, score))
+    return {
+        "score": score,
+        "passed": score >= 70,
+        "checks": {
+            "substantial": len(answer.strip()) > 120,
+            "has_reasoning_or_example": any(marker in lowered for marker in ["example", "because", "tradeoff", "edge case"]),
+            "avoids_ai_disclaimer": "as an ai" not in lowered,
+            "not_overlong": len(answer) <= 3000,
+        },
+    }
+
+
+def blended_answer(prompt: str, context: str, task_type: str, config: NexusLLMConfig | None = None) -> dict[str, Any]:
+    selected = choose_model_for_task(task_type or classify_task_type(prompt))
+    primary_config = config or NexusLLMConfig(selected["provider"], selected["model"])
+    system = (
+        "You are NEXUS AI. Answer with senior-level judgment, direct human language, and practical next steps. "
+        "Use the provided context when relevant. Avoid hype, filler, and unsupported claims."
+    )
+    answer = _invoke_structured(system, f"Request:\n{prompt}\n\nContext:\n{context[:24000]}", primary_config)
+    evaluation = score_answer(prompt, answer)
+    improved = answer
+    critique = ""
+
+    if not evaluation["passed"]:
+        critique_prompt = (
+            "Improve this answer so it is more useful, direct, specific, and trustworthy. "
+            "Preserve correct technical details and do not invent facts.\n\n"
+            f"User request:\n{prompt}\n\nDraft answer:\n{answer}"
+        )
+        improved = _invoke_structured(system, critique_prompt, primary_config)
+        critique = "Auto-improved because self-evaluation score was below threshold."
+        evaluation = score_answer(prompt, improved)
+
+    return {
+        "task_type": task_type,
+        "selected_model": selected,
+        "answer": improved,
+        "draft_answer": answer,
+        "evaluation": evaluation,
+        "critique": critique,
+    }
+
+
+def memory_transparency_summary(memories: list[Any]) -> dict[str, Any]:
+    by_type: dict[str, int] = {}
+    top_items = []
+    for memory in memories:
+        memory_type = getattr(memory, "memory_type", None) or getattr(memory, "type", "fact")
+        by_type[memory_type] = by_type.get(memory_type, 0) + 1
+        top_items.append({
+            "id": str(memory.id),
+            "type": memory_type,
+            "content": memory.content,
+            "confidence": float(memory.confidence or 0),
+            "importance": int(memory.importance or 0),
+            "tags": memory.tags or [],
+            "created_at": memory.created_at.isoformat() if memory.created_at else None,
+        })
+    top_items.sort(key=lambda item: (item["importance"], item["confidence"]), reverse=True)
+    return {
+        "total": len(memories),
+        "by_type": by_type,
+        "top_memories": top_items[:20],
+        "transparency_note": "These are editable memories NEXUS can use for personalization. Archive or edit anything inaccurate.",
+    }
+
+
 def generate_code_task(kind: str, instruction: str, context: str, config: NexusLLMConfig) -> dict[str, Any]:
     system = (
         "You are NEXUS Code Engine. Return practical, production-ready engineering output. "

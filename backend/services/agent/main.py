@@ -158,6 +158,18 @@ class NexusSuggestionFeedbackRequest(BaseModel):
     suggestion_id: str
     feedback: str = "dismissed"
 
+class NexusModelRouteRequest(BaseModel):
+    prompt: str
+    speed_priority: bool = True
+
+class NexusBlendRequest(BaseModel):
+    prompt: str
+    context: str = ""
+    file_ids: List[str] = Field(default_factory=list)
+    task_type: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
 def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
     if not file_ids:
         return ""
@@ -334,6 +346,27 @@ async def chat_endpoint(request: ChatRequest, user_id: UUID = Depends(get_curren
         ),
         media_type="text/event-stream"
     )
+
+@app.post("/api/v1/models/route")
+def nexus_model_route(request: NexusModelRouteRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import choose_model_for_task, classify_task_type
+
+    task_type = classify_task_type(request.prompt)
+    return {
+        "task_type": task_type,
+        "selected_model": choose_model_for_task(task_type, request.speed_priority),
+    }
+
+@app.post("/api/v1/models/blend")
+def nexus_model_blend(request: NexusBlendRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, blended_answer, classify_task_type
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    task_type = request.task_type or classify_task_type(request.prompt)
+    uploaded_context = build_uploaded_context(db, user_id, request.file_ids, request.prompt)
+    context = "\n\n".join([request.context, uploaded_context]).strip()
+    config = NexusLLMConfig(provider, model) if provider or model else None
+    return blended_answer(request.prompt, context, task_type, config)
 
 @app.post("/api/v1/training/examples", status_code=202)
 def capture_training_example(
@@ -916,6 +949,19 @@ def get_memories(
         limit=page * page_size,
     )
     return memories[offset:offset + page_size]
+
+@app.get("/api/v1/memories/summary")
+def get_memory_transparency_summary(
+    include_archived: bool = False,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .nexus_services import memory_transparency_summary
+
+    memories = db.query(Memory).filter(Memory.user_id == user_id)
+    if not include_archived:
+        memories = memories.filter(Memory.is_archived == False)  # noqa: E712
+    return memory_transparency_summary(memories.order_by(Memory.importance.desc(), Memory.created_at.desc()).limit(200).all())
 
 @app.post("/api/v1/memories", response_model=MemoryResponse, status_code=201)
 def create_memory(

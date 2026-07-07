@@ -26,6 +26,7 @@ export function getServiceUrl(path: string): string {
   }
   if (
     path.startsWith('/api/v1/agents') ||
+    path.startsWith('/api/v1/models') ||
     path.startsWith('/api/v1/files') ||
     path.startsWith('/api/v1/usage') ||
     path.startsWith('/api/v1/code') ||
