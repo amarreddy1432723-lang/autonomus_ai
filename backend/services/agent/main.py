@@ -174,6 +174,17 @@ class BillingCheckoutRequest(BaseModel):
     plan: str = "pro"
     billing_cycle: str = "monthly"
 
+class PAScheduleRequest(BaseModel):
+    task: str
+    duration_minutes: int = 60
+    deadline: Optional[str] = None
+
+class PAMeetingPrepRequest(BaseModel):
+    meeting_context: str
+
+class PADelegateRequest(BaseModel):
+    instruction: str
+
 def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
     if not file_ids:
         return ""
@@ -589,6 +600,91 @@ def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Dep
     if request.billing_cycle not in {"monthly", "annual"}:
         raise HTTPException(status_code=400, detail="Unsupported billing cycle")
     return create_checkout_session(request.plan, request.billing_cycle)
+
+def _pa_access(db: Session, user_id: UUID) -> dict:
+    from .billing import billing_summary
+
+    summary = billing_summary(db, user_id)
+    plan = summary["plan"]["key"]
+    return {
+        "allowed": plan in {"pro", "enterprise"},
+        "plan": plan,
+        "upgrade_target": "pro",
+        "reason": "paid_plan" if plan in {"pro", "enterprise"} else "pa_requires_pro",
+    }
+
+@app.get("/api/v1/pa/access")
+def get_pa_access(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return _pa_access(db, user_id)
+
+@app.get("/api/v1/pa/daily-brief")
+def get_pa_daily_brief(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import daily_brief
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        return {"access": access, "locked": True}
+    return {"access": access, **daily_brief(db, user_id)}
+
+@app.post("/api/v1/pa/schedule")
+def post_pa_schedule(request: PAScheduleRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import smart_schedule
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+    return smart_schedule(db, user_id, request.task, request.duration_minutes, request.deadline)
+
+@app.post("/api/v1/pa/meeting-prep")
+def post_pa_meeting_prep(request: PAMeetingPrepRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import meeting_prep
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+    return meeting_prep(db, user_id, request.meeting_context)
+
+@app.get("/api/v1/pa/end-of-day")
+def get_pa_end_of_day(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import end_of_day_summary
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        return {"access": access, "locked": True}
+    return {"access": access, **end_of_day_summary(db, user_id)}
+
+@app.post("/api/v1/pa/delegate")
+def post_pa_delegate(request: PADelegateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import delegate_task
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+    return delegate_task(db, user_id, request.instruction)
+
+@app.get("/api/v1/pa/weekly-reflection")
+def get_pa_weekly_reflection(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import weekly_reflection
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        return {"access": access, "locked": True}
+    return {"access": access, **weekly_reflection(db, user_id)}
+
+@app.get("/api/v1/pa/insights")
+def get_pa_insights(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import insights
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        return {"access": access, "locked": True}
+    return {"access": access, **insights(db, user_id)}
+
+@app.get("/api/v1/pa/life-graph")
+def get_pa_life_graph(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .jarvis_planner import life_graph
+
+    return life_graph(db, user_id)
 
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(

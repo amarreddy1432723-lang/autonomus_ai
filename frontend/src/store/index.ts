@@ -43,7 +43,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   currentUser: { id: '00000000-0000-0000-0000-000000000000', email: 'user@example.com' },
-  sidebarCollapsed: false,
+  sidebarCollapsed: true,
   activeGoalContext: null,
   agentActivityFeed: [
     { id: '1', agent: 'Research Agent', activity: 'Completed SaaS pricing analysis', timestamp: '9:04 AM', status: 'done' },

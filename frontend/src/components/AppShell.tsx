@@ -7,7 +7,7 @@ import {
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus, LogOut, Mic, Sparkles, Globe2, Rocket, Lightbulb
+  LogIn, UserPlus, LogOut, Mic, Sparkles, Globe2, Rocket, Lightbulb, PanelLeft, BriefcaseBusiness
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
@@ -47,6 +47,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [activityCollapsed, setActivityCollapsed] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [productMenuOpen, setProductMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isDemoSignedIn, setIsDemoSignedIn] = useState(false);
 
@@ -61,7 +62,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     router.push('/sign-in');
   };
 
-  const navItems = useMemo(() => [
+  const products = useMemo(() => [
+    { label: 'NEXUS Code', href: '/studio', match: ['/studio', '/chat', '/workspace', '/design', '/deploy'], icon: Code2 },
+    { label: 'NEXUS PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
+    { label: 'Interview', href: '/interview', match: ['/interview'], icon: Mic },
+    { label: 'Research', href: '/internet', match: ['/internet'], icon: Globe2 },
+    { label: 'Life Graph', href: '/life-graph', match: ['/life-graph', '/memory'], icon: BrainCircuit },
+    { label: 'Product Hub', href: '/hub', match: ['/hub'], icon: Sparkles },
+  ], []);
+
+  const allNavItems = useMemo(() => [
+    { label: 'Hub', icon: Sparkles, href: '/hub' },
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
     { label: 'Studio', icon: Sparkles, href: '/studio' },
     { label: 'Chat', icon: MessageSquare, href: '/chat' },
@@ -81,7 +92,37 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { label: 'Settings', icon: Settings, href: '/settings' },
   ], [pendingApprovalCount]);
 
-  const currentItem = navItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || navItems[0];
+  const activeProduct = products.find((product) => product.match.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) || products[0];
+
+  const sidebarItems = useMemo(() => {
+    if (activeProduct.label === 'NEXUS PA') {
+      return [
+        { label: 'PA Home', icon: BriefcaseBusiness, href: '/pa' },
+        { label: 'Planner', icon: Calendar, href: '/pa/planner' },
+        { label: 'Goals', icon: Target, href: '/goals' },
+        { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
+        { label: 'Timeline', icon: Hourglass, href: '/timeline' },
+        { label: 'Reflection', icon: Lightbulb, href: '/pa/reflection' },
+      ];
+    }
+    if (activeProduct.label === 'Interview') {
+      return [{ label: 'Interview', icon: Mic, href: '/interview' }];
+    }
+    if (activeProduct.label === 'Research') {
+      return [{ label: 'Research', icon: Globe2, href: '/internet' }];
+    }
+    return [
+      { label: 'Studio', icon: Sparkles, href: '/studio' },
+      { label: 'Chat', icon: MessageSquare, href: '/chat' },
+      { label: 'Workspace', icon: Code2, href: '/workspace' },
+      { label: 'Design', icon: Sparkles, href: '/design' },
+      { label: 'Deploy', icon: Rocket, href: '/deploy' },
+      { label: 'Goals', icon: Target, href: '/goals' },
+      { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
+    ];
+  }, [activeProduct.label, pendingApprovalCount]);
+
+  const currentItem = allNavItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || allNavItems[0];
 
   const commands = useMemo(() => [
     { id: 'quick-chat', label: 'Ask NEXUS', hint: 'Ctrl+J', action: () => router.push('/chat') },
@@ -89,7 +130,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { id: 'quick-design', label: 'Design UI', hint: 'Ctrl+D', action: () => router.push('/design') },
     { id: 'quick-deploy', label: 'Deploy app', hint: 'Ctrl+Shift+D', action: () => router.push('/deploy') },
     { id: 'quick-research', label: 'Research topic', hint: 'Ctrl+R', action: () => router.push('/internet') },
-    ...navItems.map((item, index) => ({
+    { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', action: () => toggleSidebar() },
+    ...allNavItems.map((item, index) => ({
       id: item.href,
       label: `Open ${item.label}`,
       hint: index < 9 ? `${index + 1}` : '',
@@ -98,7 +140,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { id: 'new-goal', label: 'Create a new goal', hint: '', action: () => router.push('/goals?new=1') },
     { id: 'chat', label: 'Open chat with AI', hint: 'Ctrl+J', action: () => router.push('/chat') },
     { id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) },
-  ], [navItems, router, searchQuery]);
+  ], [allNavItems, router, searchQuery, toggleSidebar]);
 
   const filteredCommands = commands.filter((command) => (
     !searchQuery.trim() || command.label.toLowerCase().includes(searchQuery.trim().toLowerCase())
@@ -111,6 +153,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         event.preventDefault();
         setPaletteOpen(true);
         setTimeout(() => searchInputRef.current?.focus(), 0);
+      }
+      if (modifier && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        toggleSidebar();
       }
       if (modifier && event.key.toLowerCase() === 'j') {
         event.preventDefault();
@@ -129,7 +175,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         router.push('/internet');
       }
       if (!modifier && /^[1-9]$/.test(event.key)) {
-        const item = navItems[Number(event.key) - 1];
+        const item = allNavItems[Number(event.key) - 1];
         if (item) router.push(item.href);
       }
       if (event.key === 'Escape') {
@@ -138,7 +184,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navItems, router]);
+  }, [allNavItems, router, toggleSidebar]);
 
   const runCommand = (action: () => void) => {
     action();
@@ -148,13 +194,43 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
-        <Link href="/studio" className={styles.logoArea} aria-label="Open NEXUS Studio">
-          <Cpu className={styles.logoGlow} size={20} />
-          <span>NEXUS</span>
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <button 
+            onClick={toggleSidebar} 
+            className={styles.iconButton} 
+            title={sidebarCollapsed ? "Show sidebar (Ctrl+B)" : "Hide sidebar (Ctrl+B)"}
+            aria-label="Toggle sidebar"
+            style={{ border: 'none', background: 'transparent', padding: '0 4px', cursor: 'pointer' }}
+          >
+            <PanelLeft size={16} />
+          </button>
+          <button
+            type="button"
+            className={styles.logoArea}
+            aria-label="Open product switcher"
+            onClick={() => setProductMenuOpen((value) => !value)}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
+          >
+            <Cpu className={styles.logoGlow} size={20} />
+            <span>NEXUS</span>
+          </button>
+          {productMenuOpen && (
+            <div className={styles.productMenu}>
+              {products.map((product) => {
+                const Icon = product.icon;
+                return (
+                  <button key={product.label} type="button" onClick={() => { setProductMenuOpen(false); router.push(product.href); }}>
+                    <Icon size={16} />
+                    <span>{product.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         <div className={styles.breadcrumb} aria-label="Current location">
-          <Link href="/studio">Studio</Link>
+          <Link href={activeProduct.href}>{activeProduct.label}</Link>
           <ChevronRight size={13} />
           <span>{currentItem.label}</span>
         </div>
@@ -240,7 +316,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div className={styles.mainContainer}>
         <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`} onDoubleClick={toggleSidebar}>
           <ul className={styles.navItems}>
-            {navItems.map((item) => {
+            {sidebarItems.map((item) => {
               const Icon = item.icon;
               const isActive = pathname.startsWith(item.href);
               return (
