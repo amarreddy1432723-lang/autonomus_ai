@@ -290,6 +290,94 @@ def design_response(description: str, output_type: str, config: NexusLLMConfig) 
     return {"status": "draft", "output_type": output_type, "content": content}
 
 
+def design_preview_html(description: str, style: str, content: str = "") -> str:
+    style_key = style.lower()
+    palettes = {
+        "minimal": {
+            "bg": "#f7f8fb",
+            "surface": "#ffffff",
+            "text": "#111827",
+            "muted": "#64748b",
+            "accent": "#2563eb",
+            "border": "#e5e7eb",
+        },
+        "bold": {
+            "bg": "#09090b",
+            "surface": "#18181b",
+            "text": "#fafafa",
+            "muted": "#a1a1aa",
+            "accent": "#f97316",
+            "border": "#3f3f46",
+        },
+        "glass": {
+            "bg": "linear-gradient(135deg,#07111f,#182445 46%,#0f172a)",
+            "surface": "rgba(255,255,255,.12)",
+            "text": "#f8fafc",
+            "muted": "#cbd5e1",
+            "accent": "#7dd3fc",
+            "border": "rgba(255,255,255,.2)",
+        },
+    }
+    colors = palettes.get(style_key, palettes["minimal"])
+    clean_description = " ".join(description.split())[:180] or "Professional AI workspace interface"
+    safe_title = f"{style.title()} Concept"
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+*{{box-sizing:border-box}} body{{margin:0;font-family:Inter,system-ui,sans-serif;background:{colors['bg']};color:{colors['text']};}}
+.wrap{{min-height:100vh;padding:22px;display:grid;gap:16px;align-content:start}}
+.nav,.card,.panel{{border:1px solid {colors['border']};background:{colors['surface']};border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.18)}}
+.nav{{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;backdrop-filter:blur(16px)}}
+.brand{{font-weight:800;letter-spacing:.02em}} .pill{{font-size:12px;color:{colors['accent']};border:1px solid {colors['border']};padding:6px 10px;border-radius:999px}}
+.hero{{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:stretch}}
+.card{{padding:20px;backdrop-filter:blur(18px)}} h1{{font-size:30px;line-height:1.05;margin:0 0 10px}} p{{color:{colors['muted']};line-height:1.5;margin:0}}
+.actions{{display:flex;gap:8px;margin-top:18px}} button{{border:0;background:{colors['accent']};color:white;padding:10px 13px;border-radius:10px;font-weight:700}} button.secondary{{background:transparent;color:{colors['text']};border:1px solid {colors['border']}}}
+.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}} .metric{{padding:14px;border:1px solid {colors['border']};border-radius:12px;background:rgba(255,255,255,.05)}} .metric strong{{display:block;font-size:20px}}
+.panel{{padding:16px;display:grid;gap:10px}} .row{{height:10px;border-radius:99px;background:{colors['border']}}} .row:nth-child(2){{width:84%}} .row:nth-child(3){{width:62%}} .row:nth-child(4){{width:74%}}
+@media(max-width:720px){{.hero{{grid-template-columns:1fr}} h1{{font-size:24px}}}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="nav"><span class="brand">NEXUS</span><span class="pill">{safe_title}</span></div>
+  <section class="hero">
+    <div class="card">
+      <h1>{clean_description}</h1>
+      <p>Clean hierarchy, focused actions, responsive layout, and polished interaction states prepared for implementation.</p>
+      <div class="actions"><button>Primary Action</button><button class="secondary">Preview</button></div>
+    </div>
+    <div class="panel">
+      <div class="metrics">
+        <div class="metric"><strong>98%</strong><span>Health</span></div>
+        <div class="metric"><strong>24</strong><span>Tasks</span></div>
+        <div class="metric"><strong>7</strong><span>Signals</span></div>
+      </div>
+      <div class="row"></div><div class="row"></div><div class="row"></div><div class="row"></div>
+    </div>
+  </section>
+</div>
+</body>
+</html>"""
+
+
+def design_variants(description: str, output_type: str, config: NexusLLMConfig) -> dict[str, Any]:
+    variants = []
+    for style in ["minimal", "bold", "glass"]:
+        prompt = f"{description}\n\nStyle direction: {style}. Return concise implementation notes and React/HTML/CSS starter code."
+        response = design_response(prompt, output_type, config)
+        content = response.get("content", "")
+        variants.append({
+            "style": style,
+            "title": f"{style.title()} variant",
+            "content": content,
+            "preview_html": design_preview_html(description, style, content),
+        })
+    return {"variants": variants}
+
+
 def deployment_analysis(project_type: str, repo_context: str = "") -> dict[str, Any]:
     project = project_type.lower()
     if "next" in project or "react" in project:

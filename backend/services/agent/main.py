@@ -820,6 +820,20 @@ def nexus_design_generate_ui(request: NexusDesignRequest, user_id: UUID = Depend
     record_usage(db, user_id, "/api/v1/design/generate-ui", provider, model, None, request.description, result.get("content", ""))
     return result
 
+@app.post("/api/v1/design/variants")
+def nexus_design_variants(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
+    from .nexus_services import NexusLLMConfig, design_variants
+
+    access = check_entitlement(db, user_id, "ui_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "UI generation limit reached", "access": access})
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    result = design_variants(request.description, request.output_type or "page", NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/design/variants", provider, model, None, request.description, json.dumps(result))
+    return result
+
 @app.post("/api/v1/design/generate-page")
 def nexus_design_generate_page(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .billing import check_entitlement

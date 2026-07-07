@@ -1,31 +1,51 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Check, Clipboard, Code2, FileUp, GitPullRequest, MoreHorizontal, Play, Send, Wand2, X } from 'lucide-react';
 import AppShell from '../../components/AppShell';
 import { apiRequest } from '../../utils/api';
-import { Code2, FileUp, Play, Wand2 } from 'lucide-react';
+import styles from '../nexus.module.css';
 
 type UploadedFile = {
   id: string;
   filename: string;
   size_bytes?: number;
-  metadata?: { chunk_count?: number };
 };
 
+type Mode = 'quick' | 'plan' | 'design';
+
+type DesignPayload = {
+  brief: string;
+  style: string;
+  code: string;
+  notes: string;
+  planMode?: boolean;
+};
+
+const phaseLabels = ['Understand', 'Plan', 'Generate', 'Review', 'Apply', 'Verify'];
+
 export default function WorkspacePage() {
+  const [mode, setMode] = useState<Mode>('quick');
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [showFiles, setShowFiles] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [sessionId, setSessionId] = useState('');
-  const [instruction, setInstruction] = useState('Improve this code and fix obvious issues.');
+  const [instruction, setInstruction] = useState('Build the requested feature with clean structure, focused changes, and tests where useful.');
+  const [designPayload, setDesignPayload] = useState<DesignPayload | null>(null);
+  const [quickOutput, setQuickOutput] = useState('');
   const [plan, setPlan] = useState('');
   const [patch, setPatch] = useState('');
-  const [applyResult, setApplyResult] = useState('');
+  const [accepted, setAccepted] = useState(true);
+  const [applySummary, setApplySummary] = useState('');
   const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const selectedFileIds = useMemo(() => Object.entries(selected).filter(([, value]) => value).map(([id]) => id), [selected]);
 
   const loadFiles = async () => {
     try {
-      const data = await apiRequest('/api/v1/files');
-      setFiles(data);
+      setFiles(await apiRequest('/api/v1/files'));
     } catch {
       setFiles([]);
     }
@@ -33,6 +53,26 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     loadFiles();
+    const raw = sessionStorage.getItem('design_to_workspace');
+    if (raw) {
+      try {
+        const payload = JSON.parse(raw) as DesignPayload;
+        setDesignPayload(payload);
+        setMode(payload.planMode ? 'plan' : 'design');
+        setInstruction([
+          `Implement this selected ${payload.style} design as production-ready frontend code.`,
+          `Brief: ${payload.brief}`,
+          '',
+          'Preview HTML/CSS:',
+          payload.code,
+          '',
+          'Design notes:',
+          payload.notes,
+        ].join('\n'));
+      } catch {
+        sessionStorage.removeItem('design_to_workspace');
+      }
+    }
   }, []);
 
   const uploadFiles = async (fileList: FileList | null) => {
@@ -52,17 +92,34 @@ export default function WorkspacePage() {
 
   const ensureSession = async () => {
     if (sessionId) return sessionId;
-    const file_ids = Object.entries(selected).filter(([, value]) => value).map(([id]) => id);
     const session = await apiRequest('/api/v1/code/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'Autonomus code workspace', file_ids }),
+      body: JSON.stringify({ title: 'NEXUS workspace plan', file_ids: selectedFileIds }),
     });
     setSessionId(session.id);
     return session.id;
   };
 
+  const runQuick = async () => {
+    setBusy('Generating');
+    setError('');
+    setQuickOutput('');
+    try {
+      const data = await apiRequest('/api/v1/code/generate', {
+        method: 'POST',
+        body: JSON.stringify({ instruction, file_ids: selectedFileIds, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
+      });
+      setQuickOutput(data.content || JSON.stringify(data, null, 2));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Generation failed');
+    } finally {
+      setBusy('');
+    }
+  };
+
   const runPlan = async () => {
     setBusy('Planning');
+    setError('');
     try {
       const id = await ensureSession();
       const data = await apiRequest(`/api/v1/code/sessions/${id}/plan`, {
@@ -70,6 +127,8 @@ export default function WorkspacePage() {
         body: JSON.stringify({ instruction, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
       });
       setPlan(data.plan);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Planning failed');
     } finally {
       setBusy('');
     }
@@ -77,6 +136,7 @@ export default function WorkspacePage() {
 
   const runPatch = async () => {
     setBusy('Generating patch');
+    setError('');
     try {
       const id = await ensureSession();
       const data = await apiRequest(`/api/v1/code/sessions/${id}/patch`, {
@@ -84,72 +144,184 @@ export default function WorkspacePage() {
         body: JSON.stringify({ instruction, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
       });
       setPatch(data.patch);
+      setAccepted(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Patch generation failed');
     } finally {
       setBusy('');
     }
   };
 
   const applyPatch = async () => {
-    if (!sessionId) return;
-    setBusy('Applying patch');
+    if (!sessionId || !accepted) return;
+    setBusy('Applying');
+    setError('');
     try {
       const data = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, { method: 'POST' });
-      setApplyResult(JSON.stringify(data, null, 2));
+      const changed = data.changed || [];
+      setApplySummary(`Implementation complete. ${changed.length} file${changed.length === 1 ? '' : 's'} modified. ${data.summary || ''}`.trim());
+      sessionStorage.setItem('workspace_to_deploy', JSON.stringify({ files_changed: changed.map((item: any) => item.filename), summary: data.summary || '' }));
       await loadFiles();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Apply failed');
     } finally {
       setBusy('');
     }
   };
 
+  const sendPlanStepToChat = () => {
+    const payload = ['Help me refine this workspace plan step.', '', plan || instruction].join('\n');
+    sessionStorage.setItem('interview_to_chat_prompt', payload);
+    window.location.href = '/chat';
+  };
+
+  const modeButton = (value: Mode, label: string) => (
+    <button type="button" className={`${styles.tabButton} ${mode === value ? styles.tabButtonActive : ''}`} onClick={() => setMode(value)}>
+      {label}
+    </button>
+  );
+
   return (
     <AppShell>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-          <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 800 }}>Code Workspace</h1>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, border: '1px solid var(--color-border)', padding: '8px 12px', borderRadius: 6, cursor: 'pointer' }}>
-            <FileUp size={16} /> Upload code files
-            <input hidden multiple type="file" accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css" onChange={(event) => uploadFiles(event.target.files)} />
-          </label>
-        </div>
+      <main className={styles.page}>
+        <section className={styles.commandPanel}>
+          <div className={styles.commandHeader}>
+            <div className={styles.inlineActions}>
+              {modeButton('quick', 'Quick Generate')}
+              {modeButton('plan', 'Plan Mode')}
+              {modeButton('design', 'Design to Code')}
+            </div>
+            <div className={styles.inlineActions}>
+              <label className={styles.secondaryButton}>
+                <FileUp size={15} />
+                Upload
+                <input hidden multiple type="file" accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css" onChange={(event) => uploadFiles(event.target.files)} />
+              </label>
+              <button className={styles.secondaryButton} type="button" onClick={() => setShowFiles((value) => !value)}>Files ({selectedFileIds.length})</button>
+              <button className={styles.iconAction} type="button" onClick={() => setShowSettings((value) => !value)} aria-label="Workspace settings">
+                <MoreHorizontal size={18} />
+              </button>
+            </div>
+          </div>
 
-        {busy && <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>{busy}...</span>}
+          {showSettings && (
+            <div className={styles.settingsStrip}>
+              <span>Session: {sessionId || 'created when needed'}</span>
+              <span>Model: Autonomus AI</span>
+            </div>
+          )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 320px) 1fr', gap: 16 }}>
-          <section style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, background: 'var(--color-bg-secondary)' }}>
-            <h2 style={{ fontSize: 'var(--text-sm)', marginBottom: 8 }}>Files</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {files.map((file) => (
-                <label key={file.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 'var(--text-xs)' }}>
-                  <input
-                    type="checkbox"
-                    checked={!!selected[file.id]}
-                    onChange={(event) => setSelected((current) => ({ ...current, [file.id]: event.target.checked }))}
-                  />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</span>
-                </label>
+          {showFiles && (
+            <div className={styles.phaseCard}>
+              <div className={styles.phaseHeader}>
+                <strong>Workspace files</strong>
+                <button className={styles.iconAction} type="button" onClick={() => setShowFiles(false)}><X size={15} /></button>
+              </div>
+              <div className={styles.phaseList}>
+                {files.map((file) => (
+                  <label key={file.id} className={styles.toggleLabel}>
+                    <input
+                      type="checkbox"
+                      checked={!!selected[file.id]}
+                      onChange={(event) => setSelected((current) => ({ ...current, [file.id]: event.target.checked }))}
+                    />
+                    {file.filename}
+                  </label>
+                ))}
+                {files.length === 0 && <span className={styles.meta}>No uploaded code files yet.</span>}
+              </div>
+            </div>
+          )}
+
+          <div className={styles.promptRow}>
+            <textarea className={styles.largePrompt} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
+            {mode === 'quick' && <button className={styles.button} onClick={runQuick} disabled={!!busy}><Wand2 size={16} /> Generate</button>}
+            {mode !== 'quick' && <button className={styles.button} onClick={runPlan} disabled={!!busy}><GitPullRequest size={16} /> Plan</button>}
+          </div>
+          {busy && <span className={styles.meta}>{busy}...</span>}
+        </section>
+
+        {mode === 'design' && designPayload && (
+          <section className={styles.grid}>
+            <iframe className={styles.previewFrame} sandbox="allow-same-origin" srcDoc={designPayload.code} title="Selected design preview" />
+            <div className={styles.phaseCard}>
+              <h2>{designPayload.style} design selected</h2>
+              <p>{designPayload.brief}</p>
+              <button className={styles.button} type="button" onClick={runQuick}><Code2 size={16} /> Generate implementation</button>
+            </div>
+          </section>
+        )}
+
+        {mode === 'quick' && quickOutput && (
+          <section className={styles.phaseCard}>
+            <div className={styles.phaseHeader}>
+              <strong>Generated output</strong>
+              <div className={styles.inlineActions}>
+                <button className={styles.secondaryButton} onClick={() => navigator.clipboard.writeText(quickOutput)}><Clipboard size={15} /> Copy</button>
+                <button className={styles.secondaryButton} onClick={sendPlanStepToChat}><Send size={15} /> Chat</button>
+              </div>
+            </div>
+            <pre className={styles.diffView}>{quickOutput}</pre>
+          </section>
+        )}
+
+        {mode !== 'quick' && (
+          <section className={styles.phaseList}>
+            <div className={styles.grid}>
+              {phaseLabels.map((label, index) => (
+                <div className={styles.phaseCard} key={label}>
+                  <span className={styles.eyebrow}>Phase {index + 1}</span>
+                  <h3>{label}</h3>
+                  <p className={styles.meta}>
+                    {index === 0 && 'Scope, risks, and needed files are extracted from your instruction.'}
+                    {index === 1 && 'Generate a checklist before writing code.'}
+                    {index === 2 && 'Create a patch from the accepted plan.'}
+                    {index === 3 && 'Accept, reject, or send changes to chat.'}
+                    {index === 4 && 'Apply accepted patches to workspace files.'}
+                    {index === 5 && 'Summarize changes and prepare deployment handoff.'}
+                  </p>
+                </div>
               ))}
-              {files.length === 0 && <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>No uploaded files yet.</span>}
             </div>
-          </section>
 
-          <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <textarea
-              value={instruction}
-              onChange={(event) => setInstruction(event.target.value)}
-              rows={4}
-              style={{ width: '100%', background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)', borderRadius: 8, padding: 12 }}
-            />
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button onClick={runPlan} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)' }}><Code2 size={16} /> Plan</button>
-              <button onClick={runPatch} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--color-accent-primary)', background: 'var(--color-accent-primary)', color: 'white' }}><Wand2 size={16} /> Generate patch</button>
-              <button onClick={applyPatch} disabled={!patch} style={{ display: 'inline-flex', gap: 8, alignItems: 'center', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)' }}><Play size={16} /> Apply</button>
-            </div>
-            {plan && <pre style={{ whiteSpace: 'pre-wrap', border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, background: 'var(--color-bg-secondary)' }}>{plan}</pre>}
-            {patch && <pre style={{ whiteSpace: 'pre-wrap', border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, background: 'var(--color-bg-secondary)' }}>{patch}</pre>}
-            {applyResult && <pre style={{ whiteSpace: 'pre-wrap', border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, background: 'var(--color-bg-secondary)' }}>{applyResult}</pre>}
+            {plan && (
+              <div className={styles.phaseCard}>
+                <div className={styles.phaseHeader}>
+                  <strong>Implementation plan</strong>
+                  <div className={styles.inlineActions}>
+                    <button className={styles.secondaryButton} onClick={sendPlanStepToChat}><Send size={15} /> Chat</button>
+                    <button className={styles.button} onClick={runPatch}><Wand2 size={16} /> Generate Patch</button>
+                  </div>
+                </div>
+                <pre className={styles.diffView}>{plan}</pre>
+              </div>
+            )}
+
+            {patch && (
+              <div className={styles.phaseCard}>
+                <div className={styles.phaseHeader}>
+                  <strong>Review patch</strong>
+                  <div className={styles.inlineActions}>
+                    <button className={styles.secondaryButton} onClick={() => setAccepted(true)}><Check size={15} /> Accept</button>
+                    <button className={styles.secondaryButton} onClick={() => setAccepted(false)}><X size={15} /> Reject</button>
+                    <button className={styles.button} disabled={!accepted} onClick={applyPatch}><Play size={16} /> Apply</button>
+                  </div>
+                </div>
+                <pre className={styles.diffView}>{patch}</pre>
+              </div>
+            )}
+
+            {applySummary && <div className={styles.summaryCard}>{applySummary}</div>}
           </section>
-        </div>
-      </div>
+        )}
+
+        {error && (
+          <details className={styles.phaseCard} open>
+            <summary>Error details</summary>
+            <p className={styles.meta}>{error}</p>
+          </details>
+        )}
+      </main>
     </AppShell>
   );
 }
