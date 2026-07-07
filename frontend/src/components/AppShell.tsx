@@ -7,7 +7,7 @@ import {
   LayoutDashboard, MessageSquare, Target, CheckSquare, 
   BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus, LogOut, Mic
+  LogIn, UserPlus, LogOut, Mic, Sparkles, Globe2, Rocket, Lightbulb
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
@@ -63,9 +63,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const navItems = useMemo(() => [
     { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
+    { label: 'Studio', icon: Sparkles, href: '/studio' },
     { label: 'Chat', icon: MessageSquare, href: '/chat' },
     { label: 'Interview', icon: Mic, href: '/interview' },
     { label: 'Workspace', icon: Code2, href: '/workspace' },
+    { label: 'Internet', icon: Globe2, href: '/internet' },
+    { label: 'Design', icon: Sparkles, href: '/design' },
+    { label: 'Deploy', icon: Rocket, href: '/deploy' },
+    { label: 'Intelligence', icon: Lightbulb, href: '/intelligence' },
     { label: 'Goals', icon: Target, href: '/goals' },
     { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
     { label: 'Memory', icon: BrainCircuit, href: '/memory' },

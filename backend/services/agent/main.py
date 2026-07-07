@@ -122,6 +122,49 @@ class CodeInstructionRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
+class NexusCodeRequest(BaseModel):
+    instruction: str
+    file_ids: List[str] = Field(default_factory=list)
+    context: str = ""
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
+class NexusResearchRequest(BaseModel):
+    query: str
+    depth: str = "standard"
+
+class NexusBrowseRequest(BaseModel):
+    url: str
+
+class FreeTierRecommendRequest(BaseModel):
+    project_type: str = ""
+    needs: str = ""
+
+class NexusDesignRequest(BaseModel):
+    description: str
+    output_type: str = "page"
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
+class NexusDeployAnalyzeRequest(BaseModel):
+    project_type: str = ""
+    repo_context: str = ""
+
+class NexusSafetyRequest(BaseModel):
+    content: str
+    action: str = "answer"
+
+class NexusSuggestionFeedbackRequest(BaseModel):
+    suggestion_id: str
+    feedback: str = "dismissed"
+
+def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
+    if not file_ids:
+        return ""
+    from .file_service import file_context_for_prompt
+
+    return file_context_for_prompt(db, user_id, file_ids, prompt)
+
 def _training_data_path(filename: str) -> Path:
     root = Path(__file__).resolve().parents[3]
     path = root / "training" / "data" / filename
@@ -501,6 +544,213 @@ def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_curre
 
     session = get_code_session(db, user_id, session_id)
     return apply_patch_payload(db, user_id, session)
+
+@app.post("/api/v1/code/generate")
+def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, generate_code_task, safety_check
+
+    guard = safety_check(request.instruction, "code_generate")
+    if not guard.get("allowed"):
+        raise HTTPException(status_code=400, detail=guard["reason"])
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
+    return generate_code_task("generate", request.instruction, context, NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/code/debug")
+def nexus_code_debug(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, generate_code_task
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
+    return generate_code_task("debug", request.instruction, context, NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/code/refactor")
+def nexus_code_refactor(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, generate_code_task
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
+    return generate_code_task("refactor", request.instruction, context, NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/code/explain")
+def nexus_code_explain(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, explain_code
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
+    return explain_code(request.instruction, context, NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/code/test")
+def nexus_code_test(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .nexus_services import NexusLLMConfig, generate_code_task
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
+    return generate_code_task("test", request.instruction, context, NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/code/execute")
+def nexus_code_execute(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import safety_check
+
+    guard = safety_check(request.instruction, "code_execute")
+    return {
+        "status": "approval_required",
+        "risk": guard,
+        "message": "Code execution is not run directly in production yet. Configure Docker or E2B sandbox, then approve execution per task.",
+    }
+
+@app.post("/api/v1/internet/research")
+def nexus_internet_research(request: NexusResearchRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import build_research_report
+    from .tools import web_search
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        raw = web_search.invoke({"query": request.query})
+        if isinstance(raw, str):
+            return {"query": request.query, "report": f"# Research Report: {request.query}\n\n## Live Findings\n{raw}"}
+        results = raw
+    except Exception:
+        results = []
+    return {"query": request.query, "report": build_research_report(request.query, results if isinstance(results, list) else [])}
+
+@app.post("/api/v1/internet/browse")
+def nexus_internet_browse(request: NexusBrowseRequest, user_id: UUID = Depends(get_current_user_id)):
+    from urllib.request import Request, urlopen
+    from .nexus_services import browse_summary
+
+    if not request.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Only http and https URLs are supported.")
+    try:
+        req = Request(request.url, headers={"User-Agent": "NEXUS-AI-Research/1.0"})
+        with urlopen(req, timeout=10) as response:
+            raw = response.read(200000)
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Browse failed: {exc}")
+    return browse_summary(request.url, text)
+
+@app.get("/api/v1/internet/free-tiers")
+def nexus_internet_free_tiers(user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import FREE_TIER_CATALOG
+
+    return {"items": FREE_TIER_CATALOG}
+
+@app.post("/api/v1/internet/setup-service")
+def nexus_setup_service(request: FreeTierRecommendRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import recommend_free_tiers
+
+    return {
+        "status": "approval_required",
+        "recommendations": recommend_free_tiers(request.project_type, request.needs),
+        "message": "Service signup and credential storage require explicit approval before any browser automation or token storage.",
+    }
+
+@app.get("/api/v1/free-tiers/catalog")
+def nexus_free_tier_catalog(user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import FREE_TIER_CATALOG
+
+    return {"items": FREE_TIER_CATALOG}
+
+@app.get("/api/v1/free-tiers/recommend")
+def nexus_free_tier_recommend_get(
+    project_type: str = "",
+    needs: str = "",
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .nexus_services import recommend_free_tiers
+
+    return {"items": recommend_free_tiers(project_type, needs)}
+
+@app.post("/api/v1/free-tiers/recommend")
+def nexus_free_tier_recommend_post(request: FreeTierRecommendRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import recommend_free_tiers
+
+    return {"items": recommend_free_tiers(request.project_type, request.needs)}
+
+@app.post("/api/v1/design/generate-ui")
+def nexus_design_generate_ui(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import NexusLLMConfig, design_response
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    return design_response(request.description, request.output_type or "ui", NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/design/generate-page")
+def nexus_design_generate_page(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import NexusLLMConfig, design_response
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    return design_response(request.description, "page", NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/design/animate")
+def nexus_design_animate(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import NexusLLMConfig, design_response
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    return design_response(request.description, "animation", NexusLLMConfig(provider, model))
+
+@app.post("/api/v1/design/critique")
+def nexus_design_critique(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import NexusLLMConfig, design_response
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    return design_response(request.description, "critique", NexusLLMConfig(provider, model))
+
+@app.get("/api/v1/design/components")
+def nexus_design_components(user_id: UUID = Depends(get_current_user_id)):
+    return {
+        "items": [
+            {"name": "Command Center Shell", "type": "layout", "uses": "Agent workspaces and dashboards"},
+            {"name": "Streaming Answer Panel", "type": "ai", "uses": "Chat, interview, research"},
+            {"name": "Diff Review Table", "type": "code", "uses": "Approve/reject code changes"},
+            {"name": "Deployment Timeline", "type": "deploy", "uses": "Realtime deploy progress"},
+            {"name": "Usage Meter", "type": "analytics", "uses": "Token and cost visibility"},
+        ]
+    }
+
+@app.post("/api/v1/deploy/analyze")
+def nexus_deploy_analyze(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import deployment_analysis
+
+    return deployment_analysis(request.project_type, request.repo_context)
+
+@app.post("/api/v1/deploy/start")
+def nexus_deploy_start(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import deployment_analysis
+
+    return {
+        "status": "approval_required",
+        "analysis": deployment_analysis(request.project_type, request.repo_context),
+        "message": "Deployment can change production infrastructure, so it requires explicit approval and configured provider tokens.",
+    }
+
+@app.get("/api/v1/deploy/history")
+def nexus_deploy_history(user_id: UUID = Depends(get_current_user_id)):
+    return {"items": []}
+
+@app.get("/api/v1/intelligence/suggestions")
+def nexus_intelligence_suggestions(context: str = "", user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import proactive_suggestions
+
+    return {"items": proactive_suggestions(context)}
+
+@app.post("/api/v1/intelligence/feedback")
+def nexus_intelligence_feedback(request: NexusSuggestionFeedbackRequest, user_id: UUID = Depends(get_current_user_id)):
+    return {"status": "recorded", "suggestion_id": request.suggestion_id, "feedback": request.feedback}
+
+@app.get("/api/v1/intelligence/insights")
+def nexus_intelligence_insights(user_id: UUID = Depends(get_current_user_id)):
+    return {
+        "summary": "NEXUS intelligence is active. Connect deployment logs, code repositories, and usage budgets for richer weekly insights.",
+        "signals": ["code", "deployment", "usage", "interview", "security"],
+    }
+
+@app.post("/api/v1/safety/check")
+def nexus_safety_check(request: NexusSafetyRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .nexus_services import safety_check
+
+    return safety_check(request.content, request.action)
 
 class CompressRequest(BaseModel):
     user_id: str

@@ -91,6 +91,30 @@ const nextConfig: NextConfig = {
         source: '/api/v1/code/:path*',
         destination: `${agentUrl}/api/v1/code/:path*`,
       },
+      {
+        source: '/api/v1/internet/:path*',
+        destination: `${agentUrl}/api/v1/internet/:path*`,
+      },
+      {
+        source: '/api/v1/free-tiers/:path*',
+        destination: `${agentUrl}/api/v1/free-tiers/:path*`,
+      },
+      {
+        source: '/api/v1/design/:path*',
+        destination: `${agentUrl}/api/v1/design/:path*`,
+      },
+      {
+        source: '/api/v1/deploy/:path*',
+        destination: `${agentUrl}/api/v1/deploy/:path*`,
+      },
+      {
+        source: '/api/v1/intelligence/:path*',
+        destination: `${agentUrl}/api/v1/intelligence/:path*`,
+      },
+      {
+        source: '/api/v1/safety/:path*',
+        destination: `${agentUrl}/api/v1/safety/:path*`,
+      },
     ];
   },
 };

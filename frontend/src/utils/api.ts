@@ -29,6 +29,12 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/files') ||
     path.startsWith('/api/v1/usage') ||
     path.startsWith('/api/v1/code') ||
+    path.startsWith('/api/v1/internet') ||
+    path.startsWith('/api/v1/free-tiers') ||
+    path.startsWith('/api/v1/design') ||
+    path.startsWith('/api/v1/deploy') ||
+    path.startsWith('/api/v1/intelligence') ||
+    path.startsWith('/api/v1/safety') ||
     path.startsWith('/api/v1/memories') ||
     path.startsWith('/api/v1/news') ||
     path.startsWith('/api/v1/jobs') ||
