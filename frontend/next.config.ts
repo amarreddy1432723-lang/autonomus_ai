@@ -92,6 +92,10 @@ const nextConfig: NextConfig = {
         destination: `${agentUrl}/api/v1/usage/:path*`,
       },
       {
+        source: '/api/v1/billing/:path*',
+        destination: `${agentUrl}/api/v1/billing/:path*`,
+      },
+      {
         source: '/api/v1/code/:path*',
         destination: `${agentUrl}/api/v1/code/:path*`,
       },

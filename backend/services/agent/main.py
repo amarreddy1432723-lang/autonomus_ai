@@ -170,6 +170,10 @@ class NexusBlendRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
+class BillingCheckoutRequest(BaseModel):
+    plan: str = "pro"
+    billing_cycle: str = "monthly"
+
 def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
     if not file_ids:
         return ""
@@ -320,9 +324,19 @@ async def chat_stream_generator(
         yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
 @app.post("/api/v1/agents/chat")
-async def chat_endpoint(request: ChatRequest, user_id: UUID = Depends(get_current_user_id)):
+async def chat_endpoint(
+    request: ChatRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .billing import check_entitlement
+
     if not request.messages:
         raise HTTPException(status_code=400, detail="Messages list cannot be empty")
+
+    access = check_entitlement(db, user_id, "chat_message")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Plan limit reached", "access": access})
         
     prompt = request.messages[-1].content
     history = request.messages[:-1]
@@ -451,7 +465,12 @@ async def upload_file(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
+    from .billing import check_entitlement
     from .file_service import create_file_reference, extract_file_to_chunks
+
+    access = check_entitlement(db, user_id, "file_upload")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "File upload limit reached", "access": access})
 
     record = await create_file_reference(db, user_id, upload, owner_type=owner_type)
     extraction = extract_file_to_chunks(db, user_id, record.id)
@@ -531,6 +550,46 @@ def get_usage_summary(user_id: UUID = Depends(get_current_user_id), db: Session 
 
     return usage_summary(db, user_id)
 
+@app.get("/api/v1/billing/summary")
+def get_billing_summary(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import billing_summary
+
+    return billing_summary(db, user_id)
+
+@app.get("/api/v1/billing/plans")
+def get_billing_plans(user_id: UUID = Depends(get_current_user_id)):
+    from .billing import PLAN_CATALOG
+
+    return {"plans": PLAN_CATALOG}
+
+@app.get("/api/v1/billing/entitlement/{feature}")
+def get_feature_entitlement(feature: str, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
+
+    return check_entitlement(db, user_id, feature)
+
+@app.get("/api/v1/billing/interview-access")
+def get_interview_access(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
+
+    return check_entitlement(db, user_id, "interview_session")
+
+@app.post("/api/v1/billing/interview-session")
+def record_interview_access(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import record_interview_session
+
+    return record_interview_session(db, user_id)
+
+@app.post("/api/v1/billing/checkout")
+def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .billing import create_checkout_session
+
+    if request.plan not in {"starter", "pro", "enterprise"}:
+        raise HTTPException(status_code=400, detail="Unsupported plan")
+    if request.billing_cycle not in {"monthly", "annual"}:
+        raise HTTPException(status_code=400, detail="Unsupported billing cycle")
+    return create_checkout_session(request.plan, request.billing_cycle)
+
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(
     request: CodeSessionCreate,
@@ -580,30 +639,51 @@ def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_curre
 
 @app.post("/api/v1/code/generate")
 def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, generate_code_task, safety_check
 
+    access = check_entitlement(db, user_id, "code_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Code generation limit reached", "access": access})
     guard = safety_check(request.instruction, "code_generate")
     if not guard.get("allowed"):
         raise HTTPException(status_code=400, detail=guard["reason"])
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
-    return generate_code_task("generate", request.instruction, context, NexusLLMConfig(provider, model))
+    result = generate_code_task("generate", request.instruction, context, NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/code/generate", provider, model, None, request.instruction, result.get("content", ""), request.file_ids)
+    return result
 
 @app.post("/api/v1/code/debug")
 def nexus_code_debug(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, generate_code_task
 
+    access = check_entitlement(db, user_id, "code_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Code generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
-    return generate_code_task("debug", request.instruction, context, NexusLLMConfig(provider, model))
+    result = generate_code_task("debug", request.instruction, context, NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/code/debug", provider, model, None, request.instruction, result.get("content", ""), request.file_ids)
+    return result
 
 @app.post("/api/v1/code/refactor")
 def nexus_code_refactor(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, generate_code_task
 
+    access = check_entitlement(db, user_id, "code_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Code generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
-    return generate_code_task("refactor", request.instruction, context, NexusLLMConfig(provider, model))
+    result = generate_code_task("refactor", request.instruction, context, NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/code/refactor", provider, model, None, request.instruction, result.get("content", ""), request.file_ids)
+    return result
 
 @app.post("/api/v1/code/explain")
 def nexus_code_explain(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -615,11 +695,18 @@ def nexus_code_explain(request: NexusCodeRequest, user_id: UUID = Depends(get_cu
 
 @app.post("/api/v1/code/test")
 def nexus_code_test(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, generate_code_task
 
+    access = check_entitlement(db, user_id, "code_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Code generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     context = "\n\n".join([request.context, build_uploaded_context(db, user_id, request.file_ids, request.instruction)]).strip()
-    return generate_code_task("test", request.instruction, context, NexusLLMConfig(provider, model))
+    result = generate_code_task("test", request.instruction, context, NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/code/test", provider, model, None, request.instruction, result.get("content", ""), request.file_ids)
+    return result
 
 @app.post("/api/v1/code/execute")
 def nexus_code_execute(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id)):
@@ -633,26 +720,40 @@ def nexus_code_execute(request: NexusCodeRequest, user_id: UUID = Depends(get_cu
     }
 
 @app.post("/api/v1/internet/research")
-def nexus_internet_research(request: NexusResearchRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_internet_research(request: NexusResearchRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import build_research_report
     from .tools import web_search
 
+    access = check_entitlement(db, user_id, "web_search")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Web research limit reached", "access": access})
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query is required")
     try:
         raw = web_search.invoke({"query": request.query})
         if isinstance(raw, str):
-            return {"query": request.query, "report": f"# Research Report: {request.query}\n\n## Live Findings\n{raw}"}
+            report = f"# Research Report: {request.query}\n\n## Live Findings\n{raw}"
+            from .usage import record_usage
+            record_usage(db, user_id, "/api/v1/internet/research", None, "web-search", None, request.query, report)
+            return {"query": request.query, "report": report}
         results = raw
     except Exception:
         results = []
-    return {"query": request.query, "report": build_research_report(request.query, results if isinstance(results, list) else [])}
+    report = build_research_report(request.query, results if isinstance(results, list) else [])
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/internet/research", None, "web-search", None, request.query, report)
+    return {"query": request.query, "report": report}
 
 @app.post("/api/v1/internet/browse")
-def nexus_internet_browse(request: NexusBrowseRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_internet_browse(request: NexusBrowseRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from urllib.request import Request, urlopen
+    from .billing import check_entitlement
     from .nexus_services import browse_summary
 
+    access = check_entitlement(db, user_id, "web_search")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Web research limit reached", "access": access})
     if not request.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Only http and https URLs are supported.")
     try:
@@ -662,7 +763,10 @@ def nexus_internet_browse(request: NexusBrowseRequest, user_id: UUID = Depends(g
         text = raw.decode("utf-8", errors="ignore")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Browse failed: {exc}")
-    return browse_summary(request.url, text)
+    result = browse_summary(request.url, text)
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/internet/browse", None, "browser-read", None, request.url, result.get("summary", ""))
+    return result
 
 @app.get("/api/v1/internet/free-tiers")
 def nexus_internet_free_tiers(user_id: UUID = Depends(get_current_user_id)):
@@ -703,32 +807,60 @@ def nexus_free_tier_recommend_post(request: FreeTierRecommendRequest, user_id: U
     return {"items": recommend_free_tiers(request.project_type, request.needs)}
 
 @app.post("/api/v1/design/generate-ui")
-def nexus_design_generate_ui(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_design_generate_ui(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, design_response
 
+    access = check_entitlement(db, user_id, "ui_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "UI generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
-    return design_response(request.description, request.output_type or "ui", NexusLLMConfig(provider, model))
+    result = design_response(request.description, request.output_type or "ui", NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/design/generate-ui", provider, model, None, request.description, result.get("content", ""))
+    return result
 
 @app.post("/api/v1/design/generate-page")
-def nexus_design_generate_page(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_design_generate_page(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, design_response
 
+    access = check_entitlement(db, user_id, "ui_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "UI generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
-    return design_response(request.description, "page", NexusLLMConfig(provider, model))
+    result = design_response(request.description, "page", NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/design/generate-page", provider, model, None, request.description, result.get("content", ""))
+    return result
 
 @app.post("/api/v1/design/animate")
-def nexus_design_animate(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_design_animate(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, design_response
 
+    access = check_entitlement(db, user_id, "ui_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "UI generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
-    return design_response(request.description, "animation", NexusLLMConfig(provider, model))
+    result = design_response(request.description, "animation", NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/design/animate", provider, model, None, request.description, result.get("content", ""))
+    return result
 
 @app.post("/api/v1/design/critique")
-def nexus_design_critique(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_design_critique(request: NexusDesignRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import NexusLLMConfig, design_response
 
+    access = check_entitlement(db, user_id, "ui_generation")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "UI generation limit reached", "access": access})
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
-    return design_response(request.description, "critique", NexusLLMConfig(provider, model))
+    result = design_response(request.description, "critique", NexusLLMConfig(provider, model))
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/design/critique", provider, model, None, request.description, result.get("content", ""))
+    return result
 
 @app.get("/api/v1/design/components")
 def nexus_design_components(user_id: UUID = Depends(get_current_user_id)):
@@ -743,15 +875,22 @@ def nexus_design_components(user_id: UUID = Depends(get_current_user_id)):
     }
 
 @app.post("/api/v1/deploy/analyze")
-def nexus_deploy_analyze(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_deploy_analyze(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .nexus_services import deployment_analysis
 
-    return deployment_analysis(request.project_type, request.repo_context)
+    result = deployment_analysis(request.project_type, request.repo_context)
+    from .usage import record_usage
+    record_usage(db, user_id, "/api/v1/deploy/analyze", None, "deploy-analyzer", None, request.project_type, json.dumps(result))
+    return result
 
 @app.post("/api/v1/deploy/start")
-def nexus_deploy_start(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id)):
+def nexus_deploy_start(request: NexusDeployAnalyzeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
     from .nexus_services import deployment_analysis
 
+    access = check_entitlement(db, user_id, "deployment")
+    if not access.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Deployment is locked or limit reached", "access": access})
     return {
         "status": "approval_required",
         "analysis": deployment_analysis(request.project_type, request.repo_context),

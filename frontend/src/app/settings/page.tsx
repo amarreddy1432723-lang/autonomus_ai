@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
-import { AlertTriangle, Bell, CheckCircle2, Play, RefreshCw, Shield, User } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
 
 type AutonomyLevel = 'observer' | 'assistant' | 'partner' | 'chief_of_staff';
@@ -25,6 +25,35 @@ type AutonomyStatus = {
   };
 };
 
+type BillingSummary = {
+  plan: {
+    key: string;
+    name: string;
+    status: string;
+    billing_cycle: string;
+    monthly_usd: number;
+    monthly_inr: number;
+    current_period_end?: string | null;
+    models: string[];
+  };
+  usage: Array<{
+    metric: string;
+    label: string;
+    period: string;
+    used: number;
+    limit: number | null;
+    remaining: number | null;
+    percent: number;
+    locked: boolean;
+  }>;
+  stripe: {
+    configured: boolean;
+    customer_id?: string | null;
+    subscription_id?: string | null;
+  };
+  plans: Record<string, any>;
+};
+
 const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
   { value: 'observer', label: 'Observer' },
   { value: 'assistant', label: 'Assistant' },
@@ -33,7 +62,7 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'profile' | 'notifications' | 'training'>('autonomy');
+  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training'>('autonomy');
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -45,6 +74,8 @@ export default function SettingsPage() {
   const [activeFinetunedModel, setActiveFinetunedModel] = useState<string>('None');
   const [isTrainingInFlight, setIsTrainingInFlight] = useState(false);
   const [trainingError, setTrainingError] = useState('');
+  const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
+  const [billingMessage, setBillingMessage] = useState('');
 
   const loadAutonomyStatus = async () => {
     setLoadingAutonomy(true);
@@ -70,6 +101,15 @@ export default function SettingsPage() {
     }
   };
 
+  const loadBillingSummary = async () => {
+    try {
+      const data = await apiRequest('/api/v1/billing/summary');
+      setBillingSummary(data);
+    } catch (error) {
+      setBillingMessage(error instanceof Error ? error.message : 'Unable to load billing summary');
+    }
+  };
+
   const triggerSelfTraining = async () => {
     setIsTrainingInFlight(true);
     setTrainingError('');
@@ -87,7 +127,21 @@ export default function SettingsPage() {
   useEffect(() => {
     loadAutonomyStatus();
     loadTrainingData();
+    loadBillingSummary();
   }, []);
+
+  const startCheckout = async (plan: string) => {
+    setBillingMessage('');
+    try {
+      const data = await apiRequest('/api/v1/billing/checkout', {
+        method: 'POST',
+        body: JSON.stringify({ plan, billing_cycle: 'monthly' }),
+      });
+      setBillingMessage(data.message || 'Checkout is ready.');
+    } catch (error) {
+      setBillingMessage(error instanceof Error ? error.message : 'Checkout failed');
+    }
+  };
 
   const updateAutonomyLevel = async (autonomy_level: AutonomyLevel) => {
     setAutonomyError('');
@@ -153,6 +207,9 @@ export default function SettingsPage() {
             <button style={tabButtonStyle('autonomy')} onClick={() => setActiveTab('autonomy')}>
               <Shield size={14} /> Autonomy policy
             </button>
+            <button style={tabButtonStyle('billing')} onClick={() => setActiveTab('billing')}>
+              <CreditCard size={14} /> Usage & Billing
+            </button>
             <button style={tabButtonStyle('profile')} onClick={() => setActiveTab('profile')}>
               <User size={14} /> Profile settings
             </button>
@@ -166,6 +223,86 @@ export default function SettingsPage() {
 
           {/* Settings Content Area */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {activeTab === 'billing' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div>
+                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 800 }}>Usage & Billing</h2>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                      Track plan limits, interview trials, usage, and Stripe readiness.
+                    </span>
+                  </div>
+                  <button
+                    onClick={loadBillingSummary}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+                  >
+                    <RefreshCw size={14} /> Refresh
+                  </button>
+                </div>
+
+                {billingSummary && (
+                  <>
+                    <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div>
+                        <span style={{ display: 'block', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>Current Plan</span>
+                        <strong style={{ display: 'block', fontSize: '22px', marginTop: '4px' }}>{billingSummary.plan.name}</strong>
+                        <span style={{ display: 'block', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)', marginTop: '4px' }}>
+                          ${billingSummary.plan.monthly_usd}/mo · ₹{billingSummary.plan.monthly_inr}/mo · {billingSummary.plan.status}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <button onClick={() => startCheckout('starter')} style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}>
+                          Starter $12
+                        </button>
+                        <button onClick={() => startCheckout('pro')} style={{ background: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-primary)', color: 'white', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 800 }}>
+                          Upgrade Pro $29
+                        </button>
+                        <button onClick={() => startCheckout('enterprise')} style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}>
+                          Enterprise $79
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                      {billingSummary.usage.map((item) => {
+                        const unlimited = item.limit === null;
+                        return (
+                          <div key={item.metric} style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                              <strong style={{ fontSize: 'var(--text-sm)' }}>{item.label}</strong>
+                              <span style={{ color: item.locked ? 'var(--color-error)' : 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                                {item.locked ? 'Locked' : unlimited ? `${item.used} / ∞` : `${item.used} / ${item.limit}`}
+                              </span>
+                            </div>
+                            <div style={{ height: '7px', background: 'var(--color-bg-primary)', borderRadius: '999px', overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+                              <div style={{ width: unlimited ? '100%' : `${item.percent}%`, height: '100%', background: item.locked ? 'var(--color-error)' : item.percent > 85 ? 'var(--color-warning)' : 'var(--color-accent-primary)' }} />
+                            </div>
+                            <span style={{ color: 'var(--color-text-tertiary)', fontSize: '10px' }}>{item.period} limit</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <strong style={{ fontSize: 'var(--text-sm)' }}>Stripe Status</strong>
+                      <span style={{ color: billingSummary.stripe.configured ? 'var(--color-success)' : 'var(--color-warning)', fontSize: 'var(--text-xs)' }}>
+                        {billingSummary.stripe.configured ? 'Stripe secret key detected.' : 'Stripe is not configured yet. Add STRIPE_SECRET_KEY and price IDs to enable paid upgrades.'}
+                      </span>
+                      <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                        Models included: {billingSummary.plan.models.join(', ')}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {billingMessage && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: 'var(--color-warning)' }}>
+                    <AlertTriangle size={14} /> {billingMessage}
+                  </span>
+                )}
+              </div>
+            )}
+
             {activeTab === 'training' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center' }}>

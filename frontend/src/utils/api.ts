@@ -29,6 +29,7 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/models') ||
     path.startsWith('/api/v1/files') ||
     path.startsWith('/api/v1/usage') ||
+    path.startsWith('/api/v1/billing') ||
     path.startsWith('/api/v1/code') ||
     path.startsWith('/api/v1/internet') ||
     path.startsWith('/api/v1/free-tiers') ||
