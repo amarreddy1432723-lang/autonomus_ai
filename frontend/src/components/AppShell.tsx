@@ -44,7 +44,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     agentActivityFeed, pendingApprovalCount 
   } = useAppStore();
   
-  const [activityCollapsed, setActivityCollapsed] = useState(false);
+  const [activityCollapsed, setActivityCollapsed] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -81,14 +81,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { label: 'Settings', icon: Settings, href: '/settings' },
   ], [pendingApprovalCount]);
 
+  const currentItem = navItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || navItems[0];
+
   const commands = useMemo(() => [
+    { id: 'quick-chat', label: 'Ask NEXUS', hint: 'Ctrl+J', action: () => router.push('/chat') },
+    { id: 'quick-code', label: 'Generate code', hint: 'Ctrl+G', action: () => router.push('/workspace') },
+    { id: 'quick-design', label: 'Design UI', hint: 'Ctrl+D', action: () => router.push('/design') },
+    { id: 'quick-deploy', label: 'Deploy app', hint: 'Ctrl+Shift+D', action: () => router.push('/deploy') },
+    { id: 'quick-research', label: 'Research topic', hint: 'Ctrl+R', action: () => router.push('/internet') },
     ...navItems.map((item, index) => ({
       id: item.href,
-      label: item.label,
+      label: `Open ${item.label}`,
       hint: index < 9 ? `${index + 1}` : '',
       action: () => router.push(item.href),
     })),
-    { id: 'new-goal', label: 'Create a new goal', hint: 'Ctrl+G', action: () => router.push('/goals?new=1') },
+    { id: 'new-goal', label: 'Create a new goal', hint: '', action: () => router.push('/goals?new=1') },
     { id: 'chat', label: 'Open chat with AI', hint: 'Ctrl+J', action: () => router.push('/chat') },
     { id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) },
   ], [navItems, router, searchQuery]);
@@ -111,7 +118,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       }
       if (modifier && event.key.toLowerCase() === 'g') {
         event.preventDefault();
-        router.push('/goals?new=1');
+        router.push('/workspace');
+      }
+      if (modifier && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        router.push(event.shiftKey ? '/deploy' : '/design');
+      }
+      if (modifier && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        router.push('/internet');
       }
       if (!modifier && /^[1-9]$/.test(event.key)) {
         const item = navItems[Number(event.key) - 1];
@@ -132,11 +147,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className={styles.shell}>
-      {/* TOPBAR */}
       <header className={styles.topbar}>
-        <div className={styles.logoArea}>
+        <Link href="/studio" className={styles.logoArea} aria-label="Open NEXUS Studio">
           <Cpu className={styles.logoGlow} size={20} />
-          <span>my-<span className={styles.logoGlow}>ai</span></span>
+          <span>NEXUS</span>
+        </Link>
+
+        <div className={styles.breadcrumb} aria-label="Current location">
+          <Link href="/studio">Studio</Link>
+          <ChevronRight size={13} />
+          <span>{currentItem.label}</span>
         </div>
         
         <div className={styles.searchBar}>
@@ -144,7 +164,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <input
             ref={searchInputRef}
             type="text"
-            placeholder="Search goals, memories... Ctrl+K"
+            placeholder="Ask, search, or run a command..."
             value={searchQuery}
             onFocus={() => setPaletteOpen(true)}
             onChange={(event) => {
@@ -158,10 +178,25 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               }
             }}
           />
-          <span className={styles.searchShortcut}>⌘K</span>
+          <span className={styles.searchShortcut}>Ctrl K</span>
         </div>
         
         <div className={styles.topbarActions}>
+          <div className={styles.statusDots} title="Auth, goals, and agent services online">
+            <span className={styles.statusDot} />
+            <span className={styles.statusDot} />
+            <span className={styles.statusDot} />
+          </div>
+
+          <button 
+            onClick={() => setActivityCollapsed(!activityCollapsed)}
+            className={styles.iconButton}
+            title="Agent activity"
+            aria-label="Toggle agent activity"
+          >
+            <Activity size={16} />
+          </button>
+
           {typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? (
             <ClerkUserSection />
           ) : (
@@ -189,27 +224,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               )}
             </>
           )}
-
-          <div className={styles.agentIndicator}>
-            <span className={styles.pulseDot} />
-            <span>AI Online</span>
-          </div>
-          
           <div className={styles.notificationBell}>
             <Bell size={18} />
             {pendingApprovalCount > 0 && (
               <span className={styles.notificationBadge}>{pendingApprovalCount}</span>
             )}
           </div>
-          
-          <button 
-            onClick={() => setActivityCollapsed(!activityCollapsed)}
-            style={{ background: 'none', border: 'none', color: 'var(--color-text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-            title="Toggle Agent Activity Ticker"
-          >
-            <Activity size={18} />
-          </button>
-          
           {!(typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && isDemoSignedIn && (
             <div className={styles.avatar} title="Demo User">DU</div>
           )}
@@ -218,8 +238,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* MAIN CONTAINER */}
       <div className={styles.mainContainer}>
-        {/* SIDEBAR */}
-        <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`}>
+        <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`} onDoubleClick={toggleSidebar}>
           <ul className={styles.navItems}>
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -229,20 +248,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   <Link 
                     href={item.href} 
                     className={`${styles.navLink} ${isActive ? styles.navLinkActive : ''}`}
-                    title={sidebarCollapsed ? item.label : undefined}
+                    title={item.label}
+                    aria-label={item.label}
                   >
                     <Icon size={18} />
-                    {!sidebarCollapsed && (
-                      <span style={{ flex: 1 }}>{item.label}</span>
-                    )}
-                    {!sidebarCollapsed && item.badge !== undefined && item.badge > 0 && (
-                      <span style={{ 
-                        backgroundColor: 'var(--color-error)', 
-                        color: 'white', 
-                        fontSize: '10px', 
-                        padding: '1px 6px', 
-                        borderRadius: 'var(--radius-full)'
-                      }}>
+                    <span className={styles.navTooltip}>{item.label}</span>
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span className={styles.navBadge}>
                         {item.badge}
                       </span>
                     )}
@@ -254,7 +266,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           
           <button className={styles.sidebarCollapseBtn} onClick={toggleSidebar}>
             {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-            {!sidebarCollapsed && <span>Collapse Sidebar</span>}
           </button>
         </aside>
 
@@ -267,7 +278,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {/* RIGHT AGENT ACTIVITY TICKER */}
           <aside className={`${styles.activityBar} ${activityCollapsed ? styles.activityBarCollapsed : ''}`}>
             <div className={styles.activityHeader}>
-              <span>Agent Activity Ticker</span>
+              <span>Agent Activity</span>
               <button 
                 onClick={() => setActivityCollapsed(true)} 
                 style={{ background: 'none', border: 'none', color: 'var(--color-text-tertiary)', cursor: 'pointer' }}
