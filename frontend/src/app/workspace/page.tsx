@@ -3,7 +3,7 @@
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -65,6 +65,7 @@ export default function WorkspacePage() {
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState('');
   const [patchReady, setPatchReady] = useState(false);
+  const [patchPreview, setPatchPreview] = useState<PatchPreviewItem[]>([]);
   const [previewUrl, setPreviewUrl] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [openFile, setOpenFile] = useState<OpenWorkspaceFile | null>(null);
@@ -110,6 +111,7 @@ export default function WorkspacePage() {
       setSessionId(session.id);
       setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
       setEvents(normalizeEvents(session.activity_log || []));
+      setPatchPreview(session.patch_preview || []);
       setPatchReady(Boolean(session.patch_preview?.length || session.patch_text));
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
       setJobs(jobData);
@@ -133,6 +135,7 @@ export default function WorkspacePage() {
     } catch {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
+      setPatchPreview([]);
     }
   };
 
@@ -442,6 +445,7 @@ export default function WorkspacePage() {
           });
           if (patch.job) setJobs((current) => [patch.job, ...current.filter((job) => job.id !== patch.job.id)].slice(0, 20));
           const preview = patch.patch_preview || [];
+          setPatchPreview(preview);
           setPatchReady(true);
           if (preview.length) {
             preview.forEach((item: any) => {
@@ -479,6 +483,7 @@ export default function WorkspacePage() {
       addEvent({ kind: 'edit', message: 'Applying approved patch', detail: 'Writing changes into app-managed workspace files.' });
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setPatchPreview(result.remaining || []);
       const changed = result.changed || [];
       changed.forEach((item: any) => {
         addEvent({ kind: 'edit', message: `Edited ${item.filename}`, detail: `${item.diff?.split('\n').length || 0} diff lines`, diff: item.diff });
@@ -492,6 +497,31 @@ export default function WorkspacePage() {
       await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyFileChange = async (fileId: string) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ file_ids: [fileId] }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      const remaining = result.remaining || [];
+      setPatchPreview(remaining);
+      setPatchReady(Boolean(remaining.length));
+      (result.changed || []).forEach((item: any) => {
+        addEvent({ kind: 'edit', message: `Applied ${item.filename}`, detail: `${item.diff?.split('\n').length || 0} diff lines`, diff: item.diff });
+      });
+      await loadFiles();
+      await hydrateSession(sessionId);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Apply file failed', detail: error instanceof Error ? error.message : 'Could not apply selected file.' });
     } finally {
       setBusy(false);
     }
@@ -560,6 +590,7 @@ export default function WorkspacePage() {
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       const preview = result.patch_preview || [];
+      setPatchPreview(preview);
       setPatchReady(Boolean(preview.length || result.patch));
       preview.forEach((item: any) => {
         addEvent({
@@ -679,7 +710,28 @@ export default function WorkspacePage() {
       }
     }
     setPatchReady(false);
+    setPatchPreview([]);
     addEvent({ kind: 'done', message: 'Changes rejected', detail: 'Prepared patch was discarded from the UI approval flow.' });
+  };
+
+  const rejectFileChange = async (fileId: string) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ file_ids: [fileId] }),
+      });
+      const remaining = result.remaining || [];
+      setPatchPreview(remaining);
+      setPatchReady(Boolean(remaining.length));
+      addEvent({ kind: 'done', message: 'File change rejected', detail: `${result.rejected?.length || 0} file(s) removed from pending changes.` });
+      await hydrateSession(sessionId);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Reject file failed', detail: error instanceof Error ? error.message : 'Could not reject selected file.' });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const rollbackChanges = async () => {
@@ -749,6 +801,7 @@ export default function WorkspacePage() {
           events={events}
           jobs={jobs}
           osContext={osContext}
+          patchPreview={patchPreview}
           hasPatch={patchReady}
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
@@ -759,6 +812,8 @@ export default function WorkspacePage() {
           canUseGit={Boolean(repoUrl.trim()) && !busy}
           onApply={applyChanges}
           onReject={rejectChanges}
+          onApplyFile={applyFileChange}
+          onRejectFile={rejectFileChange}
           onRollback={rollbackChanges}
           onRunCommand={runCommand}
           onPreviewUrlChange={setPreviewUrl}

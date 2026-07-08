@@ -1,8 +1,14 @@
 'use client';
 
-import { Save } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { Braces, Code2, Save, Wand2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import styles from './Workspace.module.css';
+
+const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
+  ssr: false,
+  loading: () => <div className={styles.editorLoading}>Loading editor...</div>,
+});
 
 export type OpenWorkspaceFile = {
   id: string;
@@ -32,40 +38,112 @@ function languageLabel(filename: string) {
   return extension.toUpperCase();
 }
 
+function monacoLanguage(filename: string) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.tsx')) return 'typescript';
+  if (lower.endsWith('.ts')) return 'typescript';
+  if (lower.endsWith('.jsx')) return 'javascript';
+  if (lower.endsWith('.js')) return 'javascript';
+  if (lower.endsWith('.py')) return 'python';
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.md')) return 'markdown';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.html')) return 'html';
+  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml';
+  return 'plaintext';
+}
+
 export default function EditorPanel({ file, busy, onChange, onSave, onInlineEdit, onComplete }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<any>(null);
   const [editInstruction, setEditInstruction] = useState('');
+  const [lineTarget, setLineTarget] = useState('');
 
   const runInlineEdit = () => {
-    const textarea = textareaRef.current;
-    if (!textarea || !file) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
+    const editor = editorRef.current;
+    const model = editor?.getModel?.();
+    if (!editor || !model || !file) return;
+    const selection = editor.getSelection();
+    const start = model.getOffsetAt(selection.getStartPosition());
+    const end = model.getOffsetAt(selection.getEndPosition());
     const selectedText = file.content.slice(start, end);
     onInlineEdit(editInstruction, selectedText, start, end);
   };
 
   const runCompletion = () => {
-    const textarea = textareaRef.current;
-    if (!textarea || !file) return;
-    onComplete(textarea.selectionStart);
+    const editor = editorRef.current;
+    const model = editor?.getModel?.();
+    if (!editor || !model || !file) return;
+    onComplete(model.getOffsetAt(editor.getPosition()));
+  };
+
+  const goToLine = () => {
+    const editor = editorRef.current;
+    const line = Number.parseInt(lineTarget, 10);
+    if (!editor || !Number.isFinite(line) || line < 1) return;
+    editor.revealLineInCenter(line);
+    editor.setPosition({ lineNumber: line, column: 1 });
+    editor.focus();
+  };
+
+  const formatDocument = async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    await editor.getAction('editor.action.formatDocument')?.run();
   };
 
   return (
     <section className={styles.editor}>
       <div className={styles.panelHeader}>
-        <span>{file ? file.filename : 'Editor'}</span>
+        <span className={styles.editorTitle}><Code2 size={15} /> {file ? file.filename : 'Editor'}</span>
         {file && <span className={styles.meta}>{languageLabel(file.filename)}{file.dirty ? ' - unsaved' : ''}</span>}
       </div>
       {file ? (
         <>
-          <textarea
-            ref={textareaRef}
-            className={styles.codeEditor}
-            spellCheck={false}
-            value={file.content}
-            onChange={(event) => onChange(event.target.value)}
-          />
+          <div className={styles.editorToolbar}>
+            <button className={styles.editorToolButton} type="button" onClick={formatDocument} disabled={busy}>
+              <Braces size={14} /> Format
+            </button>
+            <div className={styles.goToLine}>
+              <input
+                value={lineTarget}
+                onChange={(event) => setLineTarget(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') goToLine();
+                }}
+                inputMode="numeric"
+                placeholder="Line"
+              />
+              <button type="button" onClick={goToLine}>Go</button>
+            </div>
+          </div>
+          <div className={styles.monacoShell}>
+            <MonacoEditor
+              path={file.filename}
+              language={monacoLanguage(file.filename)}
+              theme="vs-dark"
+              value={file.content}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                editor.focus();
+              }}
+              onChange={(value) => onChange(value || '')}
+              options={{
+                automaticLayout: true,
+                fontFamily: 'var(--font-mono), Consolas, monospace',
+                fontSize: 13,
+                lineHeight: 21,
+                minimap: { enabled: true },
+                scrollBeyondLastLine: false,
+                smoothScrolling: true,
+                tabSize: 2,
+                wordWrap: 'off',
+                renderWhitespace: 'selection',
+                bracketPairColorization: { enabled: true },
+                guides: { bracketPairs: true, indentation: true },
+                padding: { top: 12, bottom: 12 },
+              }}
+            />
+          </div>
           <div className={styles.inlineEditBar}>
             <input
               className={styles.inlineEditInput}
@@ -74,7 +152,7 @@ export default function EditorPanel({ file, busy, onChange, onSave, onInlineEdit
               placeholder="Select code, then ask NEXUS to edit it..."
             />
             <button className={styles.fullWidthButton} type="button" onClick={runInlineEdit} disabled={busy || !editInstruction.trim()}>
-              AI Edit
+              <Wand2 size={14} /> AI Edit
             </button>
             <button className={styles.fullWidthButton} type="button" onClick={runCompletion} disabled={busy}>
               Complete

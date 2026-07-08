@@ -184,6 +184,9 @@ class CodePreparePullRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
 
+class CodePatchSelectionRequest(BaseModel):
+    file_ids: List[str] = Field(default_factory=list)
+
 class AgentJobCreateRequest(BaseModel):
     code_session_id: Optional[UUID] = None
     mode: str = "code"
@@ -1039,11 +1042,16 @@ def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_cur
     return {"patch_preview": preview_patch_payload(db, user_id, session)}
 
 @app.post("/api/v1/code/sessions/{session_id}/reject")
-def reject_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def reject_code_session_patch(
+    session_id: UUID,
+    request: Optional[CodePatchSelectionRequest] = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
     from .code_workspace import get_code_session, reject_patch_payload
 
     session = get_code_session(db, user_id, session_id)
-    return reject_patch_payload(db, session)
+    return reject_patch_payload(db, session, request.file_ids if request else None)
 
 @app.post("/api/v1/code/sessions/{session_id}/run-command")
 def run_code_session_command(
@@ -1272,13 +1280,18 @@ def complete_code_at_cursor(
     return {"completion": completion, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/apply")
-def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def apply_code_session_patch(
+    session_id: UUID,
+    request: Optional[CodePatchSelectionRequest] = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
     from .code_workspace import apply_patch_payload, get_code_session
     from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
     job = create_agent_job(db, user_id, session.id, "apply", "Apply approved workspace patch", approval_state="approved")
-    result = apply_patch_payload(db, user_id, session, job)
+    result = apply_patch_payload(db, user_id, session, job, request.file_ids if request else None)
     return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/rollback")

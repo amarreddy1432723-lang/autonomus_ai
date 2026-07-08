@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, CircleDot, Eye, FilePenLine, Rocket, Search, Sparkles, X } from 'lucide-react';
+import { Check, CircleDot, Eye, FileCode2, FilePenLine, Rocket, Search, Sparkles, X } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type ActivityEvent = {
@@ -29,14 +29,25 @@ export type OSContext = {
   jobs?: Array<{ id: string; mode: string; status: string }>;
 };
 
+export type PatchPreviewItem = {
+  file_id: string;
+  filename: string;
+  diff: string;
+  additions?: number;
+  deletions?: number;
+};
+
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
   osContext: OSContext | null;
+  patchPreview: PatchPreviewItem[];
   hasPatch: boolean;
   canApply: boolean;
   onApply: () => void;
   onReject: () => void;
+  onApplyFile: (fileId: string) => void;
+  onRejectFile: (fileId: string) => void;
   onRollback: () => void;
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
@@ -92,10 +103,13 @@ export default function ActivityPanel({
   events,
   jobs,
   osContext,
+  patchPreview,
   hasPatch,
   canApply,
   onApply,
   onReject,
+  onApplyFile,
+  onRejectFile,
   onRollback,
   canRunCommand,
   onRunCommand,
@@ -120,6 +134,31 @@ export default function ActivityPanel({
         <Eye size={15} />
       </div>
       <div className={styles.activityList}>
+        {patchPreview.length > 0 && (
+          <div className={styles.changesPanel}>
+            <div className={styles.changesHeader}>
+              <span>Pending Changes</span>
+              <strong>{patchPreview.length}</strong>
+            </div>
+            {patchPreview.map((item) => (
+              <details className={styles.changeItem} key={item.file_id}>
+                <summary>
+                  <span><FileCode2 size={14} /> {item.filename}</span>
+                  <em>+{item.additions || 0} / -{item.deletions || 0}</em>
+                </summary>
+                <Diff diff={item.diff} />
+                <div className={styles.changeActions}>
+                  <button type="button" onClick={() => onApplyFile(item.file_id)} disabled={!canApply}>
+                    <Check size={14} /> Apply file
+                  </button>
+                  <button type="button" onClick={() => onRejectFile(item.file_id)} disabled={!hasPatch}>
+                    <X size={14} /> Reject file
+                  </button>
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
         {osContext && (
           <div className={styles.osContextPanel}>
             <div className={styles.meta}>NEXUS OS Context</div>

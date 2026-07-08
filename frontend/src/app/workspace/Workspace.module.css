@@ -100,6 +100,16 @@
   font-weight: 800;
 }
 
+.editorTitle {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fileList,
 .activityList,
 .messages {
@@ -340,6 +350,78 @@
   white-space: pre;
 }
 
+.editorToolbar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0f0f0f;
+  padding: 7px 10px;
+}
+
+.editorToolButton {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #292929;
+  background: #151515;
+  color: #d8d8d8;
+  border-radius: 7px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.editorToolButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.goToLine {
+  display: grid;
+  grid-template-columns: 70px 42px;
+  gap: 6px;
+}
+
+.goToLine input,
+.goToLine button {
+  min-width: 0;
+  border: 1px solid #292929;
+  background: #0d0d0d;
+  color: #e8e8e8;
+  border-radius: 7px;
+  padding: 6px 8px;
+  outline: none;
+  font: inherit;
+  font-size: 12px;
+}
+
+.goToLine button {
+  background: #151515;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.monacoShell {
+  flex: 1;
+  min-height: 0;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0b0b0b;
+}
+
+.editorLoading {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #888;
+  background: #0b0b0b;
+  font-size: 13px;
+}
+
 .editorFooter {
   min-height: 58px;
   display: flex;
@@ -413,6 +495,104 @@
   border-radius: 7px;
   padding: 10px;
   margin-bottom: 10px;
+}
+
+.changesPanel {
+  border: 1px solid rgba(124, 111, 255, 0.35);
+  background: rgba(124, 111, 255, 0.07);
+  border-radius: 7px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.changesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.changesHeader strong {
+  min-width: 24px;
+  min-height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(124, 111, 255, 0.35);
+  background: rgba(124, 111, 255, 0.14);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.changeItem {
+  border: 1px solid #252545;
+  background: #111119;
+  border-radius: 7px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.changeItem summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  padding: 9px;
+  list-style: none;
+}
+
+.changeItem summary::-webkit-details-marker {
+  display: none;
+}
+
+.changeItem summary span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e8e8ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.changeItem summary em {
+  color: #a7a7d8;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.changeActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  border-top: 1px solid #252545;
+  padding: 8px;
+}
+
+.changeActions button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #292949;
+  background: #161622;
+  color: #e8e8e8;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.changeActions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .osContextPanel {
@@ -574,6 +754,10 @@
 .fullWidthButton {
   width: 100%;
   min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   border: 1px solid #292929;
   background: #151515;
   color: #d8d8d8;

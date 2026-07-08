@@ -877,22 +877,71 @@ def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> l
     return previews
 
 
-def reject_patch_payload(db: Session, session: CodeSession) -> dict:
+def _selected_file_id_set(file_ids: list[str] | None) -> set[str]:
+    selected: set[str] = set()
+    for value in file_ids or []:
+        try:
+            selected.add(str(UUID(str(value))))
+        except ValueError:
+            continue
+    return selected
+
+
+def reject_patch_payload(db: Session, session: CodeSession, file_ids: list[str] | None = None) -> dict:
     metadata = _metadata(session)
-    metadata["patch_preview"] = []
-    metadata["patch_summary"] = ""
-    session.patch_text = None
+    selected = _selected_file_id_set(file_ids)
+    rejected = []
+    if selected and session.patch_text:
+        payload = _parse_patch_payload(session.patch_text)
+        remaining_files = []
+        for item in payload.get("files") or []:
+            file_id = str(item.get("file_id") or "")
+            if file_id in selected:
+                rejected.append({"file_id": file_id, "filename": item.get("filename") or ""})
+            else:
+                remaining_files.append(item)
+        if remaining_files:
+            payload["files"] = remaining_files
+            session.patch_text = json.dumps(payload)
+            metadata["patch_preview"] = [
+                item for item in (metadata.get("patch_preview") or [])
+                if str(item.get("file_id") or "") not in selected
+            ]
+        else:
+            metadata["patch_preview"] = []
+            metadata["patch_summary"] = ""
+            session.patch_text = None
+    else:
+        rejected = [
+            {"file_id": str(item.get("file_id") or ""), "filename": item.get("filename") or ""}
+            for item in (metadata.get("patch_preview") or [])
+        ]
+        metadata["patch_preview"] = []
+        metadata["patch_summary"] = ""
+        session.patch_text = None
     _set_metadata(session, metadata)
     db.commit()
-    append_activity(db, session, "done", "Pending patch rejected", "No workspace files were changed.")
-    return {"status": "rejected"}
+    detail = f"{len(rejected)} file(s) removed from the pending patch." if rejected else "No workspace files were changed."
+    append_activity(db, session, "done", "Pending patch rejected", detail)
+    return {"status": "rejected", "rejected": rejected, "remaining": metadata.get("patch_preview") or []}
 
 
-def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=None, file_ids: list[str] | None = None) -> dict:
     if not session.patch_text:
         raise HTTPException(status_code=400, detail="No patch has been generated")
     payload = _parse_patch_payload(session.patch_text)
-    replacements = payload.get("files") or []
+    selected = _selected_file_id_set(file_ids)
+    all_replacements = payload.get("files") or []
+    replacements = [
+        item for item in all_replacements
+        if not selected or str(item.get("file_id") or "") in selected
+    ]
+    remaining_replacements = [
+        item for item in all_replacements
+        if selected and str(item.get("file_id") or "") not in selected
+    ]
+    if selected and not replacements:
+        raise HTTPException(status_code=400, detail="Selected files are not present in the pending patch")
     changed = []
     rollback_snapshots = []
     for item in replacements:
@@ -925,11 +974,19 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
             )),
         })
 
-    session.status = "applied"
-    session.applied_at = datetime.now(timezone.utc)
-    session.patch_text = None
+    if remaining_replacements:
+        payload["files"] = remaining_replacements
+        session.patch_text = json.dumps(payload)
+        session.status = "active"
+    else:
+        session.status = "applied"
+        session.applied_at = datetime.now(timezone.utc)
+        session.patch_text = None
     metadata = _metadata(session)
-    metadata["patch_preview"] = []
+    metadata["patch_preview"] = [
+        item for item in (metadata.get("patch_preview") or [])
+        if str(item.get("file_id") or "") not in {entry["file_id"] for entry in changed}
+    ] if remaining_replacements else []
     metadata["patch_summary"] = payload.get("summary") or ""
     metadata["rollback_snapshots"] = (metadata.get("rollback_snapshots") or [])[-10:] + [{
         "applied_at": _now(),
@@ -958,7 +1015,11 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
         files_touched=[{"file_id": item["file_id"], "filename": item["filename"]} for item in changed],
         approval_state="approved",
     )
-    return {"changed": changed, "summary": payload.get("summary") or ""}
+    return {
+        "changed": changed,
+        "summary": payload.get("summary") or "",
+        "remaining": metadata.get("patch_preview") or [],
+    }
 
 
 def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
