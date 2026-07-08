@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")         # for Gemini chat + embeddings
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")           # for Groq hosted inference
     SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "mock-serper-key-for-local-dev-only")
+    GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN")
 
     # ── Phase 4 Memory System ───────────────────────────────────
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")

@@ -49,7 +49,9 @@ type Props = {
   repoUrl: string;
   onRepoUrlChange: (value: string) => void;
   onConnectRepo: () => void;
+  onImportRepo: () => void;
   onPreparePr: () => void;
+  onOpenPr: () => void;
   canUseGit: boolean;
 };
 
@@ -106,7 +108,9 @@ export default function ActivityPanel({
   repoUrl,
   onRepoUrlChange,
   onConnectRepo,
+  onImportRepo,
   onPreparePr,
+  onOpenPr,
   canUseGit,
 }: Props) {
   return (
@@ -169,8 +173,14 @@ export default function ActivityPanel({
               Connect
             </button>
           </div>
+          <button className={styles.fullWidthButton} type="button" onClick={onImportRepo} disabled={!canUseGit}>
+            Import repo files
+          </button>
           <button className={styles.fullWidthButton} type="button" onClick={onPreparePr} disabled={!canUseGit}>
             Prepare PR
+          </button>
+          <button className={styles.fullWidthButton} type="button" onClick={onOpenPr} disabled={!canUseGit}>
+            Open GitHub PR
           </button>
         </div>
         {jobs.length > 0 && (

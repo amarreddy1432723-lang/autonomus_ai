@@ -176,6 +176,10 @@ class CodeGitConnectRequest(BaseModel):
     repo_url: str
     default_branch: str = "main"
 
+class CodeGitImportRequest(BaseModel):
+    repo_url: str
+    branch: Optional[str] = None
+
 class CodePreparePullRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
@@ -1121,6 +1125,22 @@ def connect_code_session_git(
     session = get_code_session(db, user_id, session_id)
     return connect_git_repository(db, session, request.repo_url, request.default_branch)
 
+@app.post("/api/v1/code/sessions/{session_id}/git/import")
+def import_code_session_github_repo(
+    session_id: UUID,
+    request: CodeGitImportRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, import_github_repository
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_import", request.repo_url)
+    result = import_github_repository(db, user_id, session, request.repo_url, request.branch)
+    complete_job(db, job, "completed", result, files_touched=result.get("imported") or [])
+    return {**result, "job": serialize_job(job)}
+
 @app.get("/api/v1/code/sessions/{session_id}/git/status")
 def get_code_session_git_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import get_code_session, git_status
@@ -1141,6 +1161,20 @@ def prepare_code_session_pull_request(
     session = get_code_session(db, user_id, session_id)
     job = create_agent_job(db, user_id, session.id, "git", request.title or session.title)
     result = prepare_pull_request(db, session, request.title, request.description, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/git/open-pr")
+def open_code_session_pull_request(
+    session_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, open_github_pull_request
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_pr", "Open GitHub pull request", approval_state="approved")
+    result = open_github_pull_request(db, user_id, session, job)
     return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/inline-edit")

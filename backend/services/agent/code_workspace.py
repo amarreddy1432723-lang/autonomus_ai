@@ -9,10 +9,11 @@ import urllib.request
 import zipfile
 import hashlib
 import uuid
+import base64
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -222,6 +223,143 @@ def _is_importable_project_file(path: str) -> bool:
     if suffix in PROJECT_IMPORT_EXTENSIONS:
         return True
     return False
+
+
+def _github_token() -> str:
+    if not settings.GITHUB_TOKEN:
+        raise HTTPException(status_code=400, detail="GITHUB_TOKEN is not configured")
+    return settings.GITHUB_TOKEN
+
+
+def _parse_github_repo(repo_url: str) -> tuple[str, str]:
+    parsed = urlparse(repo_url.strip())
+    if parsed.netloc.lower() != "github.com":
+        raise HTTPException(status_code=400, detail="Only github.com repository URLs are supported in v1")
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        raise HTTPException(status_code=400, detail="GitHub URL must include owner and repository")
+    return parts[0], parts[1].removesuffix(".git")
+
+
+def _github_request(method: str, path: str, payload: dict | None = None) -> dict:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {_github_token()}",
+            "Content-Type": "application/json",
+            "User-Agent": "NEXUS-Code/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            raw = response.read().decode("utf-8", errors="ignore")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        try:
+            parsed = json.loads(detail)
+            message = parsed.get("message") or detail
+        except Exception:
+            message = detail or str(exc)
+        raise HTTPException(status_code=min(exc.code, 500), detail=f"GitHub API error: {message}")
+
+
+def _github_default_branch(owner: str, repo: str) -> str:
+    repo_data = _github_request("GET", f"/repos/{owner}/{repo}")
+    return repo_data.get("default_branch") or "main"
+
+
+def _github_branch_sha(owner: str, repo: str, branch: str) -> str:
+    ref = _github_request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{quote(branch, safe='')}")
+    return ref.get("object", {}).get("sha") or ""
+
+
+def _github_create_branch(owner: str, repo: str, branch: str, base_sha: str) -> None:
+    try:
+        _github_request("POST", f"/repos/{owner}/{repo}/git/refs", {"ref": f"refs/heads/{branch}", "sha": base_sha})
+    except HTTPException as exc:
+        if "Reference already exists" not in str(exc.detail):
+            raise
+
+
+def _github_file_sha(owner: str, repo: str, path: str, branch: str) -> str | None:
+    try:
+        data = _github_request("GET", f"/repos/{owner}/{repo}/contents/{quote(path, safe='/')}?ref={quote(branch, safe='')}")
+        return data.get("sha")
+    except HTTPException as exc:
+        if "Not Found" in str(exc.detail):
+            return None
+        raise
+
+
+def import_github_repository(db: Session, user_id: UUID, session: CodeSession, repo_url: str, branch: str | None = None, max_files: int = 180) -> dict:
+    owner, repo = _parse_github_repo(repo_url)
+    target_branch = branch or _github_default_branch(owner, repo)
+    tree = _github_request("GET", f"/repos/{owner}/{repo}/git/trees/{quote(target_branch, safe='')}?recursive=1")
+    imported = []
+    skipped = 0
+    for item in tree.get("tree") or []:
+        path = item.get("path") or ""
+        if item.get("type") != "blob" or not _is_importable_project_file(path):
+            skipped += 1
+            continue
+        if item.get("size", 0) > 1_500_000:
+            skipped += 1
+            continue
+        if len(imported) >= max_files:
+            skipped += 1
+            continue
+        blob = _github_request("GET", f"/repos/{owner}/{repo}/git/blobs/{item.get('sha')}")
+        if blob.get("encoding") != "base64":
+            skipped += 1
+            continue
+        content = base64.b64decode(blob.get("content", ""))
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            skipped += 1
+            continue
+        object_key = f"users/{user_id}/files/{uuid.uuid4()}{Path(path).suffix.lower() or '.txt'}"
+        put_object(object_key, content, "text/plain")
+        record = FileReference(
+            user_id=user_id,
+            owner_type="code_workspace",
+            owner_id=session.id,
+            storage_provider=storage_provider(),
+            bucket=settings.S3_BUCKET,
+            object_key=object_key,
+            filename=path,
+            content_type="text/plain",
+            size_bytes=len(content),
+            checksum_sha256=hashlib.sha256(content).hexdigest(),
+            status="active",
+            metadata_json={"imported_from_github": repo_url, "github_branch": target_branch, "github_sha": item.get("sha")},
+        )
+        db.add(record)
+        db.flush()
+        imported.append({"id": str(record.id), "filename": path, "size_bytes": len(content)})
+
+    metadata = _metadata(session)
+    metadata["git"] = {
+        "repo_url": repo_url.strip(),
+        "default_branch": target_branch,
+        "provider": "github",
+        "owner": owner,
+        "repo": repo,
+        "connected_at": _now(),
+    }
+    existing = [str(value) for value in (session.file_ids or [])]
+    session.file_ids = existing + [item["id"] for item in imported]
+    _set_metadata(session, metadata)
+    db.commit()
+    refresh_file_tree(db, user_id, session)
+    append_activity(db, session, "read", "GitHub repository imported", f"{len(imported)} file(s) imported from {owner}/{repo}, {skipped} skipped")
+    return {"imported": imported, "skipped": skipped, "file_ids": session.file_ids, "git": metadata["git"]}
 
 
 def import_zip_project(db: Session, user_id: UUID, session: CodeSession, upload, max_files: int = 180) -> dict:
@@ -521,6 +659,74 @@ def prepare_pull_request(db: Session, session: CodeSession, title: str | None = 
     append_activity(db, session, "done", "Pull request plan prepared", f"{branch_name} -> {pr_plan['base_branch']}")
     complete_job(db, job, "completed", pr_plan)
     return pr_plan
+
+
+def open_github_pull_request(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+    metadata = _metadata(session)
+    git = metadata.get("git") or {}
+    pr_plan = metadata.get("last_pr_plan") or {}
+    repo_url = git.get("repo_url")
+    if not repo_url:
+        complete_job(db, job, "failed", {"error": "No GitHub repository connected"})
+        raise HTTPException(status_code=400, detail="Connect or import a GitHub repository first")
+    owner, repo = _parse_github_repo(repo_url)
+    base_branch = pr_plan.get("base_branch") or git.get("default_branch") or _github_default_branch(owner, repo)
+    branch_name = pr_plan.get("branch_name") or f"nexus/{uuid.uuid4().hex[:10]}"
+    base_sha = _github_branch_sha(owner, repo, base_branch)
+    if not base_sha:
+        complete_job(db, job, "failed", {"error": f"Could not resolve base branch {base_branch}"})
+        raise HTTPException(status_code=400, detail=f"Could not resolve base branch {base_branch}")
+    _github_create_branch(owner, repo, branch_name, base_sha)
+
+    target_filenames = set(pr_plan.get("changed_files") or [])
+    files = code_files(db, user_id, session)
+    if target_filenames:
+        files = [record for record in files if record.filename in target_filenames]
+    if not files:
+        complete_job(db, job, "failed", {"error": "No files available to commit"})
+        raise HTTPException(status_code=400, detail="No files available to commit")
+
+    committed = []
+    message = pr_plan.get("commit_message") or session.title or "NEXUS Code workspace changes"
+    for record in files:
+        content = get_file_text(db, user_id, record.id)
+        payload = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "branch": branch_name,
+        }
+        existing_sha = _github_file_sha(owner, repo, record.filename, branch_name)
+        if existing_sha:
+            payload["sha"] = existing_sha
+        result = _github_request("PUT", f"/repos/{owner}/{repo}/contents/{quote(record.filename, safe='/')}", payload)
+        committed.append({
+            "filename": record.filename,
+            "commit_sha": result.get("commit", {}).get("sha"),
+            "html_url": result.get("content", {}).get("html_url"),
+        })
+
+    pr_payload = {
+        "title": pr_plan.get("pr_title") or message,
+        "head": branch_name,
+        "base": base_branch,
+        "body": pr_plan.get("pr_body") or "Prepared by NEXUS Code.",
+    }
+    pull = _github_request("POST", f"/repos/{owner}/{repo}/pulls", pr_payload)
+    result = {
+        "repo_url": repo_url,
+        "branch_name": branch_name,
+        "base_branch": base_branch,
+        "pull_request_url": pull.get("html_url"),
+        "pull_request_number": pull.get("number"),
+        "committed": committed,
+        "status": "opened",
+    }
+    metadata["last_opened_pr"] = result
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "done", "GitHub pull request opened", result.get("pull_request_url") or "")
+    complete_job(db, job, "completed", result, files_touched=committed, approval_state="approved")
+    return result
 
 
 def update_session_files(db: Session, user_id: UUID, session: CodeSession, file_ids: list[str]) -> CodeSession:

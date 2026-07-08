@@ -599,6 +599,32 @@ export default function WorkspacePage() {
     }
   };
 
+  const importRepo = async () => {
+    const url = repoUrl.trim();
+    if (!url || busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'read', message: 'Importing GitHub repository', detail: url });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/git/import`, {
+        method: 'POST',
+        body: JSON.stringify({ repo_url: url }),
+      });
+      (result.imported || []).forEach((item: any) => {
+        setSelected((current) => ({ ...current, [item.id]: true }));
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({ kind: 'done', message: 'GitHub repository imported', detail: `${result.imported?.length || 0} files imported, ${result.skipped || 0} skipped.` });
+      await loadFiles();
+      await hydrateSession(sid);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const preparePr = async () => {
     if (busy) return;
     setBusy(true);
@@ -617,6 +643,27 @@ export default function WorkspacePage() {
       await hydrateSession(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Prepare PR failed', detail: error instanceof Error ? error.message : 'Could not prepare PR.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openPr = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      addEvent({ kind: 'deploy', message: 'Opening GitHub pull request', detail: 'Creating branch, committing files, and opening PR via GitHub API.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/git/open-pr`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({
+        kind: 'done',
+        message: 'GitHub pull request opened',
+        detail: `${result.pull_request_url}\n${result.committed?.length || 0} file(s) committed to ${result.branch_name}.`,
+      });
+      await hydrateSession(sessionId);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
     } finally {
       setBusy(false);
     }
@@ -719,7 +766,9 @@ export default function WorkspacePage() {
           onFixPreview={fixPreviewIssue}
           onRepoUrlChange={setRepoUrl}
           onConnectRepo={connectRepo}
+          onImportRepo={importRepo}
           onPreparePr={preparePr}
+          onOpenPr={openPr}
         />
       </div>
       <input
