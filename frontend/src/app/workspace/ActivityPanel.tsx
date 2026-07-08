@@ -17,7 +17,12 @@ export type AgentJob = {
   status: string;
   approval_state?: string;
   prompt?: string;
+  logs?: Array<{ kind: string; message: string; detail?: string; timestamp?: string }>;
+  files_touched?: Array<{ filename?: string; file_id?: string }>;
+  commands_run?: Array<{ command?: string; status?: string; return_code?: number | null } | string>;
+  result?: Record<string, any>;
   created_at?: string;
+  completed_at?: string;
 };
 
 export type OSContext = {
@@ -238,10 +243,30 @@ export default function ActivityPanel({
           <div className={styles.jobStack}>
             <div className={styles.meta}>Durable jobs</div>
             {jobs.slice(0, 5).map((job) => (
-              <div className={styles.jobItem} key={job.id}>
-                <span>{job.mode}</span>
-                <strong>{job.status}</strong>
-              </div>
+              <details className={styles.jobDetail} key={job.id}>
+                <summary>
+                  <span>{job.mode}</span>
+                  <strong>{job.status}</strong>
+                </summary>
+                {job.prompt && <p>{job.prompt}</p>}
+                {(job.logs || []).slice(-6).map((log, index) => (
+                  <div className={styles.jobLogLine} key={`${job.id}-log-${index}`}>
+                    <span>{log.kind}</span>
+                    <strong>{log.message}</strong>
+                    {log.detail && <em>{log.detail}</em>}
+                  </div>
+                ))}
+                {(job.files_touched || []).length > 0 && (
+                  <div className={styles.jobMetaLine}>
+                    Files: {(job.files_touched || []).map((file) => file.filename || file.file_id).filter(Boolean).join(', ')}
+                  </div>
+                )}
+                {(job.commands_run || []).length > 0 && (
+                  <div className={styles.jobMetaLine}>
+                    Commands: {(job.commands_run || []).map((command) => typeof command === 'string' ? command : command.command).filter(Boolean).join(', ')}
+                  </div>
+                )}
+              </details>
             ))}
           </div>
         )}

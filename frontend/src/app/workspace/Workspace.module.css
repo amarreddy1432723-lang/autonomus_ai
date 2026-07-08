@@ -695,6 +695,73 @@
   text-transform: capitalize;
 }
 
+.jobDetail {
+  border-top: 1px solid #202020;
+  padding: 8px 0 0;
+  margin-top: 8px;
+}
+
+.jobDetail summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+}
+
+.jobDetail summary::-webkit-details-marker {
+  display: none;
+}
+
+.jobDetail summary span,
+.jobLogLine span {
+  color: #d8d8d8;
+  text-transform: capitalize;
+}
+
+.jobDetail summary strong {
+  color: #9ca3ff;
+  text-transform: capitalize;
+}
+
+.jobDetail p {
+  color: #a7a7a7;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.jobLogLine {
+  display: grid;
+  gap: 3px;
+  border-left: 2px solid #2a2a44;
+  margin-top: 7px;
+  padding-left: 8px;
+  font-size: 11px;
+}
+
+.jobLogLine strong {
+  color: #e4e4f8;
+}
+
+.jobLogLine em,
+.jobMetaLine {
+  color: #8f8f9d;
+  font-style: normal;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.jobMetaLine {
+  border-top: 1px solid #202020;
+  margin-top: 8px;
+  padding-top: 8px;
+  font-size: 11px;
+}
+
 .activityTitle {
   display: flex;
   align-items: center;
