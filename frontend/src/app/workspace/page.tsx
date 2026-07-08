@@ -570,6 +570,27 @@ export default function WorkspacePage() {
     }
   };
 
+  const syncRuntime = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/runtime/sync`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({
+        kind: 'done',
+        message: 'Runtime workspace synced',
+        detail: `${result.files_written?.length || 0} file(s) written. Runtime is ready for safe commands.`,
+      });
+      await hydrateSession(sid);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Runtime sync failed', detail: error instanceof Error ? error.message : 'Could not sync runtime workspace.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const checkPreview = async () => {
     const url = previewUrl.trim();
     if (!url || busy) return;
@@ -835,6 +856,7 @@ export default function WorkspacePage() {
           onRejectFile={rejectFileChange}
           onRollback={rollbackChanges}
           onRunCommand={runCommand}
+          onSyncRuntime={syncRuntime}
           onPreviewUrlChange={setPreviewUrl}
           onCheckPreview={checkPreview}
           onFixPreview={fixPreviewIssue}

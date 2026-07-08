@@ -1015,6 +1015,17 @@ def list_code_session_commands(session_id: UUID, user_id: UUID = Depends(get_cur
     session = get_code_session(db, user_id, session_id)
     return discover_workspace_commands(db, user_id, session)
 
+@app.post("/api/v1/code/sessions/{session_id}/runtime/sync")
+def sync_code_session_runtime(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, sync_workspace_runtime
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "runtime_sync", "Sync workspace files into persistent runtime")
+    result = sync_workspace_runtime(db, user_id, session)
+    complete_job(db, job, "completed", result, files_touched=[{"filename": path} for path in result.get("files_written") or []])
+    return {**result, "job": serialize_job(job)}
+
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import generate_plan, get_code_session

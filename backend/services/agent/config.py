@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # ── Files / object storage ───────────────────────────────
     FILE_STORAGE_PROVIDER: str = os.getenv("FILE_STORAGE_PROVIDER", "local")  # local | s3
     FILE_STORAGE_LOCAL_DIR: str = os.getenv("FILE_STORAGE_LOCAL_DIR", "uploads")
+    CODE_WORKSPACE_LOCAL_DIR: str = os.getenv("CODE_WORKSPACE_LOCAL_DIR", os.path.join("runtime", "code-workspaces"))
     S3_ENDPOINT_URL: Optional[str] = os.getenv("S3_ENDPOINT_URL")
     S3_BUCKET: Optional[str] = os.getenv("S3_BUCKET")
     S3_ACCESS_KEY_ID: Optional[str] = os.getenv("S3_ACCESS_KEY_ID")

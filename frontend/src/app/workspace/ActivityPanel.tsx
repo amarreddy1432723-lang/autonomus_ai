@@ -59,6 +59,7 @@ type Props = {
   onRollback: () => void;
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
+  onSyncRuntime: () => void;
   previewUrl: string;
   onPreviewUrlChange: (value: string) => void;
   onCheckPreview: () => void;
@@ -122,6 +123,7 @@ export default function ActivityPanel({
   onRollback,
   canRunCommand,
   onRunCommand,
+  onSyncRuntime,
   previewUrl,
   onPreviewUrlChange,
   onCheckPreview,
@@ -260,6 +262,9 @@ export default function ActivityPanel({
         )}
       </div>
       <div className={styles.activityFooter}>
+        <button className={styles.fullWidthButton} type="button" onClick={onSyncRuntime} disabled={!canRunCommand}>
+          Sync Runtime
+        </button>
         <div className={styles.commandGrid}>
           {commandButtons.map((item) => (
             <button key={item.command} className={styles.commandButton} type="button" title={item.script || item.source || item.command} onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>

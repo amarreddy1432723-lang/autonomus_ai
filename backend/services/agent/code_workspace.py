@@ -3,7 +3,6 @@ import json
 import os
 import shlex
 import subprocess
-import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -202,6 +201,64 @@ def _safe_workspace_path(root: Path, filename: str) -> Path:
         raise HTTPException(status_code=400, detail=f"Unsafe file path: {filename}")
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _workspace_runtime_root(session: CodeSession) -> Path:
+    base = Path(settings.CODE_WORKSPACE_LOCAL_DIR).expanduser().resolve()
+    root = (base / str(session.id)).resolve()
+    if not str(root).startswith(str(base)):
+        raise HTTPException(status_code=400, detail="Unsafe workspace runtime path")
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _remove_managed_paths(root: Path, paths: list[str]) -> None:
+    for path in paths:
+        if not path:
+            continue
+        target = (root / path).resolve()
+        if not str(target).startswith(str(root.resolve())) or not target.exists() or not target.is_file():
+            continue
+        try:
+            target.unlink()
+        except OSError:
+            continue
+
+
+def sync_workspace_runtime(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    root = _workspace_runtime_root(session)
+    metadata = _metadata(session)
+    previous_paths = [str(path) for path in metadata.get("workspace_managed_paths") or []]
+    _remove_managed_paths(root, previous_paths)
+
+    written = []
+    skipped = []
+    for record in code_files(db, user_id, session):
+        filename = record.filename.replace("\\", "/")
+        if not _is_importable_project_file(filename):
+            skipped.append(filename)
+            continue
+        target = _safe_workspace_path(root, filename)
+        text = get_file_text(db, user_id, record.id)
+        target.write_text(text, encoding="utf-8", errors="ignore")
+        written.append(filename)
+
+    metadata["workspace_runtime"] = {
+        "root": str(root),
+        "last_synced_at": _now(),
+        "files_written": len(written),
+        "files_skipped": len(skipped),
+    }
+    metadata["workspace_managed_paths"] = written
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "read", "Runtime workspace synced", f"{len(written)} file(s) written to persistent session runtime.")
+    return {
+        "root": str(root),
+        "files_written": written,
+        "files_skipped": skipped,
+        "last_synced_at": metadata["workspace_runtime"]["last_synced_at"],
+    }
 
 
 def _safe_archive_name(name: str) -> str | None:
@@ -507,57 +564,52 @@ def run_workspace_command(
         complete_job(db, job, "blocked", {"error": "Command is not allowed"}, commands_run=[command])
         raise HTTPException(status_code=400, detail="Command is not allowed for workspace execution.")
 
-    files = code_files(db, user_id, session)
-    append_activity(db, session, "deploy", f"Running command: {command}", "Creating an isolated temporary workspace from selected files.")
-    append_job_log(db, job, "deploy", f"Running command: {command}", "Temporary isolated workspace created from selected files.")
-    with tempfile.TemporaryDirectory(prefix="nexus-code-") as temp_dir:
-        workspace_root = Path(temp_dir)
-        for record in files:
-            if Path(record.filename).suffix.lower() not in CODE_EXTENSIONS and Path(record.filename).name not in {"package.json", "package-lock.json"}:
-                continue
-            target = _safe_workspace_path(workspace_root, record.filename)
-            target.write_text(get_file_text(db, user_id, record.id), encoding="utf-8", errors="ignore")
+    runtime = sync_workspace_runtime(db, user_id, session)
+    workspace_root = Path(runtime["root"])
+    append_activity(db, session, "deploy", f"Running command: {command}", f"Using persistent runtime workspace with {len(runtime['files_written'])} synced file(s).")
+    append_job_log(db, job, "deploy", f"Running command: {command}", f"Runtime workspace: {workspace_root}")
 
-        try:
-            completed = subprocess.run(
-                parts,
-                cwd=workspace_root,
-                capture_output=True,
-                text=True,
-                timeout=max(5, min(timeout_seconds, 120)),
-                check=False,
-            )
-            output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
-            clipped = output[-12000:] if output else "(no output)"
-            status = "passed" if completed.returncode == 0 else "failed"
-            event_kind = "done" if completed.returncode == 0 else "error"
-            append_activity(db, session, event_kind, f"Command {status}: {command}", clipped)
-            metadata = _metadata(session)
-            command_log = list(metadata.get("command_log") or [])
-            result = {
-                "command": command,
-                "status": status,
-                "return_code": completed.returncode,
-                "output": clipped,
-                "ran_at": _now(),
-            }
-            command_log.append(result)
-            metadata["command_log"] = command_log[-50:]
-            _set_metadata(session, metadata)
-            db.commit()
-            complete_job(db, job, "completed" if status == "passed" else "failed", result, commands_run=[result])
-            return result
-        except FileNotFoundError:
-            append_activity(db, session, "error", f"Command unavailable: {parts[0]}", "The runtime image does not include this executable.")
-            complete_job(db, job, "failed", {"error": f"Command unavailable: {parts[0]}"}, commands_run=[command])
-            raise HTTPException(status_code=400, detail=f"Command unavailable: {parts[0]}")
-        except subprocess.TimeoutExpired as exc:
-            output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
-            clipped = output[-12000:] if output else "Command timed out before producing output."
-            append_activity(db, session, "error", f"Command timed out: {command}", clipped)
-            result = {"command": command, "status": "timeout", "return_code": None, "output": clipped, "ran_at": _now()}
-            complete_job(db, job, "timeout", result, commands_run=[result])
-            return result
+    try:
+        completed = subprocess.run(
+            parts,
+            cwd=workspace_root,
+            capture_output=True,
+            text=True,
+            timeout=max(5, min(timeout_seconds, 120)),
+            check=False,
+        )
+        output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+        clipped = output[-12000:] if output else "(no output)"
+        status = "passed" if completed.returncode == 0 else "failed"
+        event_kind = "done" if completed.returncode == 0 else "error"
+        append_activity(db, session, event_kind, f"Command {status}: {command}", clipped)
+        metadata = _metadata(session)
+        command_log = list(metadata.get("command_log") or [])
+        result = {
+            "command": command,
+            "status": status,
+            "return_code": completed.returncode,
+            "output": clipped,
+            "workspace_root": str(workspace_root),
+            "ran_at": _now(),
+        }
+        command_log.append(result)
+        metadata["command_log"] = command_log[-50:]
+        _set_metadata(session, metadata)
+        db.commit()
+        complete_job(db, job, "completed" if status == "passed" else "failed", result, commands_run=[result])
+        return result
+    except FileNotFoundError:
+        append_activity(db, session, "error", f"Command unavailable: {parts[0]}", "The runtime image does not include this executable.")
+        complete_job(db, job, "failed", {"error": f"Command unavailable: {parts[0]}"}, commands_run=[command])
+        raise HTTPException(status_code=400, detail=f"Command unavailable: {parts[0]}")
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+        clipped = output[-12000:] if output else "Command timed out before producing output."
+        append_activity(db, session, "error", f"Command timed out: {command}", clipped)
+        result = {"command": command, "status": "timeout", "return_code": None, "output": clipped, "workspace_root": str(workspace_root), "ran_at": _now()}
+        complete_job(db, job, "timeout", result, commands_run=[result])
+        return result
 
 
 def check_preview_url(db: Session, session: CodeSession, url: str, job=None) -> dict:
