@@ -3,7 +3,7 @@
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -60,6 +60,7 @@ export default function WorkspacePage() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [osContext, setOsContext] = useState<OSContext | null>(null);
+  const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
   const [mode, setMode] = useState<WorkspaceMode>('auto');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -115,6 +116,7 @@ export default function WorkspacePage() {
       setPatchReady(Boolean(session.patch_preview?.length || session.patch_text));
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
       setJobs(jobData);
+      await refreshCommands(session.id);
       await loadOsContext();
       if (session.patch_preview?.length) {
         session.patch_preview.forEach((item: any) => {
@@ -136,6 +138,7 @@ export default function WorkspacePage() {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
       setPatchPreview([]);
+      setCommands([]);
     }
   };
 
@@ -146,6 +149,19 @@ export default function WorkspacePage() {
       setJobs(jobData);
     } catch {
       setJobs([]);
+    }
+  };
+
+  const refreshCommands = async (idValue: string) => {
+    if (!idValue) {
+      setCommands([]);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/commands`);
+      setCommands(data.commands || []);
+    } catch {
+      setCommands([]);
     }
   };
 
@@ -203,6 +219,7 @@ export default function WorkspacePage() {
           method: 'PATCH',
           body: JSON.stringify({ file_ids: fileIds }),
         });
+        await refreshCommands(sessionId);
       }
       addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
       await loadOsContext();
@@ -229,6 +246,7 @@ export default function WorkspacePage() {
     localStorage.setItem('nexus.code.session_id', session.id);
     addEvent({ kind: 'start', message: 'Code session created', detail: session.id });
     await refreshJobs(session.id);
+    await refreshCommands(session.id);
     return session.id;
   };
 
@@ -802,6 +820,7 @@ export default function WorkspacePage() {
           jobs={jobs}
           osContext={osContext}
           patchPreview={patchPreview}
+          commands={commands}
           hasPatch={patchReady}
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}

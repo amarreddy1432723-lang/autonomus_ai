@@ -37,11 +37,19 @@ export type PatchPreviewItem = {
   deletions?: number;
 };
 
+export type WorkspaceCommand = {
+  label: string;
+  command: string;
+  source?: string;
+  script?: string;
+};
+
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
   osContext: OSContext | null;
   patchPreview: PatchPreviewItem[];
+  commands: WorkspaceCommand[];
   hasPatch: boolean;
   canApply: boolean;
   onApply: () => void;
@@ -92,7 +100,7 @@ function Diff({ diff }: { diff: string }) {
   );
 }
 
-const commands = [
+const commands: WorkspaceCommand[] = [
   { label: 'Build', command: 'npm run build' },
   { label: 'Test', command: 'npm test' },
   { label: 'Lint', command: 'npm run lint' },
@@ -104,6 +112,7 @@ export default function ActivityPanel({
   jobs,
   osContext,
   patchPreview,
+  commands: workspaceCommands,
   hasPatch,
   canApply,
   onApply,
@@ -127,6 +136,7 @@ export default function ActivityPanel({
   onOpenPr,
   canUseGit,
 }: Props) {
+  const commandButtons = workspaceCommands.length ? workspaceCommands : commands;
   return (
     <aside className={styles.activity}>
       <div className={styles.panelHeader}>
@@ -251,8 +261,8 @@ export default function ActivityPanel({
       </div>
       <div className={styles.activityFooter}>
         <div className={styles.commandGrid}>
-          {commands.map((item) => (
-            <button key={item.command} className={styles.commandButton} type="button" onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>
+          {commandButtons.map((item) => (
+            <button key={item.command} className={styles.commandButton} type="button" title={item.script || item.source || item.command} onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>
               {item.label}
             </button>
           ))}

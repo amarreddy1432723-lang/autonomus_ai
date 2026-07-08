@@ -1008,6 +1008,13 @@ def search_code_session_files(
     session = get_code_session(db, user_id, session_id)
     return search_workspace_files(db, user_id, session, q)
 
+@app.get("/api/v1/code/sessions/{session_id}/commands")
+def list_code_session_commands(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import discover_workspace_commands, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    return discover_workspace_commands(db, user_id, session)
+
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import generate_plan, get_code_session

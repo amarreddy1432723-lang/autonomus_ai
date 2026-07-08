@@ -40,6 +40,7 @@ ALLOWED_COMMAND_PREFIXES = (
     ("pytest",),
     ("node", "--check"),
 )
+SAFE_SCRIPT_NAMES = {"build", "test", "lint", "typecheck", "check", "validate"}
 BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
 
 
@@ -432,10 +433,62 @@ def _command_parts(command: str) -> list[str]:
         raise HTTPException(status_code=400, detail="Command could not be parsed")
 
 
-def _command_allowed(parts: list[str]) -> bool:
+def discover_workspace_commands(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    commands: list[dict] = []
+    seen: set[str] = set()
+    files = code_files(db, user_id, session)
+    package_files = [record for record in files if Path(record.filename).name == "package.json"]
+    for record in package_files[:3]:
+        try:
+            package = json.loads(get_file_text(db, user_id, record.id))
+        except Exception:
+            continue
+        scripts = package.get("scripts") or {}
+        package_manager = "npm"
+        filenames = {Path(item.filename).name for item in files}
+        if "pnpm-lock.yaml" in filenames:
+            package_manager = "pnpm"
+        elif "yarn.lock" in filenames:
+            package_manager = "yarn"
+        for script_name, script_body in scripts.items():
+            if script_name not in SAFE_SCRIPT_NAMES:
+                continue
+            command = f"{package_manager} run {script_name}"
+            if script_name == "test" and package_manager == "npm":
+                command = "npm test"
+            if command in seen:
+                continue
+            seen.add(command)
+            commands.append({
+                "label": script_name.title() if script_name != "typecheck" else "Typecheck",
+                "command": command,
+                "source": record.filename,
+                "script": str(script_body)[:180],
+            })
+
+    python_files = [record for record in files if Path(record.filename).suffix.lower() == ".py"]
+    filenames = {Path(record.filename).name for record in files}
+    if python_files and "python -m pytest" not in seen:
+        commands.append({
+            "label": "Pytest",
+            "command": "python -m pytest",
+            "source": "Python workspace",
+            "script": "Run Python tests with pytest.",
+        })
+    return {"commands": commands[:12]}
+
+
+def _dynamic_command_allowed(parts: list[str], commands: list[dict]) -> bool:
+    command = " ".join(parts).lower()
+    return any(command == str(item.get("command") or "").lower() for item in commands)
+
+
+def _command_allowed(parts: list[str], commands: list[dict] | None = None) -> bool:
     lowered = [part.lower() for part in parts]
     if not lowered or any(token in BLOCKED_TOKENS for token in lowered):
         return False
+    if commands and _dynamic_command_allowed(lowered, commands):
+        return True
     return any(tuple(lowered[: len(prefix)]) == prefix for prefix in ALLOWED_COMMAND_PREFIXES)
 
 
@@ -448,7 +501,8 @@ def run_workspace_command(
     job=None,
 ) -> dict:
     parts = _command_parts(command)
-    if not _command_allowed(parts):
+    discovered_commands = discover_workspace_commands(db, user_id, session).get("commands") or []
+    if not _command_allowed(parts, discovered_commands):
         append_activity(db, session, "error", "Command blocked", "Only safe build/test/lint commands are enabled in v1.")
         complete_job(db, job, "blocked", {"error": "Command is not allowed"}, commands_run=[command])
         raise HTTPException(status_code=400, detail="Command is not allowed for workspace execution.")
