@@ -194,6 +194,9 @@ class PAScheduleRequest(BaseModel):
     duration_minutes: int = 60
     deadline: Optional[str] = None
 
+class PAOSStateRequest(BaseModel):
+    state: str
+
 class PAMeetingPrepRequest(BaseModel):
     meeting_context: str
 
@@ -638,6 +641,35 @@ def _pa_access(db: Session, user_id: UUID) -> dict:
 @app.get("/api/v1/pa/access")
 def get_pa_access(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     return _pa_access(db, user_id)
+
+@app.get("/api/v1/pa/os-status")
+def get_pa_os_status(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_os import pa_os_status
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        return {"access": access, "locked": True}
+    return {"access": access, **pa_os_status(db, user_id)}
+
+@app.post("/api/v1/pa/os-status")
+def post_pa_os_status(request: PAOSStateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_os import pa_os_status, set_pa_os_state
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires access", "access": access})
+    set_pa_os_state(user_id, request.state)
+    return {"access": access, **pa_os_status(db, user_id)}
+
+@app.post("/api/v1/pa/emergency-stop")
+def post_pa_emergency_stop(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_os import emergency_stop, pa_os_status
+
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires access", "access": access})
+    stop = emergency_stop(user_id)
+    return {"access": access, **pa_os_status(db, user_id), "emergency": stop}
 
 @app.get("/api/v1/pa/daily-brief")
 def get_pa_daily_brief(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
