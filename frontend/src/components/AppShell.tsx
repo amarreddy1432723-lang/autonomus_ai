@@ -4,10 +4,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { 
-  LayoutDashboard, MessageSquare, Target, CheckSquare, 
-  BrainCircuit, Calendar, Hourglass, ShieldAlert, BarChart3, 
+  MessageSquare, CheckSquare,
+  Calendar, ShieldAlert,
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus, LogOut, Mic, Sparkles, Globe2, Rocket, Lightbulb, PanelLeft, BriefcaseBusiness
+  LogIn, UserPlus, LogOut, Mic, Sparkles, Lightbulb, PanelLeft, BriefcaseBusiness
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
@@ -63,34 +63,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   };
 
   const products = useMemo(() => [
-    { label: 'NEXUS Code', href: '/studio', match: ['/studio', '/chat', '/workspace', '/design', '/deploy'], icon: Code2 },
-    { label: 'NEXUS PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
-    { label: 'Interview', href: '/interview', match: ['/interview'], icon: Mic },
-    { label: 'Research', href: '/internet', match: ['/internet'], icon: Globe2 },
-    { label: 'Life Graph', href: '/life-graph', match: ['/life-graph', '/memory'], icon: BrainCircuit },
     { label: 'Product Hub', href: '/hub', match: ['/hub'], icon: Sparkles },
+    { label: 'NEXUS Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
+    { label: 'NEXUS PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
+    { label: 'NEXUS Interview', href: '/interview', match: ['/interview'], icon: Mic },
+    { label: 'Settings', href: '/settings', match: ['/settings'], icon: Settings },
   ], []);
 
   const allNavItems = useMemo(() => [
     { label: 'Hub', icon: Sparkles, href: '/hub' },
-    { label: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
-    { label: 'Studio', icon: Sparkles, href: '/studio' },
-    { label: 'Chat', icon: MessageSquare, href: '/chat' },
-    { label: 'Interview', icon: Mic, href: '/interview' },
-    { label: 'Workspace', icon: Code2, href: '/workspace' },
-    { label: 'Internet', icon: Globe2, href: '/internet' },
-    { label: 'Design', icon: Sparkles, href: '/design' },
-    { label: 'Deploy', icon: Rocket, href: '/deploy' },
-    { label: 'Intelligence', icon: Lightbulb, href: '/intelligence' },
-    { label: 'Goals', icon: Target, href: '/goals' },
-    { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
-    { label: 'Memory', icon: BrainCircuit, href: '/memory' },
-    { label: 'Calendar', icon: Calendar, href: '/calendar' },
-    { label: 'Timeline', icon: Hourglass, href: '/timeline' },
-    { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
-    { label: 'Analytics', icon: BarChart3, href: '/analytics' },
+    { label: 'NEXUS Code', icon: Code2, href: '/workspace' },
+    { label: 'NEXUS PA', icon: BriefcaseBusiness, href: '/pa' },
+    { label: 'NEXUS Interview', icon: Mic, href: '/interview' },
     { label: 'Settings', icon: Settings, href: '/settings' },
-  ], [pendingApprovalCount]);
+  ], []);
 
   const activeProduct = products.find((product) => product.match.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) || products[0];
 
@@ -99,25 +85,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       return [
         { label: 'PA Home', icon: BriefcaseBusiness, href: '/pa' },
         { label: 'Planner', icon: Calendar, href: '/pa/planner' },
-        { label: 'Goals', icon: Target, href: '/goals' },
         { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
-        { label: 'Timeline', icon: Hourglass, href: '/timeline' },
+        { label: 'Calendar', icon: Calendar, href: '/calendar' },
         { label: 'Reflection', icon: Lightbulb, href: '/pa/reflection' },
       ];
     }
-    if (activeProduct.label === 'Interview') {
-      return [{ label: 'Interview', icon: Mic, href: '/interview' }];
+    if (activeProduct.label === 'NEXUS Interview') {
+      return [{ label: 'NEXUS Interview', icon: Mic, href: '/interview' }];
     }
-    if (activeProduct.label === 'Research') {
-      return [{ label: 'Research', icon: Globe2, href: '/internet' }];
+    if (activeProduct.label === 'Settings') {
+      return [{ label: 'Settings', icon: Settings, href: '/settings' }];
+    }
+    if (activeProduct.label === 'Product Hub') {
+      return [
+        { label: 'Hub', icon: Sparkles, href: '/hub' },
+        { label: 'NEXUS Code', icon: Code2, href: '/workspace' },
+        { label: 'NEXUS PA', icon: BriefcaseBusiness, href: '/pa' },
+        { label: 'NEXUS Interview', icon: Mic, href: '/interview' },
+      ];
     }
     return [
-      { label: 'Studio', icon: Sparkles, href: '/studio' },
-      { label: 'Chat', icon: MessageSquare, href: '/chat' },
       { label: 'Workspace', icon: Code2, href: '/workspace' },
-      { label: 'Design', icon: Sparkles, href: '/design' },
-      { label: 'Deploy', icon: Rocket, href: '/deploy' },
-      { label: 'Goals', icon: Target, href: '/goals' },
+      { label: 'Chat', icon: MessageSquare, href: '/chat' },
       { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
     ];
   }, [activeProduct.label, pendingApprovalCount]);
@@ -127,9 +116,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const commands = useMemo(() => [
     { id: 'quick-chat', label: 'Ask NEXUS', hint: 'Ctrl+J', action: () => router.push('/chat') },
     { id: 'quick-code', label: 'Generate code', hint: 'Ctrl+G', action: () => router.push('/workspace') },
-    { id: 'quick-design', label: 'Design UI', hint: 'Ctrl+D', action: () => router.push('/design') },
-    { id: 'quick-deploy', label: 'Deploy app', hint: 'Ctrl+Shift+D', action: () => router.push('/deploy') },
-    { id: 'quick-research', label: 'Research topic', hint: 'Ctrl+R', action: () => router.push('/internet') },
+    { id: 'quick-design', label: 'Design in NEXUS Code', hint: 'Ctrl+D', action: () => router.push('/workspace?agent=design') },
+    { id: 'quick-deploy', label: 'Deploy from NEXUS Code', hint: 'Ctrl+Shift+D', action: () => router.push('/workspace?agent=deploy') },
+    { id: 'quick-research', label: 'Research in NEXUS Code', hint: 'Ctrl+R', action: () => router.push('/workspace?agent=research') },
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', action: () => toggleSidebar() },
     ...allNavItems.map((item, index) => ({
       id: item.href,
@@ -168,11 +157,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       }
       if (modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
-        router.push(event.shiftKey ? '/deploy' : '/design');
+        router.push(event.shiftKey ? '/workspace?agent=deploy' : '/workspace?agent=design');
       }
       if (modifier && event.key.toLowerCase() === 'r') {
         event.preventDefault();
-        router.push('/internet');
+        router.push('/workspace?agent=research');
       }
       if (!modifier && /^[1-9]$/.test(event.key)) {
         const item = allNavItems[Number(event.key) - 1];

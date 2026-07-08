@@ -5,16 +5,12 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   Bell,
-  BrainCircuit,
   BriefcaseBusiness,
   CalendarClock,
   Cpu,
-  Globe2,
   Mic,
   PauseCircle,
-  Palette,
   PhoneCall,
-  Rocket,
   Settings,
   ShieldAlert,
   Square,
@@ -24,12 +20,9 @@ import { apiRequest } from '../../utils/api';
 import styles from '../nexus.module.css';
 
 const products = [
-  { name: 'NEXUS Code', href: '/studio', icon: Cpu, detail: 'AI coding engine, planning, patches, deploy handoff' },
+  { name: 'NEXUS Code', href: '/workspace', icon: Cpu, detail: 'Code, design, research, deploy, and review from one workspace' },
   { name: 'NEXUS PA', href: '/pa', icon: BriefcaseBusiness, detail: 'Always-on personal assistant OS layer', live: true },
-  { name: 'Interview', href: '/interview', icon: Mic, detail: 'Resume-aware live coaching and practice' },
-  { name: 'Design', href: '/design', icon: Palette, detail: 'UI/UX variants and implementation handoff' },
-  { name: 'Deploy', href: '/deploy', icon: Rocket, detail: 'Analyze and prepare production deployments' },
-  { name: 'Research', href: '/internet', icon: Globe2, detail: 'Relevant live research without noisy updates' },
+  { name: 'NEXUS Interview', href: '/interview', icon: Mic, detail: 'Resume-aware live coaching and interview preparation' },
 ];
 
 type PAStatus = {
@@ -160,8 +153,8 @@ export default function HubPage() {
 
         <section className={styles.hubHero}>
           <div className={styles.eyebrow}>NEXUS AI Platform</div>
-          <h2 className={styles.title}>Your AI-powered product suite</h2>
-          <p className={styles.subtitle}>One shared intelligence layer across coding, personal assistance, interviews, design, deployment, research, and the always-on PA OS.</p>
+          <h2 className={styles.title}>Choose the workspace you need</h2>
+          <p className={styles.subtitle}>A focused signed-in hub for Code, PA, and Interview. Design, research, deploy, and planning agents now live inside NEXUS Code instead of separate public products.</p>
         </section>
 
         <section className={styles.productGrid}>
@@ -198,7 +191,6 @@ export default function HubPage() {
         </section>
 
         <section className={styles.actionBar}>
-          <Link className={styles.secondaryButton} href="/life-graph"><BrainCircuit size={16} /> Life Graph</Link>
           <Link className={styles.secondaryButton} href="/settings"><Settings size={16} /> Settings</Link>
           <button className={styles.secondaryButton} type="button" onClick={() => setPAState('active')} disabled={loading}>
             <Mic size={16} /> Voice Command Ready
