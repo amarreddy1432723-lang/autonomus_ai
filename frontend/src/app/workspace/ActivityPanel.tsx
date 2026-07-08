@@ -17,6 +17,8 @@ type Props = {
   canApply: boolean;
   onApply: () => void;
   onReject: () => void;
+  canRunCommand: boolean;
+  onRunCommand: (command: string) => void;
 };
 
 function Icon({ kind }: { kind: ActivityEvent['kind'] }) {
@@ -45,7 +47,14 @@ function Diff({ diff }: { diff: string }) {
   );
 }
 
-export default function ActivityPanel({ events, hasPatch, canApply, onApply, onReject }: Props) {
+const commands = [
+  { label: 'Build', command: 'npm run build' },
+  { label: 'Test', command: 'npm test' },
+  { label: 'Lint', command: 'npm run lint' },
+  { label: 'Typecheck', command: 'npm run typecheck' },
+];
+
+export default function ActivityPanel({ events, hasPatch, canApply, onApply, onReject, canRunCommand, onRunCommand }: Props) {
   return (
     <aside className={styles.activity}>
       <div className={styles.panelHeader}>
@@ -70,6 +79,13 @@ export default function ActivityPanel({ events, hasPatch, canApply, onApply, onR
         )}
       </div>
       <div className={styles.activityFooter}>
+        <div className={styles.commandGrid}>
+          {commands.map((item) => (
+            <button key={item.command} className={styles.commandButton} type="button" onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>
+              {item.label}
+            </button>
+          ))}
+        </div>
         <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply}>
           <Check size={15} /> Approve all changes
         </button>

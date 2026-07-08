@@ -140,6 +140,10 @@ class CodeInstructionRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
+class CodeCommandRunRequest(BaseModel):
+    command: str
+    timeout_seconds: int = 45
+
 class NexusCodeRequest(BaseModel):
     instruction: str
     file_ids: List[str] = Field(default_factory=list)
@@ -847,6 +851,18 @@ def reject_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_curr
 
     session = get_code_session(db, user_id, session_id)
     return reject_patch_payload(db, session)
+
+@app.post("/api/v1/code/sessions/{session_id}/run-command")
+def run_code_session_command(
+    session_id: UUID,
+    request: CodeCommandRunRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, run_workspace_command
+
+    session = get_code_session(db, user_id, session_id)
+    return run_workspace_command(db, user_id, session, request.command, request.timeout_seconds)
 
 @app.post("/api/v1/code/sessions/{session_id}/apply")
 def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

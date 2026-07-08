@@ -308,6 +308,29 @@ export default function WorkspacePage() {
     }
   };
 
+  const runCommand = async (command: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'deploy', message: `Running ${command}`, detail: 'Executing in an isolated temporary workspace from selected files.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-command`, {
+        method: 'POST',
+        body: JSON.stringify({ command, timeout_seconds: 60 }),
+      });
+      addEvent({
+        kind: result.status === 'passed' ? 'done' : 'error',
+        message: `${command} ${result.status}`,
+        detail: result.output,
+      });
+      await hydrateSession(sid);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Command failed', detail: error instanceof Error ? error.message : 'Could not run command.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const rejectChanges = async () => {
     if (sessionId) {
       try {
@@ -354,7 +377,15 @@ export default function WorkspacePage() {
           onSubmit={runWorkspace}
           onAttachClick={() => fileInputRef.current?.click()}
         />
-        <ActivityPanel events={events} hasPatch={patchReady} canApply={patchReady && !!sessionId && !busy} onApply={applyChanges} onReject={rejectChanges} />
+        <ActivityPanel
+          events={events}
+          hasPatch={patchReady}
+          canApply={patchReady && !!sessionId && !busy}
+          canRunCommand={selectedFileIds.length > 0 && !busy}
+          onApply={applyChanges}
+          onReject={rejectChanges}
+          onRunCommand={runCommand}
+        />
       </div>
       <input
         ref={fileInputRef}

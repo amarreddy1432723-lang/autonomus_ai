@@ -216,7 +216,8 @@
 .modePill,
 .iconButton,
 .approveButton,
-.rejectButton {
+.rejectButton,
+.commandButton {
   border: 1px solid #292929;
   background: #151515;
   color: #d8d8d8;
@@ -274,7 +275,8 @@
 .modePill:disabled,
 .iconButton:disabled,
 .approveButton:disabled,
-.rejectButton:disabled {
+.rejectButton:disabled,
+.commandButton:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -325,6 +327,19 @@
   padding: 12px;
   display: grid;
   gap: 8px;
+}
+
+.commandGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.commandButton {
+  min-height: 34px;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .approveButton,

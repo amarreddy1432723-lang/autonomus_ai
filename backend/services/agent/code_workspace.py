@@ -1,6 +1,11 @@
 import difflib
 import json
+import os
+import shlex
+import subprocess
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -13,6 +18,18 @@ from .llm_router import get_chat_llm
 
 
 CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".html", ".css", ".json", ".md", ".txt"}
+ALLOWED_COMMAND_PREFIXES = (
+    ("npm", "test"),
+    ("npm", "run", "test"),
+    ("npm", "run", "build"),
+    ("npm", "run", "lint"),
+    ("npm", "run", "typecheck"),
+    ("python", "-m", "pytest"),
+    ("python3", "-m", "pytest"),
+    ("pytest",),
+    ("node", "--check"),
+)
+BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
 
 
 def _now() -> str:
@@ -141,6 +158,89 @@ def refresh_file_tree(db: Session, user_id: UUID, session: CodeSession) -> list[
     _set_metadata(session, metadata)
     db.commit()
     return tree
+
+
+def _safe_workspace_path(root: Path, filename: str) -> Path:
+    safe_name = filename.replace("\\", "/").lstrip("/")
+    target = (root / safe_name).resolve()
+    if not str(target).startswith(str(root.resolve())):
+        raise HTTPException(status_code=400, detail=f"Unsafe file path: {filename}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _command_parts(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Command could not be parsed")
+
+
+def _command_allowed(parts: list[str]) -> bool:
+    lowered = [part.lower() for part in parts]
+    if not lowered or any(token in BLOCKED_TOKENS for token in lowered):
+        return False
+    return any(tuple(lowered[: len(prefix)]) == prefix for prefix in ALLOWED_COMMAND_PREFIXES)
+
+
+def run_workspace_command(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    command: str,
+    timeout_seconds: int = 45,
+) -> dict:
+    parts = _command_parts(command)
+    if not _command_allowed(parts):
+        append_activity(db, session, "error", "Command blocked", "Only safe build/test/lint commands are enabled in v1.")
+        raise HTTPException(status_code=400, detail="Command is not allowed for workspace execution.")
+
+    files = code_files(db, user_id, session)
+    append_activity(db, session, "deploy", f"Running command: {command}", "Creating an isolated temporary workspace from selected files.")
+    with tempfile.TemporaryDirectory(prefix="nexus-code-") as temp_dir:
+        workspace_root = Path(temp_dir)
+        for record in files:
+            if Path(record.filename).suffix.lower() not in CODE_EXTENSIONS and Path(record.filename).name not in {"package.json", "package-lock.json"}:
+                continue
+            target = _safe_workspace_path(workspace_root, record.filename)
+            target.write_text(get_file_text(db, user_id, record.id), encoding="utf-8", errors="ignore")
+
+        try:
+            completed = subprocess.run(
+                parts,
+                cwd=workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=max(5, min(timeout_seconds, 120)),
+                check=False,
+            )
+            output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+            clipped = output[-12000:] if output else "(no output)"
+            status = "passed" if completed.returncode == 0 else "failed"
+            event_kind = "done" if completed.returncode == 0 else "error"
+            append_activity(db, session, event_kind, f"Command {status}: {command}", clipped)
+            metadata = _metadata(session)
+            command_log = list(metadata.get("command_log") or [])
+            result = {
+                "command": command,
+                "status": status,
+                "return_code": completed.returncode,
+                "output": clipped,
+                "ran_at": _now(),
+            }
+            command_log.append(result)
+            metadata["command_log"] = command_log[-50:]
+            _set_metadata(session, metadata)
+            db.commit()
+            return result
+        except FileNotFoundError:
+            append_activity(db, session, "error", f"Command unavailable: {parts[0]}", "The runtime image does not include this executable.")
+            raise HTTPException(status_code=400, detail=f"Command unavailable: {parts[0]}")
+        except subprocess.TimeoutExpired as exc:
+            output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+            clipped = output[-12000:] if output else "Command timed out before producing output."
+            append_activity(db, session, "error", f"Command timed out: {command}", clipped)
+            return {"command": command, "status": "timeout", "return_code": None, "output": clipped, "ran_at": _now()}
 
 
 def update_session_files(db: Session, user_id: UUID, session: CodeSession, file_ids: list[str]) -> CodeSession:
