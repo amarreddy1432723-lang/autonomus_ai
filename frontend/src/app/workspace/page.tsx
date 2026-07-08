@@ -35,6 +35,23 @@ function summarizePatch(raw: string) {
   }
 }
 
+function summarizePreview(preview: Array<{ filename: string; additions?: number; deletions?: number }>) {
+  if (!preview.length) return 'Patch prepared for review.';
+  return preview
+    .map((file) => `Edited ${file.filename}: +${file.additions || 0} / -${file.deletions || 0}`)
+    .join('\n');
+}
+
+function normalizeEvents(events: any[]): ActivityEvent[] {
+  return [...(events || [])].reverse().map((event, index) => ({
+    id: event.id || `stored-${index}`,
+    kind: event.kind || 'start',
+    message: event.message || 'Workspace activity',
+    detail: event.detail,
+    diff: event.diff,
+  }));
+}
+
 export default function WorkspacePage() {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -69,8 +86,36 @@ export default function WorkspacePage() {
     }
   };
 
+  const hydrateSession = async (idValue: string) => {
+    if (!idValue) return;
+    try {
+      const session = await apiRequest(`/api/v1/code/sessions/${idValue}`);
+      setSessionId(session.id);
+      setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
+      setEvents(normalizeEvents(session.activity_log || []));
+      setPatchReady(Boolean(session.patch_preview?.length || session.patch_text));
+      if (session.patch_preview?.length) {
+        session.patch_preview.forEach((item: any) => {
+          addEvent({
+            kind: 'edit',
+            message: `Pending change: ${item.filename}`,
+            detail: `+${item.additions || 0} / -${item.deletions || 0}`,
+            diff: item.diff,
+          });
+        });
+      }
+    } catch {
+      localStorage.removeItem('nexus.code.session_id');
+      setSessionId('');
+    }
+  };
+
   useEffect(() => {
     loadFiles();
+    const savedSessionId = localStorage.getItem('nexus.code.session_id');
+    if (savedSessionId) {
+      hydrateSession(savedSessionId);
+    }
     const raw = sessionStorage.getItem('design_to_workspace');
     if (raw) {
       try {
@@ -87,14 +132,23 @@ export default function WorkspacePage() {
     if (!fileList?.length) return;
     setBusy(true);
     try {
+      const nextSelected = { ...selected };
       for (const file of Array.from(fileList)) {
         addEvent({ kind: 'read', message: `Uploading ${file.name}`, detail: 'Extracting text and adding it to workspace context.' });
         const formData = new FormData();
         formData.append('upload', file);
         const uploaded = await apiRequest('/api/v1/files?owner_type=code_workspace', { method: 'POST', body: formData });
-        setSelected((current) => ({ ...current, [uploaded.id]: true }));
+        nextSelected[uploaded.id] = true;
       }
+      setSelected(nextSelected);
       await loadFiles();
+      if (sessionId) {
+        const fileIds = Object.entries(nextSelected).filter(([, value]) => value).map(([fileId]) => fileId);
+        await apiRequest(`/api/v1/code/sessions/${sessionId}/files`, {
+          method: 'PATCH',
+          body: JSON.stringify({ file_ids: fileIds }),
+        });
+      }
       addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
     } catch (error) {
       addEvent({ kind: 'error', message: 'Upload failed', detail: error instanceof Error ? error.message : 'Unknown upload error.' });
@@ -104,12 +158,19 @@ export default function WorkspacePage() {
   };
 
   const ensureSession = async () => {
-    if (sessionId) return sessionId;
+    if (sessionId) {
+      await apiRequest(`/api/v1/code/sessions/${sessionId}/files`, {
+        method: 'PATCH',
+        body: JSON.stringify({ file_ids: selectedFileIds }),
+      });
+      return sessionId;
+    }
     const session = await apiRequest('/api/v1/code/sessions', {
       method: 'POST',
       body: JSON.stringify({ title: 'NEXUS Code unified workspace', file_ids: selectedFileIds }),
     });
     setSessionId(session.id);
+    localStorage.setItem('nexus.code.session_id', session.id);
     addEvent({ kind: 'start', message: 'Code session created', detail: session.id });
     return session.id;
   };
@@ -194,9 +255,22 @@ export default function WorkspacePage() {
             method: 'POST',
             body: JSON.stringify({ instruction, ...model }),
           });
+          const preview = patch.patch_preview || [];
           setPatchReady(true);
-          addEvent({ kind: 'edit', message: 'Patch ready for review', detail: summarizePatch(patch.patch), diff: patch.patch });
-          outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePatch(patch.patch)}`);
+          if (preview.length) {
+            preview.forEach((item: any) => {
+              addEvent({
+                kind: 'edit',
+                message: `Patch ready: ${item.filename}`,
+                detail: `+${item.additions || 0} / -${item.deletions || 0}`,
+                diff: item.diff,
+              });
+            });
+            outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePreview(preview)}`);
+          } else {
+            addEvent({ kind: 'edit', message: 'Patch ready for review', detail: summarizePatch(patch.patch), diff: patch.patch });
+            outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePatch(patch.patch)}`);
+          }
         }
       }
 
@@ -224,6 +298,9 @@ export default function WorkspacePage() {
       setPatchReady(false);
       addMessage('assistant', `Applied ${changed.length} file${changed.length === 1 ? '' : 's'}.\n${result.summary || ''}`.trim());
       await loadFiles();
+      if (sessionId) {
+        await hydrateSession(sessionId);
+      }
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
     } finally {
@@ -231,7 +308,15 @@ export default function WorkspacePage() {
     }
   };
 
-  const rejectChanges = () => {
+  const rejectChanges = async () => {
+    if (sessionId) {
+      try {
+        await apiRequest(`/api/v1/code/sessions/${sessionId}/reject`, { method: 'POST' });
+        await hydrateSession(sessionId);
+      } catch {
+        addEvent({ kind: 'error', message: 'Reject failed', detail: 'Could not clear the pending patch on the server.' });
+      }
+    }
     setPatchReady(false);
     addEvent({ kind: 'done', message: 'Changes rejected', detail: 'Prepared patch was discarded from the UI approval flow.' });
   };

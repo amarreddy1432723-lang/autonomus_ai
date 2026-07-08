@@ -132,6 +132,9 @@ class CodeSessionCreate(BaseModel):
     title: str = "Code workspace"
     file_ids: List[str] = Field(default_factory=list)
 
+class CodeSessionFilesUpdate(BaseModel):
+    file_ids: List[str] = Field(default_factory=list)
+
 class CodeInstructionRequest(BaseModel):
     instruction: str
     llm_provider: Optional[str] = None
@@ -768,10 +771,39 @@ def create_code_session_endpoint(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    from .code_workspace import create_code_session
+    from .code_workspace import create_code_session, serialize_code_session
 
     session = create_code_session(db, user_id, request.title, request.file_ids)
-    return {"id": str(session.id), "title": session.title, "file_ids": session.file_ids, "status": session.status}
+    return serialize_code_session(db, user_id, session)
+
+@app.get("/api/v1/code/sessions")
+def list_code_sessions_endpoint(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import list_code_sessions, serialize_code_session
+
+    return [serialize_code_session(db, user_id, session, include_files=False) for session in list_code_sessions(db, user_id)]
+
+@app.get("/api/v1/code/sessions/{session_id}")
+def get_code_session_endpoint(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, serialize_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    return serialize_code_session(db, user_id, session)
+
+@app.patch("/api/v1/code/sessions/{session_id}/files")
+def update_code_session_files_endpoint(
+    session_id: UUID,
+    request: CodeSessionFilesUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, serialize_code_session, update_session_files
+
+    session = get_code_session(db, user_id, session_id)
+    session = update_session_files(db, user_id, session, request.file_ids)
+    return serialize_code_session(db, user_id, session)
 
 @app.get("/api/v1/code/sessions/{session_id}/files")
 def list_code_session_files(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -800,7 +832,21 @@ def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_i
     session = get_code_session(db, user_id, session_id)
     patch = generate_patch(db, user_id, session, request.instruction, provider, model)
     record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
-    return {"patch": patch}
+    return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or []}
+
+@app.get("/api/v1/code/sessions/{session_id}/patch-preview")
+def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, preview_patch_payload
+
+    session = get_code_session(db, user_id, session_id)
+    return {"patch_preview": preview_patch_payload(db, user_id, session)}
+
+@app.post("/api/v1/code/sessions/{session_id}/reject")
+def reject_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, reject_patch_payload
+
+    session = get_code_session(db, user_id, session_id)
+    return reject_patch_payload(db, session)
 
 @app.post("/api/v1/code/sessions/{session_id}/apply")
 def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
