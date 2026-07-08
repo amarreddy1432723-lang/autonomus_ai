@@ -10,6 +10,9 @@ import styles from './Interview.module.css';
 
 const MODEL_OPTIONS = [
   { id: 'autonomus-ai-v1', label: 'Autonomus AI', provider: 'autonomus', model: 'autonomus-ai-v1' },
+  { id: 'nexus-fast', label: 'NEXUS Fast', provider: 'nexus', model: 'nexus-fast' },
+  { id: 'nexus-reasoning', label: 'NEXUS Reasoning', provider: 'nexus', model: 'nexus-reasoning' },
+  { id: 'nexus-code', label: 'NEXUS Code', provider: 'nexus', model: 'nexus-code' },
   { id: 'groq-llama-3.3', label: 'Groq Llama 3.3', provider: 'groq', model: 'llama-3.3-70b-versatile' },
   { id: 'openai-gpt-4o-mini', label: 'OpenAI GPT-4o mini', provider: 'openai', model: 'gpt-4o-mini' },
   { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', provider: 'google', model: 'gemini-1.5-flash' }

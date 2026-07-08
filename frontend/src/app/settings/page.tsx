@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
 import { AlertTriangle, Bell, CheckCircle2, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
+import { deriveVaultKey, generateSaltHex, getVaultKey, setVaultKey, clearVaultKey } from '../../utils/vault';
 
 type AutonomyLevel = 'observer' | 'assistant' | 'partner' | 'chief_of_staff';
 
@@ -62,7 +63,7 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training'>('autonomy');
+  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault'>('autonomy');
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -218,6 +219,9 @@ export default function SettingsPage() {
             </button>
             <button style={tabButtonStyle('training')} onClick={() => setActiveTab('training')}>
               <RefreshCw size={14} /> Model Self-Training
+            </button>
+            <button style={tabButtonStyle('vault')} onClick={() => setActiveTab('vault')}>
+              <Shield size={14} /> Privacy Vault
             </button>
           </div>
 
@@ -515,6 +519,10 @@ export default function SettingsPage() {
               </div>
             )}
 
+            {activeTab === 'vault' && (
+              <VaultSection />
+            )}
+
             {/* INTEGRATIONS SYNC */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
               <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>Connected Developer Tools</h2>
@@ -549,3 +557,217 @@ export default function SettingsPage() {
     </AppShell>
   );
 }
+
+function VaultSection() {
+  const [vaultExists, setVaultExists] = useState<boolean | null>(null);
+  const [salt, setSalt] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [unlocked, setUnlocked] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const checkStatus = async () => {
+    try {
+      const res = await apiRequest('/api/v1/vault/status');
+      setVaultExists(res.exists);
+      if (res.exists) {
+        setSalt(res.salt);
+      }
+      setUnlocked(!!getVaultKey());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch vault status');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    checkStatus();
+  }, []);
+
+  const handleSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    if (!password) {
+      setError('Password cannot be empty');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    setLoading(true);
+    try {
+      const generatedSalt = generateSaltHex();
+      const derivedKey = await deriveVaultKey(password, generatedSalt);
+
+      // Call setup API
+      await apiRequest('/api/v1/vault/setup', {
+        method: 'POST',
+        body: JSON.stringify({
+          salt: generatedSalt,
+        }),
+      });
+
+      // Save key in sessionStorage
+      setVaultKey(derivedKey);
+      setUnlocked(true);
+      setVaultExists(true);
+      setSalt(generatedSalt);
+      setSuccess('Zero-knowledge vault created successfully! All personal data will be encrypted.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Vault setup failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    if (!password) {
+      setError('Password cannot be empty');
+      return;
+    }
+    if (!salt) {
+      setError('Vault configuration error: Salt not found');
+      return;
+    }
+    setLoading(true);
+    try {
+      const derivedKey = await deriveVaultKey(password, salt);
+      setVaultKey(derivedKey);
+      setUnlocked(true);
+      setSuccess('Vault unlocked successfully.');
+      window.dispatchEvent(new Event('vault-unlocked'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to unlock vault');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLock = () => {
+    clearVaultKey();
+    setUnlocked(false);
+    setPassword('');
+    setConfirmPassword('');
+    setSuccess('Vault locked successfully. Session key cleared.');
+    window.dispatchEvent(new Event('vault-locked'));
+  };
+
+  if (loading && vaultExists === null) {
+    return <div>Loading vault settings...</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div>
+        <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>🔒 Zero-Knowledge Privacy Vault</h2>
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: '4px 0 0 0' }}>
+          Protect your personal assistant memory, schedules, and goals with AES-256 encryption. Only you hold the key. We cannot read your data.
+        </p>
+      </div>
+
+      {error && (
+        <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', borderRadius: '4px', color: '#ef4444', fontSize: 'var(--text-xs)' }}>
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div style={{ padding: '10px', background: 'rgba(34, 197, 94, 0.1)', border: '1px solid #22c55e', borderRadius: '4px', color: '#22c55e', fontSize: 'var(--text-xs)' }}>
+          {success}
+        </div>
+      )}
+
+      {vaultExists ? (
+        unlocked ? (
+          <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#22c55e' }}>
+              <CheckCircle2 size={16} />
+              <strong style={{ fontSize: 'var(--text-sm)' }}>Vault is Active & Unlocked</strong>
+            </div>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: 0 }}>
+              Your session key is loaded in memory. All read and write operations on personal assistant data are fully encrypted in the database.
+            </p>
+            <button
+              onClick={handleLock}
+              style={{ alignSelf: 'flex-start', background: 'transparent', border: '1px solid #ef4444', color: '#ef4444', padding: '8px 14px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+            >
+              Lock Vault (Clear Session Key)
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleUnlock} style={{ display: 'flex', flexDirection: 'column', gap: '12px', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px' }}>
+            <strong style={{ fontSize: 'var(--text-sm)' }}>Unlock Your Privacy Vault</strong>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: 0 }}>
+              Enter your vault passphrase to derive your encryption key. Your key never leaves your browser.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', fontWeight: 600 }}>VAULT PASSPHRASE</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter passphrase"
+                style={{ width: '100%', maxWidth: '320px', background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '8px 12px', color: 'var(--color-text-primary)', outline: 'none' }}
+              />
+            </div>
+            <button
+              type="submit"
+              style={{ alignSelf: 'flex-start', background: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-primary)', color: 'white', padding: '8px 16px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+            >
+              Unlock Vault
+            </button>
+          </form>
+        )
+      ) : (
+        <form onSubmit={handleSetup} style={{ display: 'flex', flexDirection: 'column', gap: '16px', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px' }}>
+          <strong style={{ fontSize: 'var(--text-sm)', color: 'var(--color-warning)' }}>⚠️ Setup Privacy Vault (Highly Recommended)</strong>
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: 0 }}>
+            Creating a vault password derives a secure cryptographic key that only you hold. Without this key, your personal data stored on our servers is unreadable gibberish.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', fontWeight: 600 }}>CHOOSE VAULT PASSPHRASE</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Choose a strong passphrase"
+                style={{ width: '100%', maxWidth: '320px', background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '8px 12px', color: 'var(--color-text-primary)', outline: 'none' }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '11px', color: 'var(--color-text-secondary)', fontWeight: 600 }}>CONFIRM VAULT PASSPHRASE</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm passphrase"
+                style={{ width: '100%', maxWidth: '320px', background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '8px 12px', color: 'var(--color-text-primary)', outline: 'none' }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '10px', color: 'var(--color-text-tertiary)' }}>
+              ⚠️ WARNING: If you forget this passphrase, your encrypted data cannot be recovered.
+            </span>
+            <button
+              type="submit"
+              style={{ alignSelf: 'flex-start', background: '#10b981', border: '1px solid #10b981', color: 'white', padding: '8px 16px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 800 }}
+            >
+              Create Privacy Vault
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+

@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: Optional[str] = os.getenv("S3_SECRET_ACCESS_KEY")
     S3_REGION: str = os.getenv("S3_REGION", "auto")
 
+    # ── Zero-Knowledge Encryption / Vault ───────────────────
+    VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", "true").lower() == "true"
+    ZERO_LOG_PERSONAL_DATA: bool = os.getenv("ZERO_LOG_PERSONAL_DATA", "true").lower() == "true"
+    VAULT_KEY_DERIVATION: str = os.getenv("VAULT_KEY_DERIVATION", "pbkdf2")  # pbkdf2 | argon2
+    VAULT_PBKDF2_ITERATIONS: int = int(os.getenv("VAULT_PBKDF2_ITERATIONS", "600000"))
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -147,7 +147,8 @@ def _lifetime_count(db: Session, user_id: UUID, metric: str, subscription: Subsc
 def billing_summary(db: Session, user_id: UUID) -> dict:
     subscription = get_or_create_subscription(db, user_id)
     plan_key = (subscription.plan_type or "free").lower()
-    plan = PLAN_CATALOG.get(plan_key, PLAN_CATALOG["free"])
+    effective_plan_key = "enterprise" if UNLIMITED_MODE else plan_key
+    plan = PLAN_CATALOG.get(effective_plan_key, PLAN_CATALOG["free"])
     usage = []
     for metric, rule in plan["features"].items():
         period = rule["period"]
@@ -165,8 +166,9 @@ def billing_summary(db: Session, user_id: UUID) -> dict:
         })
     return {
         "plan": {
-            "key": plan_key,
-            "name": plan["name"],
+            "key": effective_plan_key,
+            "actual_key": plan_key,
+            "name": "Unlimited Development" if UNLIMITED_MODE else plan["name"],
             "status": subscription.status,
             "billing_cycle": subscription.billing_cycle or "monthly",
             "monthly_usd": plan["monthly_usd"],
@@ -175,6 +177,7 @@ def billing_summary(db: Session, user_id: UUID) -> dict:
             "cancel_at_period_end": bool(subscription.cancel_at),
             "models": plan["models"],
         },
+        "unlimited_mode": UNLIMITED_MODE,
         "usage": usage,
         "stripe": {
             "configured": bool(os.getenv("STRIPE_SECRET_KEY")),
@@ -185,7 +188,12 @@ def billing_summary(db: Session, user_id: UUID) -> dict:
     }
 
 
+UNLIMITED_MODE = os.getenv("NEXUS_UNLIMITED_MODE", "true").lower() == "true"
+
+
 def check_entitlement(db: Session, user_id: UUID, feature: str) -> dict:
+    if UNLIMITED_MODE:
+        return {"allowed": True, "reason": "unlimited_mode", "plan": "pro", "remaining": None}
     summary = billing_summary(db, user_id)
     plan_key = summary["plan"]["key"]
     plan = PLAN_CATALOG.get(plan_key, PLAN_CATALOG["free"])

@@ -28,6 +28,8 @@ from .schemas import (
     SessionMemoryResponse,
     AutonomyLevelUpdate,
     AutonomyRunRequest,
+    VaultSetupRequest,
+    VaultStatusResponse,
 )
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
@@ -35,7 +37,9 @@ JWT_ALGORITHM = "HS256"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from services.shared.database import SessionLocal, verify_default_user
+    from services.shared.database import SessionLocal, verify_default_user, engine, Base
+    # Auto-create any new tables in the database
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         verify_default_user(db)
@@ -54,6 +58,14 @@ def get_current_user_id(
     db: Session = Depends(get_db),
 ) -> UUID:
     return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, JWT_SECRET_KEY, JWT_ALGORITHM)
+
+def parse_vault_key(x_vault_key: str | None) -> bytes | None:
+    if not x_vault_key:
+        return None
+    try:
+        return bytes.fromhex(x_vault_key)
+    except Exception:
+        return None
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"
@@ -75,6 +87,9 @@ class ChatRequest(BaseModel):
 
 EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
     "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
+    "nexus-fast": ("nexus", "nexus-fast"),
+    "nexus-reasoning": ("nexus", "nexus-reasoning"),
+    "nexus-code": ("nexus", "nexus-code"),
     "groq-llama-3.3": ("groq", "llama-3.3-70b-versatile"),
     "openai-gpt-4o-mini": ("openai", "gpt-4o-mini"),
     "gemini-1.5-flash": ("google", "gemini-1.5-flash"),
@@ -602,10 +617,17 @@ def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Dep
     return create_checkout_session(request.plan, request.billing_cycle)
 
 def _pa_access(db: Session, user_id: UUID) -> dict:
-    from .billing import billing_summary
+    from .billing import check_entitlement
 
-    summary = billing_summary(db, user_id)
-    plan = summary["plan"]["key"]
+    entitlement = check_entitlement(db, user_id, "nexus_pa")
+    plan = entitlement.get("plan") or "free"
+    if entitlement.get("reason") == "unlimited_mode":
+        return {
+            "allowed": True,
+            "plan": plan,
+            "upgrade_target": None,
+            "reason": "unlimited_mode",
+        }
     return {
         "allowed": plan in {"pro", "enterprise"},
         "plan": plan,
@@ -685,6 +707,24 @@ def get_pa_life_graph(user_id: UUID = Depends(get_current_user_id), db: Session 
     from .jarvis_planner import life_graph
 
     return life_graph(db, user_id)
+
+@app.get("/api/v1/models/registry")
+def get_model_registry_status(user_id: UUID = Depends(get_current_user_id)):
+    from .model_registry import registry_snapshot
+
+    return registry_snapshot()
+
+@app.post("/api/v1/models/health-check")
+def post_model_registry_health_check(user_id: UUID = Depends(get_current_user_id)):
+    from .model_registry import health_check_registry
+
+    return health_check_registry()
+
+@app.get("/api/v1/intelligence/personalization")
+def get_personalization(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .learning_loop import get_personalization_context
+
+    return get_personalization_context(db, user_id)
 
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(
@@ -1186,12 +1226,14 @@ def get_memories(
     page: int = 1,
     page_size: int = 20,
     user_id: UUID = Depends(get_current_user_id),
+    x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
 ):
     from .memory_agent import PostgresMemoryStore
 
     page, page_size, offset = clamp_pagination(page, page_size)
-    memories = PostgresMemoryStore(db).list_memories(
+    vk = parse_vault_key(x_vault_key)
+    memories = PostgresMemoryStore(db, vault_key=vk).list_memories(
         user_id=user_id,
         memory_type=memory_type,
         include_archived=include_archived,
@@ -1216,11 +1258,13 @@ def get_memory_transparency_summary(
 def create_memory(
     memory_in: MemoryCreate,
     user_id: UUID = Depends(get_current_user_id),
+    x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
 ):
     from .memory_agent import MemoryWrite, PostgresMemoryStore
 
-    memory, _ = PostgresMemoryStore(db).create_memory(
+    vk = parse_vault_key(x_vault_key)
+    memory, _ = PostgresMemoryStore(db, vault_key=vk).create_memory(
         user_id,
         MemoryWrite(
             content=memory_in.content,
@@ -1243,17 +1287,20 @@ def search_memories(
     limit: int = 10,
     memory_type: str | None = None,
     user_id: UUID = Depends(get_current_user_id),
+    x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
 ):
     from .memory_agent import PostgresMemoryStore
 
-    return PostgresMemoryStore(db).hybrid_search(user_id, query, limit=limit, memory_type=memory_type)
+    vk = parse_vault_key(x_vault_key)
+    return PostgresMemoryStore(db, vault_key=vk).hybrid_search(user_id, query, limit=limit, memory_type=memory_type)
 
 @app.patch("/api/v1/memories/{memory_id}", response_model=MemoryResponse)
 def update_memory(
     memory_id: UUID,
     memory_in: MemoryUpdate,
     user_id: UUID = Depends(get_current_user_id),
+    x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
 ):
     from .memory_agent import PostgresMemoryStore
@@ -1261,7 +1308,8 @@ def update_memory(
     memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-    return PostgresMemoryStore(db).update_memory(
+    vk = parse_vault_key(x_vault_key)
+    return PostgresMemoryStore(db, vault_key=vk).update_memory(
         memory,
         **memory_in.model_dump(exclude_unset=True),
     )
@@ -1270,6 +1318,7 @@ def update_memory(
 def archive_memory(
     memory_id: UUID,
     user_id: UUID = Depends(get_current_user_id),
+    x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
 ):
     from .memory_agent import PostgresMemoryStore
@@ -1277,5 +1326,43 @@ def archive_memory(
     memory = db.query(Memory).filter(Memory.id == memory_id, Memory.user_id == user_id).first()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-    PostgresMemoryStore(db).archive_memory(memory)
+    vk = parse_vault_key(x_vault_key)
+    PostgresMemoryStore(db, vault_key=vk).archive_memory(memory)
     return {"message": "Memory archived successfully"}
+
+@app.get("/api/v1/vault/status", response_model=VaultStatusResponse)
+def get_vault_status(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from services.shared.models import UserVault
+    from .schemas import VaultStatusResponse
+
+    vault = db.query(UserVault).filter(UserVault.user_id == user_id).first()
+    if not vault:
+        return VaultStatusResponse(exists=False)
+    return VaultStatusResponse(exists=True, salt=vault.salt, vault_version=vault.vault_version)
+
+@app.post("/api/v1/vault/setup")
+def setup_vault(
+    payload: VaultSetupRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from services.shared.models import UserVault
+    from .schemas import VaultSetupRequest
+
+    existing = db.query(UserVault).filter(UserVault.user_id == user_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Vault already set up")
+
+    vault = UserVault(
+        user_id=user_id,
+        salt=payload.salt,
+        recovery_hash=payload.recovery_hash,
+        vault_version=1,
+        is_active=True
+    )
+    db.add(vault)
+    db.commit()
+    return {"message": "Vault set up successfully"}

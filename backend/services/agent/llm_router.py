@@ -64,6 +64,24 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
     else:
         model = model.strip()
 
+    try:
+        from .model_registry import MODEL_REGISTRY, choose_model
+
+        registry_key = None
+        if provider in {"nexus", "registry", "auto"}:
+            registry_key = model if model in MODEL_REGISTRY else None
+        elif provider in MODEL_REGISTRY:
+            registry_key = provider
+        elif model in MODEL_REGISTRY:
+            registry_key = model
+
+        if registry_key or provider in {"nexus", "registry", "auto"}:
+            choice = choose_model(task_type=role, model_key=registry_key)
+            provider = choice.provider
+            model = choice.model
+    except Exception:
+        pass
+
     # If no explicit provider is set, infer from existing key availability
     if not provider:
         if not is_mock:

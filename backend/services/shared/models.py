@@ -2,7 +2,7 @@ import uuid
 from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, JSON, Boolean, Text, Table, Numeric, Index, CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, relationship as orm_relationship
 from pgvector.sqlalchemy import Vector
 from .database import Base
 
@@ -40,6 +40,10 @@ class User(Base):
     file_chunks = relationship("FileChunk", back_populates="user", cascade="all, delete-orphan")
     usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
     code_sessions = relationship("CodeSession", back_populates="user", cascade="all, delete-orphan")
+    vault = relationship("UserVault", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    life_graph_nodes = relationship("LifeGraphNode", back_populates="user", cascade="all, delete-orphan")
+    life_graph_edges = relationship("LifeGraphEdge", back_populates="user", cascade="all, delete-orphan")
+    weekly_reflections = relationship("WeeklyReflection", back_populates="user", cascade="all, delete-orphan")
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
@@ -592,3 +596,69 @@ Index("idx_integrations_expiry", Integration.token_expires_at, postgresql_where=
 Index("idx_audit_user_time", AuditLog.user_id, AuditLog.occurred_at)
 Index("idx_audit_event_type", AuditLog.event_type, AuditLog.occurred_at)
 Index("idx_audit_entity", AuditLog.entity_type, AuditLog.entity_id)
+
+class UserVault(Base):
+    __tablename__ = "user_vaults"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    salt = Column(String(64), nullable=False)
+    recovery_hash = Column(String(128), nullable=True)
+    vault_version = Column(Integer, default=1)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="vault")
+
+class LifeGraphNode(Base):
+    __tablename__ = "life_graph_nodes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    label_encrypted = Column(Text, nullable=False)
+    label_blind_index = Column(String(64), nullable=False, index=True)
+    node_type = Column(String(100), nullable=False)
+    category = Column(String(100), nullable=True)
+    strength = Column(Float, default=0.5)
+    last_activity = Column(DateTime(timezone=True), nullable=True)
+    metadata_encrypted = Column(Text, nullable=True)
+    vector = Column(Vector(1536), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="life_graph_nodes")
+
+class LifeGraphEdge(Base):
+    __tablename__ = "life_graph_edges"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    source_node_id = Column(UUID(as_uuid=True), ForeignKey("life_graph_nodes.id", ondelete="CASCADE"), nullable=False)
+    target_node_id = Column(UUID(as_uuid=True), ForeignKey("life_graph_nodes.id", ondelete="CASCADE"), nullable=False)
+    relationship = Column(String(100), nullable=False)
+    weight = Column(Float, default=1.0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = orm_relationship("User", back_populates="life_graph_edges")
+
+class WeeklyReflection(Base):
+    __tablename__ = "weekly_reflections"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    week_start = Column(DateTime(timezone=True), nullable=False)
+    week_end = Column(DateTime(timezone=True), nullable=False)
+    content_encrypted = Column(Text, nullable=False)
+    tasks_completed = Column(Integer, default=0)
+    tasks_overdue = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="weekly_reflections")
+
+class ModelPerformanceLog(Base):
+    __tablename__ = "model_performance_logs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    model_key = Column(String(100), nullable=False)
+    provider = Column(String(100), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    task_type = Column(String(100), nullable=False)
+    latency_ms = Column(Integer, nullable=False)
+    success = Column(Boolean, nullable=False)
+    error_type = Column(String(100), nullable=True)
+    user_satisfaction = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

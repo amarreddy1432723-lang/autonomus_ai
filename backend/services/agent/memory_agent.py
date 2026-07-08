@@ -9,11 +9,12 @@ import httpx
 import redis
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.attributes import flag_modified, set_committed_value
 
 from services.shared.database import SessionLocal
 from services.shared.models import AuditLog, EmbeddingJob, Memory, MemoryConflict
 from .config import settings
+from .crypto import encrypt_content, decrypt_content
 from .llm_router import get_chat_llm, get_embedding_vector
 
 
@@ -316,8 +317,9 @@ class RedisShortTermMemoryStore:
 
 
 class PostgresMemoryStore:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, vault_key: bytes | None = None):
         self.db = db
+        self.vault_key = vault_key
         self.pinecone = PineconeVectorStore()
         self.graph = Neo4jGraphStore()
 
@@ -333,7 +335,12 @@ class PostgresMemoryStore:
             query = query.filter(Memory.is_archived == False)
         if memory_type:
             query = query.filter(or_(Memory.memory_type == memory_type, Memory.type == memory_type))
-        return query.order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(min(limit, 500)).all()
+        memories = query.order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(min(limit, 500)).all()
+        for m in memories:
+            decrypted = decrypt_content(m.content, self.vault_key)
+            if decrypted != m.content:
+                set_committed_value(m, "content", decrypted)
+        return memories
 
     def create_memory(self, user_id: UUID, data: MemoryWrite) -> tuple[Memory, dict]:
         content = " ".join((data.content or "").split())
@@ -360,7 +367,7 @@ class PostgresMemoryStore:
             user_id=user_id,
             type=data.type or data.memory_type or "fact",
             memory_type=data.memory_type or data.type or "fact",
-            content=content,
+            content=encrypt_content(content, self.vault_key),
             vector=vector,
             content_vector=vector,
             source=data.source,
@@ -380,9 +387,9 @@ class PostgresMemoryStore:
                 user_id=user_id,
                 existing_memory_id=existing_memory.id,
                 new_memory_id=memory.id,
-                incoming_content=content,
+                incoming_content=encrypt_content(content, self.vault_key),
                 similarity=float(similarity),
-                meta_data={"existing_content": existing_memory.content},
+                meta_data={"existing_content": encrypt_content(existing_memory.content, self.vault_key)},
             ))
 
         self._queue_embedding_job(memory, provider="pgvector", status="completed")
@@ -393,7 +400,9 @@ class PostgresMemoryStore:
 
     def _merge_duplicate(self, memory: Memory, data: MemoryWrite, vector: list[float]) -> Memory:
         if data.content not in memory.content:
-            memory.content = f"{memory.content} | {data.content}"
+            memory.content = encrypt_content(f"{memory.content} | {data.content}", self.vault_key)
+        else:
+            memory.content = encrypt_content(memory.content, self.vault_key)
         memory.importance = max(memory.importance or 5, data.importance)
         memory.confidence = max(memory.confidence or 0.8, data.confidence)
         memory.access_count = (memory.access_count or 0) + 1
@@ -519,17 +528,21 @@ class PostgresMemoryStore:
 
     def update_memory(self, memory: Memory, **changes) -> Memory:
         content_changed = False
+        raw_content = changes.get("content")
         for field in ["content", "type", "memory_type", "source", "source_url", "confidence", "importance", "tags", "is_archived", "expires_at"]:
             if field in changes and changes[field] is not None:
-                setattr(memory, field, changes[field])
+                val = changes[field]
+                if field == "content":
+                    val = encrypt_content(val, self.vault_key)
+                setattr(memory, field, val)
                 content_changed = content_changed or field == "content"
         if "meta_data" in changes and changes["meta_data"] is not None:
             meta = memory.meta_data or {}
             meta.update(changes["meta_data"])
             memory.meta_data = meta
             flag_modified(memory, "meta_data")
-        if content_changed:
-            vector = get_embedding(memory.content)
+        if content_changed and raw_content:
+            vector = get_embedding(raw_content)
             memory.vector = vector
             memory.content_vector = vector
             self._sync_external(memory, vector)

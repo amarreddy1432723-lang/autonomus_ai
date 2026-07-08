@@ -1,7 +1,7 @@
 import os
 import httpx
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 from langchain_core.tools import tool
@@ -18,6 +18,81 @@ def _normalize_news_item(item: dict) -> dict:
         "source": item.get("source") or item.get("publisher") or "Live news",
         "published_at": item.get("published_at") or item.get("date") or item.get("publishedDate"),
     }
+
+def _query_terms(query: str) -> list[str]:
+    ignored = {
+        "and", "or", "the", "for", "with", "from", "news", "latest", "recent",
+        "update", "updates", "live", "today", "this", "that", "about",
+    }
+    cleaned = (
+        query.lower()
+        .replace("\"", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .replace("/", " ")
+        .replace("-", " ")
+    )
+    return [term for term in cleaned.split() if len(term) > 2 and term not in ignored]
+
+def _parse_news_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for parser in (
+        lambda raw: datetime.fromisoformat(raw.replace("Z", "+00:00")),
+        parsedate_to_datetime,
+    ):
+        try:
+            parsed = parser(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            continue
+    return None
+
+def _news_matches_query(item: dict, query: str) -> bool:
+    terms = _query_terms(query)
+    if not terms:
+        return True
+    searchable = " ".join([
+        str(item.get("title") or ""),
+        str(item.get("snippet") or ""),
+        str(item.get("source") or ""),
+    ]).lower()
+    # Require at least one strong match. For narrow multi-word queries, two
+    # matches gets preference but one match is enough to avoid empty feeds.
+    hits = sum(1 for term in terms if term in searchable)
+    return hits >= 1
+
+def _filter_news_items(items: list[dict], query: str, limit: int, max_age_days: int = 14) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    seen: set[str] = set()
+    filtered: list[dict] = []
+
+    for item in items:
+        title = _clean_text(item.get("title"))
+        link = item.get("link") or ""
+        if not title or not link:
+            continue
+        key = link.split("?")[0] or title.lower()
+        if key in seen:
+            continue
+        if not _news_matches_query(item, query):
+            continue
+        published = _parse_news_datetime(item.get("published_at"))
+        if published and published < cutoff:
+            continue
+        seen.add(key)
+        normalized = dict(item)
+        normalized["title"] = title
+        if published:
+            normalized["published_at"] = published.isoformat()
+        filtered.append(normalized)
+        if len(filtered) >= limit:
+            break
+
+    return filtered
 
 def _normalize_job_item(item: dict, source: str) -> dict:
     if source == "remotive":
@@ -226,13 +301,13 @@ def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
     if settings.SERPER_API_KEY and settings.SERPER_API_KEY != "mock-serper-key-for-local-dev-only":
         response = httpx.post(
             "https://google.serper.dev/news",
-            json={"q": query, "num": limit},
+            json={"q": query, "num": min(max(limit * 3, 10), 20), "tbs": "qdr:w"},
             headers={"X-API-KEY": settings.SERPER_API_KEY, "Content-Type": "application/json"},
             timeout=10.0,
         )
         response.raise_for_status()
         news = response.json().get("news", [])
-        return [_normalize_news_item(item) for item in news[:limit]]
+        return _filter_news_items([_normalize_news_item(item) for item in news], query, limit)
 
     rss_url = "https://news.google.com/rss/search"
     response = httpx.get(
@@ -243,8 +318,8 @@ def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
     response.raise_for_status()
 
     root = ET.fromstring(response.text)
-    items = []
-    for item in root.findall("./channel/item")[:limit]:
+    raw_items: list[dict] = []
+    for item in root.findall("./channel/item")[: max(limit * 3, 10)]:
         published = _clean_text(item.findtext("pubDate"))
         published_iso = published
         if published:
@@ -254,7 +329,7 @@ def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
                 pass
 
         source = item.find("source")
-        items.append({
+        raw_items.append({
             "title": _clean_text(item.findtext("title")),
             "snippet": _clean_text(item.findtext("description")),
             "link": item.findtext("link") or "",
@@ -262,7 +337,7 @@ def fetch_live_news(query: str, limit: int = 8) -> list[dict]:
             "published_at": published_iso,
         })
 
-    return items
+    return _filter_news_items(raw_items, query, limit)
 
 def fetch_live_jobs(query: str = "AI engineer", limit: int = 8) -> list[dict]:
     """

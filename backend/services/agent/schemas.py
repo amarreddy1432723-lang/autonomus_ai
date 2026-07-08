@@ -85,3 +85,13 @@ class AutonomyRunRequest(BaseModel):
 
 class AutonomyLevelUpdate(BaseModel):
     autonomy_level: str = Field(pattern="^(observer|assistant|partner|chief_of_staff)$")
+
+class VaultSetupRequest(BaseModel):
+    salt: str
+    recovery_hash: Optional[str] = None
+
+class VaultStatusResponse(BaseModel):
+    exists: bool
+    salt: Optional[str] = None
+    vault_version: int = 1
+

@@ -64,6 +64,10 @@ export function createApiHeaders(options: RequestInit = {}): Headers {
     if (storedUserId && !headers.has('x-user-id')) {
       headers.set('x-user-id', storedUserId);
     }
+    const storedVaultKey = window.sessionStorage.getItem('my-ai.vault_key');
+    if (storedVaultKey && !headers.has('x-vault-key')) {
+      headers.set('x-vault-key', storedVaultKey);
+    }
   } else if (!REQUIRE_AUTH && !headers.has('x-user-id')) {
     headers.set('x-user-id', DEMO_USER_ID);
   }
