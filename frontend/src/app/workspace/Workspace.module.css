@@ -1,0 +1,374 @@
+.workspace {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 52px 1fr;
+  background: #0d0d0d;
+  color: #e8e8e8;
+  font-family: var(--font-sans);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #1e1e1e;
+  background: #101010;
+  padding: 0 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+}
+
+.logo {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #2a2a2a;
+  background: #151515;
+  color: #7c6fff;
+}
+
+.search {
+  width: min(460px, 42vw);
+  border: 1px solid #252525;
+  background: #141414;
+  color: #e8e8e8;
+  border-radius: 7px;
+  padding: 9px 12px;
+  outline: none;
+}
+
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #888;
+}
+
+.layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 330px;
+}
+
+.files,
+.activity {
+  min-width: 0;
+  overflow: hidden;
+  border-color: #1e1e1e;
+  background: #111;
+}
+
+.files {
+  border-right: 1px solid #1e1e1e;
+}
+
+.activity {
+  border-left: 1px solid #1e1e1e;
+}
+
+.conversation {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0d0d0d;
+}
+
+.panelHeader {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1e1e1e;
+  padding: 0 14px;
+  color: #cfcfcf;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.fileList,
+.activityList,
+.messages {
+  overflow: auto;
+}
+
+.fileList {
+  height: calc(100vh - 52px - 46px - 172px);
+  padding: 8px;
+}
+
+.activityList {
+  height: calc(100vh - 52px - 46px - 92px);
+  padding: 10px;
+}
+
+.fileItem,
+.activityItem,
+.message {
+  border: 1px solid #202020;
+  background: #151515;
+  border-radius: 7px;
+}
+
+.fileItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d8d8d8;
+  cursor: pointer;
+  padding: 9px;
+  text-align: left;
+  margin-bottom: 7px;
+}
+
+.fileItemActive {
+  border-color: rgba(124, 111, 255, 0.6);
+  background: rgba(124, 111, 255, 0.12);
+}
+
+.fileName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta {
+  color: #888;
+  font-size: 12px;
+}
+
+.uploadBox {
+  border-top: 1px solid #1e1e1e;
+  padding: 12px;
+}
+
+.uploadLabel {
+  height: 86px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed #343434;
+  background: #0d0d0d;
+  color: #aaa;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.messages {
+  flex: 1;
+  padding: 24px;
+}
+
+.emptyState {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: #888;
+}
+
+.emptyState h1 {
+  color: #e8e8e8;
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.message {
+  max-width: 860px;
+  padding: 16px;
+  margin: 0 auto 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.userMessage {
+  border-color: rgba(124, 111, 255, 0.45);
+  background: rgba(124, 111, 255, 0.12);
+}
+
+.assistantMessage {
+  background: #141414;
+}
+
+.composer {
+  border-top: 1px solid #1e1e1e;
+  padding: 14px;
+  background: #101010;
+}
+
+.modeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.modePill,
+.iconButton,
+.approveButton,
+.rejectButton {
+  border: 1px solid #292929;
+  background: #151515;
+  color: #d8d8d8;
+  cursor: pointer;
+  border-radius: 7px;
+}
+
+.modePill {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.modePillActive {
+  border-color: rgba(124, 111, 255, 0.65);
+  background: rgba(124, 111, 255, 0.16);
+  color: #fff;
+}
+
+.inputRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.prompt {
+  flex: 1;
+  min-height: 56px;
+  max-height: 170px;
+  resize: vertical;
+  border: 1px solid #292929;
+  background: #0d0d0d;
+  color: #e8e8e8;
+  border-radius: 8px;
+  padding: 13px;
+  outline: none;
+  font: inherit;
+}
+
+.sendButton {
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #7c6fff;
+  background: #7c6fff;
+  color: white;
+  border-radius: 8px;
+  padding: 0 14px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.sendButton:disabled,
+.modePill:disabled,
+.iconButton:disabled,
+.approveButton:disabled,
+.rejectButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.activityItem {
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.activityTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.activityDetail {
+  color: #888;
+  margin: 6px 0 0 24px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.diffBox {
+  margin-top: 8px;
+  border: 1px solid #242424;
+  background: #0b0b0b;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 220px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  padding: 9px;
+}
+
+.added {
+  color: #22c55e;
+}
+
+.removed {
+  color: #ef4444;
+}
+
+.activityFooter {
+  border-top: 1px solid #1e1e1e;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.approveButton,
+.rejectButton,
+.iconButton {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  font-weight: 800;
+}
+
+.approveButton {
+  border-color: rgba(34, 197, 94, 0.55);
+  color: #86efac;
+}
+
+.rejectButton {
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
+}
+
+@media (max-width: 1120px) {
+  .layout {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .activity {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .files {
+    display: none;
+  }
+
+  .search {
+    display: none;
+  }
+}

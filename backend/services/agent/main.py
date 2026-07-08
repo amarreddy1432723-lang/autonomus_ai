@@ -144,6 +144,10 @@ class NexusCodeRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
+class WorkspaceActivityRequest(BaseModel):
+    prompt: str = ""
+    mode: str = "auto"
+
 class NexusResearchRequest(BaseModel):
     query: str
     depth: str = "standard"
@@ -822,6 +826,22 @@ def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_c
     from .usage import record_usage
     record_usage(db, user_id, "/api/v1/code/generate", provider, model, None, request.instruction, result.get("content", ""), request.file_ids)
     return result
+
+@app.get("/api/v1/code/activity-stream")
+async def code_activity_stream(
+    prompt: str = "",
+    mode: str = "auto",
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .workspace_orchestrator import planned_activity, sse
+    import asyncio
+
+    async def generate():
+        for event in planned_activity(prompt, mode):
+            yield sse(event)
+            await asyncio.sleep(0.12)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.post("/api/v1/code/debug")
 def nexus_code_debug(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

@@ -1,51 +1,69 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Clipboard, Code2, FileUp, GitPullRequest, MoreHorizontal, Play, Send, Wand2, X } from 'lucide-react';
-import AppShell from '../../components/AppShell';
-import { apiRequest } from '../../utils/api';
-import styles from '../nexus.module.css';
+import { MoreHorizontal, UserCircle } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { apiRequest, createApiHeadersAsync } from '../../utils/api';
+import ActivityPanel, { ActivityEvent } from './ActivityPanel';
+import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
+import FileExplorer, { WorkspaceFile } from './FileExplorer';
+import styles from './Workspace.module.css';
 
-type UploadedFile = {
-  id: string;
-  filename: string;
-  size_bytes?: number;
-};
+const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
 
-type Mode = 'quick' | 'plan' | 'design';
+function id(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
-type DesignPayload = {
-  brief: string;
-  style: string;
-  code: string;
-  notes: string;
-  planMode?: boolean;
-};
+function inferModes(prompt: string, selected: WorkspaceMode): WorkspaceMode[] {
+  if (selected !== 'auto') return [selected];
+  const text = prompt.toLowerCase();
+  const modes: WorkspaceMode[] = [];
+  if (/(research|latest|best practice|compare|search|find)/.test(text)) modes.push('research');
+  if (/(design|ui|ux|screen|layout|component|page)/.test(text)) modes.push('design');
+  if (/(deploy|railway|vercel|render|production|release)/.test(text)) modes.push('deploy');
+  if (/(code|build|fix|bug|api|endpoint|implement|refactor|test)/.test(text)) modes.push('code');
+  return modes.length ? modes : ['code'];
+}
 
-const phaseLabels = ['Understand', 'Plan', 'Generate', 'Review', 'Apply', 'Verify'];
+function summarizePatch(raw: string) {
+  try {
+    const payload = JSON.parse(raw);
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    return files.map((file: any) => `✏️ ${file.filename || file.file_id || 'file'}\nFull replacement prepared.`).join('\n\n') || raw;
+  } catch {
+    return raw;
+  }
+}
 
 export default function WorkspacePage() {
-  const [mode, setMode] = useState<Mode>('quick');
-  const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [showFiles, setShowFiles] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [messages, setMessages] = useState<WorkspaceMessage[]>([]);
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [mode, setMode] = useState<WorkspaceMode>('auto');
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState('');
-  const [instruction, setInstruction] = useState('Build the requested feature with clean structure, focused changes, and tests where useful.');
-  const [designPayload, setDesignPayload] = useState<DesignPayload | null>(null);
-  const [quickOutput, setQuickOutput] = useState('');
-  const [plan, setPlan] = useState('');
-  const [patch, setPatch] = useState('');
-  const [accepted, setAccepted] = useState(true);
-  const [applySummary, setApplySummary] = useState('');
-  const [busy, setBusy] = useState('');
-  const [error, setError] = useState('');
+  const [patchReady, setPatchReady] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const selectedFileIds = useMemo(() => Object.entries(selected).filter(([, value]) => value).map(([id]) => id), [selected]);
+  const selectedFileIds = useMemo(
+    () => Object.entries(selected).filter(([, value]) => value).map(([fileId]) => fileId),
+    [selected]
+  );
+
+  const addEvent = (event: Omit<ActivityEvent, 'id'>) => {
+    setEvents((current) => [{ ...event, id: id('evt') }, ...current].slice(0, 80));
+  };
+
+  const addMessage = (role: WorkspaceMessage['role'], content: string) => {
+    setMessages((current) => [...current, { id: id(role), role, content }]);
+  };
 
   const loadFiles = async () => {
     try {
-      setFiles(await apiRequest('/api/v1/files'));
+      const data = await apiRequest('/api/v1/files');
+      setFiles(data);
     } catch {
       setFiles([]);
     }
@@ -56,19 +74,9 @@ export default function WorkspacePage() {
     const raw = sessionStorage.getItem('design_to_workspace');
     if (raw) {
       try {
-        const payload = JSON.parse(raw) as DesignPayload;
-        setDesignPayload(payload);
-        setMode(payload.planMode ? 'plan' : 'design');
-        setInstruction([
-          `Implement this selected ${payload.style} design as production-ready frontend code.`,
-          `Brief: ${payload.brief}`,
-          '',
-          'Preview HTML/CSS:',
-          payload.code,
-          '',
-          'Design notes:',
-          payload.notes,
-        ].join('\n'));
+        const payload = JSON.parse(raw);
+        setMode('design');
+        setPrompt(`Implement this selected ${payload.style} design as production-ready frontend code.\n\nBrief: ${payload.brief}\n\nDesign notes:\n${payload.notes}\n\nPreview code:\n${payload.code}`);
       } catch {
         sessionStorage.removeItem('design_to_workspace');
       }
@@ -76,17 +84,22 @@ export default function WorkspacePage() {
   }, []);
 
   const uploadFiles = async (fileList: FileList | null) => {
-    if (!fileList) return;
-    setBusy('Uploading files');
+    if (!fileList?.length) return;
+    setBusy(true);
     try {
       for (const file of Array.from(fileList)) {
+        addEvent({ kind: 'read', message: `Uploading ${file.name}`, detail: 'Extracting text and adding it to workspace context.' });
         const formData = new FormData();
         formData.append('upload', file);
-        await apiRequest('/api/v1/files?owner_type=code_workspace', { method: 'POST', body: formData });
+        const uploaded = await apiRequest('/api/v1/files?owner_type=code_workspace', { method: 'POST', body: formData });
+        setSelected((current) => ({ ...current, [uploaded.id]: true }));
       }
       await loadFiles();
+      addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Upload failed', detail: error instanceof Error ? error.message : 'Unknown upload error.' });
     } finally {
-      setBusy('');
+      setBusy(false);
     }
   };
 
@@ -94,234 +107,178 @@ export default function WorkspacePage() {
     if (sessionId) return sessionId;
     const session = await apiRequest('/api/v1/code/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'NEXUS workspace plan', file_ids: selectedFileIds }),
+      body: JSON.stringify({ title: 'NEXUS Code unified workspace', file_ids: selectedFileIds }),
     });
     setSessionId(session.id);
+    addEvent({ kind: 'start', message: 'Code session created', detail: session.id });
     return session.id;
   };
 
-  const runQuick = async () => {
-    setBusy('Generating');
-    setError('');
-    setQuickOutput('');
+  const fetchActivityPlan = async (value: string, currentMode: WorkspaceMode) => {
     try {
-      const data = await apiRequest('/api/v1/code/generate', {
-        method: 'POST',
-        body: JSON.stringify({ instruction, file_ids: selectedFileIds, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
+      const headers = await createApiHeadersAsync();
+      const response = await fetch(`/api/v1/code/activity-stream?prompt=${encodeURIComponent(value)}&mode=${currentMode}`, { headers });
+      const text = await response.text();
+      text.split('\n\n').forEach((chunk) => {
+        const line = chunk.split('\n').find((part) => part.startsWith('data: '));
+        if (!line) return;
+        try {
+          const parsed = JSON.parse(line.slice(6));
+          addEvent({ kind: parsed.kind || 'start', message: parsed.message, detail: parsed.detail });
+        } catch {
+          // Ignore malformed activity chunks.
+        }
       });
-      setQuickOutput(data.content || JSON.stringify(data, null, 2));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed');
-    } finally {
-      setBusy('');
+    } catch {
+      addEvent({ kind: 'start', message: 'Local orchestrator active', detail: 'Backend activity stream unavailable; continuing with local activity.' });
     }
   };
 
-  const runPlan = async () => {
-    setBusy('Planning');
-    setError('');
+  const runWorkspace = async () => {
+    const instruction = prompt.trim();
+    if (!instruction || busy) return;
+    setBusy(true);
+    setPatchReady(false);
+    addMessage('user', instruction);
+    setPrompt('');
+    await fetchActivityPlan(instruction, mode);
+    const modes = inferModes(instruction, mode);
+    const outputs: string[] = [];
+
     try {
-      const id = await ensureSession();
-      const data = await apiRequest(`/api/v1/code/sessions/${id}/plan`, {
-        method: 'POST',
-        body: JSON.stringify({ instruction, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
-      });
-      setPlan(data.plan);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Planning failed');
+      if (selectedFileIds.length) {
+        addEvent({ kind: 'read', message: `Reading ${selectedFileIds.length} selected file${selectedFileIds.length === 1 ? '' : 's'}`, detail: 'File context is injected into every hidden agent call.' });
+      }
+
+      if (modes.includes('research')) {
+        addEvent({ kind: 'research', message: 'Research agent running', detail: 'Gathering relevant web context.' });
+        const result = await apiRequest('/api/v1/internet/research', {
+          method: 'POST',
+          body: JSON.stringify({ query: instruction, depth: 'standard' }),
+        });
+        outputs.push(result.report || JSON.stringify(result, null, 2));
+        addEvent({ kind: 'done', message: 'Research complete' });
+      }
+
+      if (modes.includes('design')) {
+        addEvent({ kind: 'design', message: 'Design agent running', detail: 'Generating implementation-ready UI guidance.' });
+        const result = await apiRequest('/api/v1/design/generate-ui', {
+          method: 'POST',
+          body: JSON.stringify({ description: instruction, output_type: 'ui', ...model }),
+        });
+        outputs.push(result.content || JSON.stringify(result, null, 2));
+        addEvent({ kind: 'done', message: 'Design generated' });
+      }
+
+      if (modes.includes('deploy')) {
+        addEvent({ kind: 'deploy', message: 'Deploy agent analyzing', detail: 'No production deploy is triggered without explicit approval.' });
+        const result = await apiRequest('/api/v1/deploy/analyze', {
+          method: 'POST',
+          body: JSON.stringify({ project_type: 'NEXUS Code workspace', repo_context: instruction }),
+        });
+        outputs.push(`Deployment analysis:\n${JSON.stringify(result, null, 2)}`);
+        addEvent({ kind: 'done', message: 'Deploy analysis ready' });
+      }
+
+      if (modes.includes('code') || modes.includes('plan')) {
+        const sid = await ensureSession();
+        addEvent({ kind: 'code', message: 'Planning code changes', detail: 'Generating a concise implementation plan.' });
+        const plan = await apiRequest(`/api/v1/code/sessions/${sid}/plan`, {
+          method: 'POST',
+          body: JSON.stringify({ instruction, ...model }),
+        });
+        outputs.push(`Implementation plan:\n${plan.plan}`);
+        if (modes.includes('code')) {
+          addEvent({ kind: 'edit', message: 'Preparing patch', detail: 'Patch is generated but not applied until you approve it.' });
+          const patch = await apiRequest(`/api/v1/code/sessions/${sid}/patch`, {
+            method: 'POST',
+            body: JSON.stringify({ instruction, ...model }),
+          });
+          setPatchReady(true);
+          addEvent({ kind: 'edit', message: 'Patch ready for review', detail: summarizePatch(patch.patch), diff: patch.patch });
+          outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePatch(patch.patch)}`);
+        }
+      }
+
+      addMessage('assistant', outputs.join('\n\n---\n\n') || 'Done.');
+      addEvent({ kind: 'done', message: 'NEXUS Code finished', detail: modes.join(', ') });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Workspace run failed.';
+      addEvent({ kind: 'error', message: 'Run failed', detail });
+      addMessage('assistant', `I hit an error while running the workspace agents:\n\n${detail}`);
     } finally {
-      setBusy('');
+      setBusy(false);
     }
   };
 
-  const runPatch = async () => {
-    setBusy('Generating patch');
-    setError('');
+  const applyChanges = async () => {
+    if (!sessionId || !patchReady || busy) return;
+    setBusy(true);
     try {
-      const id = await ensureSession();
-      const data = await apiRequest(`/api/v1/code/sessions/${id}/patch`, {
-        method: 'POST',
-        body: JSON.stringify({ instruction, llm_provider: 'autonomus', llm_model: 'autonomus-ai-v1' }),
+      addEvent({ kind: 'edit', message: 'Applying approved patch', detail: 'Writing changes into app-managed workspace files.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, { method: 'POST' });
+      const changed = result.changed || [];
+      changed.forEach((item: any) => {
+        addEvent({ kind: 'edit', message: `Edited ${item.filename}`, detail: `${item.diff?.split('\n').length || 0} diff lines`, diff: item.diff });
       });
-      setPatch(data.patch);
-      setAccepted(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Patch generation failed');
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const applyPatch = async () => {
-    if (!sessionId || !accepted) return;
-    setBusy('Applying');
-    setError('');
-    try {
-      const data = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, { method: 'POST' });
-      const changed = data.changed || [];
-      setApplySummary(`Implementation complete. ${changed.length} file${changed.length === 1 ? '' : 's'} modified. ${data.summary || ''}`.trim());
-      sessionStorage.setItem('workspace_to_deploy', JSON.stringify({ files_changed: changed.map((item: any) => item.filename), summary: data.summary || '' }));
+      setPatchReady(false);
+      addMessage('assistant', `Applied ${changed.length} file${changed.length === 1 ? '' : 's'}.\n${result.summary || ''}`.trim());
       await loadFiles();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Apply failed');
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
     } finally {
-      setBusy('');
+      setBusy(false);
     }
   };
 
-  const sendPlanStepToChat = () => {
-    const payload = ['Help me refine this workspace plan step.', '', plan || instruction].join('\n');
-    sessionStorage.setItem('interview_to_chat_prompt', payload);
-    window.location.href = '/chat';
+  const rejectChanges = () => {
+    setPatchReady(false);
+    addEvent({ kind: 'done', message: 'Changes rejected', detail: 'Prepared patch was discarded from the UI approval flow.' });
   };
-
-  const modeButton = (value: Mode, label: string) => (
-    <button type="button" className={`${styles.tabButton} ${mode === value ? styles.tabButtonActive : ''}`} onClick={() => setMode(value)}>
-      {label}
-    </button>
-  );
 
   return (
-    <AppShell>
-      <main className={styles.page}>
-        <section className={styles.commandPanel}>
-          <div className={styles.commandHeader}>
-            <div className={styles.inlineActions}>
-              {modeButton('quick', 'Quick Generate')}
-              {modeButton('plan', 'Plan Mode')}
-              {modeButton('design', 'Design to Code')}
-            </div>
-            <div className={styles.inlineActions}>
-              <label className={styles.secondaryButton}>
-                <FileUp size={15} />
-                Upload
-                <input hidden multiple type="file" accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css" onChange={(event) => uploadFiles(event.target.files)} />
-              </label>
-              <button className={styles.secondaryButton} type="button" onClick={() => setShowFiles((value) => !value)}>Files ({selectedFileIds.length})</button>
-              <button className={styles.iconAction} type="button" onClick={() => setShowSettings((value) => !value)} aria-label="Workspace settings">
-                <MoreHorizontal size={18} />
-              </button>
-            </div>
-          </div>
-
-          {showSettings && (
-            <div className={styles.settingsStrip}>
-              <span>Session: {sessionId || 'created when needed'}</span>
-              <span>Model: Autonomus AI</span>
-            </div>
-          )}
-
-          {showFiles && (
-            <div className={styles.phaseCard}>
-              <div className={styles.phaseHeader}>
-                <strong>Workspace files</strong>
-                <button className={styles.iconAction} type="button" onClick={() => setShowFiles(false)}><X size={15} /></button>
-              </div>
-              <div className={styles.phaseList}>
-                {files.map((file) => (
-                  <label key={file.id} className={styles.toggleLabel}>
-                    <input
-                      type="checkbox"
-                      checked={!!selected[file.id]}
-                      onChange={(event) => setSelected((current) => ({ ...current, [file.id]: event.target.checked }))}
-                    />
-                    {file.filename}
-                  </label>
-                ))}
-                {files.length === 0 && <span className={styles.meta}>No uploaded code files yet.</span>}
-              </div>
-            </div>
-          )}
-
-          <div className={styles.promptRow}>
-            <textarea className={styles.largePrompt} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
-            {mode === 'quick' && <button className={styles.button} onClick={runQuick} disabled={!!busy}><Wand2 size={16} /> Generate</button>}
-            {mode !== 'quick' && <button className={styles.button} onClick={runPlan} disabled={!!busy}><GitPullRequest size={16} /> Plan</button>}
-          </div>
-          {busy && <span className={styles.meta}>{busy}...</span>}
-        </section>
-
-        {mode === 'design' && designPayload && (
-          <section className={styles.grid}>
-            <iframe className={styles.previewFrame} sandbox="allow-same-origin" srcDoc={designPayload.code} title="Selected design preview" />
-            <div className={styles.phaseCard}>
-              <h2>{designPayload.style} design selected</h2>
-              <p>{designPayload.brief}</p>
-              <button className={styles.button} type="button" onClick={runQuick}><Code2 size={16} /> Generate implementation</button>
-            </div>
-          </section>
-        )}
-
-        {mode === 'quick' && quickOutput && (
-          <section className={styles.phaseCard}>
-            <div className={styles.phaseHeader}>
-              <strong>Generated output</strong>
-              <div className={styles.inlineActions}>
-                <button className={styles.secondaryButton} onClick={() => navigator.clipboard.writeText(quickOutput)}><Clipboard size={15} /> Copy</button>
-                <button className={styles.secondaryButton} onClick={sendPlanStepToChat}><Send size={15} /> Chat</button>
-              </div>
-            </div>
-            <pre className={styles.diffView}>{quickOutput}</pre>
-          </section>
-        )}
-
-        {mode !== 'quick' && (
-          <section className={styles.phaseList}>
-            <div className={styles.grid}>
-              {phaseLabels.map((label, index) => (
-                <div className={styles.phaseCard} key={label}>
-                  <span className={styles.eyebrow}>Phase {index + 1}</span>
-                  <h3>{label}</h3>
-                  <p className={styles.meta}>
-                    {index === 0 && 'Scope, risks, and needed files are extracted from your instruction.'}
-                    {index === 1 && 'Generate a checklist before writing code.'}
-                    {index === 2 && 'Create a patch from the accepted plan.'}
-                    {index === 3 && 'Accept, reject, or send changes to chat.'}
-                    {index === 4 && 'Apply accepted patches to workspace files.'}
-                    {index === 5 && 'Summarize changes and prepare deployment handoff.'}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {plan && (
-              <div className={styles.phaseCard}>
-                <div className={styles.phaseHeader}>
-                  <strong>Implementation plan</strong>
-                  <div className={styles.inlineActions}>
-                    <button className={styles.secondaryButton} onClick={sendPlanStepToChat}><Send size={15} /> Chat</button>
-                    <button className={styles.button} onClick={runPatch}><Wand2 size={16} /> Generate Patch</button>
-                  </div>
-                </div>
-                <pre className={styles.diffView}>{plan}</pre>
-              </div>
-            )}
-
-            {patch && (
-              <div className={styles.phaseCard}>
-                <div className={styles.phaseHeader}>
-                  <strong>Review patch</strong>
-                  <div className={styles.inlineActions}>
-                    <button className={styles.secondaryButton} onClick={() => setAccepted(true)}><Check size={15} /> Accept</button>
-                    <button className={styles.secondaryButton} onClick={() => setAccepted(false)}><X size={15} /> Reject</button>
-                    <button className={styles.button} disabled={!accepted} onClick={applyPatch}><Play size={16} /> Apply</button>
-                  </div>
-                </div>
-                <pre className={styles.diffView}>{patch}</pre>
-              </div>
-            )}
-
-            {applySummary && <div className={styles.summaryCard}>{applySummary}</div>}
-          </section>
-        )}
-
-        {error && (
-          <details className={styles.phaseCard} open>
-            <summary>Error details</summary>
-            <p className={styles.meta}>{error}</p>
-          </details>
-        )}
-      </main>
-    </AppShell>
+    <main className={styles.workspace}>
+      <header className={styles.topbar}>
+        <div className={styles.brand}>
+          <span className={styles.logo}>N</span>
+          <span>NEXUS Code</span>
+        </div>
+        <input className={styles.search} placeholder="Search files, commands, agents..." />
+        <div className={styles.topActions}>
+          <MoreHorizontal size={18} />
+          <UserCircle size={22} />
+        </div>
+      </header>
+      <div className={styles.layout}>
+        <FileExplorer
+          files={files}
+          selectedIds={selectedFileIds}
+          busy={busy}
+          onRefresh={loadFiles}
+          onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
+          onUpload={uploadFiles}
+        />
+        <ConversationPanel
+          mode={mode}
+          messages={messages}
+          prompt={prompt}
+          busy={busy}
+          selectedFileCount={selectedFileIds.length}
+          onModeChange={setMode}
+          onPromptChange={setPrompt}
+          onSubmit={runWorkspace}
+          onAttachClick={() => fileInputRef.current?.click()}
+        />
+        <ActivityPanel events={events} hasPatch={patchReady} canApply={patchReady && !!sessionId && !busy} onApply={applyChanges} onReject={rejectChanges} />
+      </div>
+      <input
+        ref={fileInputRef}
+        hidden
+        multiple
+        type="file"
+        accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css,.pdf,.docx,.xlsx"
+        onChange={(event) => uploadFiles(event.target.files)}
+      />
+    </main>
   );
 }
