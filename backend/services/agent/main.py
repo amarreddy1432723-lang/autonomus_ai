@@ -132,6 +132,26 @@ class CodeSessionCreate(BaseModel):
     title: str = "Code workspace"
     file_ids: List[str] = Field(default_factory=list)
 
+class FileContentUpdate(BaseModel):
+    content: str
+
+class InlineCodeEditRequest(BaseModel):
+    file_id: UUID
+    filename: str = ""
+    instruction: str
+    selected_text: str
+    full_content: str = ""
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
+class CodeCompletionRequest(BaseModel):
+    file_id: UUID
+    filename: str = ""
+    prefix: str
+    suffix: str = ""
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
 class CodeSessionFilesUpdate(BaseModel):
     file_ids: List[str] = Field(default_factory=list)
 
@@ -143,6 +163,28 @@ class CodeInstructionRequest(BaseModel):
 class CodeCommandRunRequest(BaseModel):
     command: str
     timeout_seconds: int = 45
+
+class CodePreviewCheckRequest(BaseModel):
+    url: str
+
+class CodeFixPreviewRequest(BaseModel):
+    instruction: str = ""
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+
+class CodeGitConnectRequest(BaseModel):
+    repo_url: str
+    default_branch: str = "main"
+
+class CodePreparePullRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+class AgentJobCreateRequest(BaseModel):
+    code_session_id: Optional[UUID] = None
+    mode: str = "code"
+    prompt: str = ""
+    approval_state: str = "none"
 
 class NexusCodeRequest(BaseModel):
     instruction: str
@@ -560,6 +602,48 @@ def get_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Se
         "preview": get_file_text(db, user_id, file_id)[:8000],
     }
 
+@app.get("/api/v1/files/{file_id}/content")
+def get_file_content(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .file_service import get_file_text
+
+    record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id, FileReference.status == "active").first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    text = get_file_text(db, user_id, file_id)
+    if len(text) > 600_000:
+        raise HTTPException(status_code=413, detail="File is too large for inline editing")
+    return {
+        "id": str(record.id),
+        "filename": record.filename,
+        "content_type": record.content_type,
+        "size_bytes": record.size_bytes,
+        "content": text,
+    }
+
+@app.put("/api/v1/files/{file_id}/content")
+def update_file_content(file_id: UUID, request: FileContentUpdate, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from pathlib import Path
+    from services.shared.models import FileChunk
+    from .file_service import put_object
+
+    record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id, FileReference.status == "active").first()
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    editable_extensions = {".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".tsx", ".html", ".css"}
+    extension = Path(record.filename).suffix.lower()
+    if extension not in editable_extensions:
+        raise HTTPException(status_code=400, detail="This file type is not editable inline")
+    data = request.content.encode("utf-8")
+    if len(data) > 1_500_000:
+        raise HTTPException(status_code=413, detail="Edited file exceeds the inline editor limit")
+    put_object(record.object_key, data, record.content_type or "text/plain")
+    record.size_bytes = len(data)
+    record.metadata_json = {**(record.metadata_json or {}), "edited_inline": True, "inline_editor_updated_at": datetime.now(timezone.utc).isoformat()}
+    db.query(FileChunk).filter(FileChunk.file_id == record.id, FileChunk.user_id == user_id).delete()
+    db.commit()
+    db.refresh(record)
+    return {"id": str(record.id), "filename": record.filename, "size_bytes": record.size_bytes, "status": "saved"}
+
 @app.delete("/api/v1/files/{file_id}")
 def delete_file(file_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .file_service import delete_object
@@ -769,6 +853,79 @@ def get_personalization(user_id: UUID = Depends(get_current_user_id), db: Sessio
 
     return get_personalization_context(db, user_id)
 
+@app.get("/api/v1/os/context")
+def get_nexus_os_context(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AgentJob, CodeSession, Goal, Memory, Schedule, Task
+
+    memories = (
+        db.query(Memory)
+        .filter(Memory.user_id == user_id, Memory.is_archived == False, Memory.is_superseded == False)  # noqa: E712
+        .order_by(Memory.importance.desc(), Memory.updated_at.desc())
+        .limit(5)
+        .all()
+    )
+    goals = (
+        db.query(Goal)
+        .filter(Goal.user_id == user_id, Goal.status.in_(["active", "in_progress", "pending"]))
+        .order_by(Goal.priority_score.desc(), Goal.updated_at.desc())
+        .limit(5)
+        .all()
+    )
+    tasks = (
+        db.query(Task)
+        .filter(Task.user_id == user_id, Task.status.in_(["queued", "pending", "in_progress", "active"]))
+        .order_by(Task.priority_score.desc(), Task.updated_at.desc())
+        .limit(6)
+        .all()
+    )
+    schedules = (
+        db.query(Schedule)
+        .filter(Schedule.user_id == user_id, Schedule.is_active == True)  # noqa: E712
+        .order_by(Schedule.next_run_at.asc())
+        .limit(4)
+        .all()
+    )
+    code_sessions = (
+        db.query(CodeSession)
+        .filter(CodeSession.user_id == user_id)
+        .order_by(CodeSession.updated_at.desc(), CodeSession.created_at.desc())
+        .limit(4)
+        .all()
+    )
+    jobs = (
+        db.query(AgentJob)
+        .filter(AgentJob.user_id == user_id)
+        .order_by(AgentJob.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    return {
+        "memories": [
+            {"id": str(item.id), "type": item.memory_type, "content": item.content[:280], "importance": item.importance}
+            for item in memories
+        ],
+        "goals": [
+            {"id": str(item.id), "title": item.title, "status": item.status, "progress_pct": item.progress_pct}
+            for item in goals
+        ],
+        "tasks": [
+            {"id": str(item.id), "title": item.title, "status": item.status, "priority_score": item.priority_score}
+            for item in tasks
+        ],
+        "schedules": [
+            {"id": str(item.id), "title": item.title, "next_run_at": item.next_run_at.isoformat() if item.next_run_at else None}
+            for item in schedules
+        ],
+        "code_sessions": [
+            {"id": str(item.id), "title": item.title, "status": item.status, "updated_at": item.updated_at.isoformat() if item.updated_at else None}
+            for item in code_sessions
+        ],
+        "jobs": [
+            {"id": str(item.id), "mode": item.mode, "status": item.status, "approval_state": item.approval_state}
+            for item in jobs
+        ],
+    }
+
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(
     request: CodeSessionCreate,
@@ -809,6 +966,22 @@ def update_code_session_files_endpoint(
     session = update_session_files(db, user_id, session, request.file_ids)
     return serialize_code_session(db, user_id, session)
 
+@app.post("/api/v1/code/sessions/{session_id}/import-zip")
+def import_code_session_zip(
+    session_id: UUID,
+    upload: UploadFile = File(...),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, import_zip_project
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "import", upload.filename or "project.zip")
+    result = import_zip_project(db, user_id, session, upload)
+    complete_job(db, job, "completed", result, files_touched=result.get("imported") or [])
+    return {**result, "job": serialize_job(job)}
+
 @app.get("/api/v1/code/sessions/{session_id}/files")
 def list_code_session_files(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import code_files, get_code_session
@@ -816,27 +989,43 @@ def list_code_session_files(session_id: UUID, user_id: UUID = Depends(get_curren
     session = get_code_session(db, user_id, session_id)
     return [{"id": str(record.id), "filename": record.filename, "size_bytes": record.size_bytes} for record in code_files(db, user_id, session)]
 
+@app.get("/api/v1/code/sessions/{session_id}/search")
+def search_code_session_files(
+    session_id: UUID,
+    q: str = Query(""),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, search_workspace_files
+
+    session = get_code_session(db, user_id, session_id)
+    return search_workspace_files(db, user_id, session, q)
+
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import generate_plan, get_code_session
+    from .agent_jobs import create_agent_job, serialize_job
     from .usage import record_usage
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
-    plan = generate_plan(db, user_id, session, request.instruction, provider, model)
+    job = create_agent_job(db, user_id, session.id, "plan", request.instruction)
+    plan = generate_plan(db, user_id, session, request.instruction, provider, model, job)
     record_usage(db, user_id, "/api/v1/code/plan", provider, model, str(session_id), request.instruction, plan, session.file_ids)
-    return {"plan": plan}
+    return {"plan": plan, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/patch")
 def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import generate_patch, get_code_session
+    from .agent_jobs import create_agent_job, serialize_job
     from .usage import record_usage
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
-    patch = generate_patch(db, user_id, session, request.instruction, provider, model)
+    job = create_agent_job(db, user_id, session.id, "patch", request.instruction, approval_state="pending")
+    patch = generate_patch(db, user_id, session, request.instruction, provider, model, job)
     record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
-    return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or []}
+    return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or [], "job": serialize_job(job)}
 
 @app.get("/api/v1/code/sessions/{session_id}/patch-preview")
 def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -860,16 +1049,236 @@ def run_code_session_command(
     db: Session = Depends(get_db),
 ):
     from .code_workspace import get_code_session, run_workspace_command
+    from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
-    return run_workspace_command(db, user_id, session, request.command, request.timeout_seconds)
+    job = create_agent_job(db, user_id, session.id, "command", request.command)
+    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/preview-check")
+def check_code_session_preview(
+    session_id: UUID,
+    request: CodePreviewCheckRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import check_preview_url, get_code_session
+    from .agent_jobs import create_agent_job, serialize_job
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "preview", request.url)
+    result = check_preview_url(db, session, request.url, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/fix-preview")
+def fix_code_session_preview_issue(
+    session_id: UUID,
+    request: CodeFixPreviewRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import generate_patch, generate_plan, get_code_session
+    from .usage import record_usage
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    metadata = session.metadata_json or {}
+    preview_checks = metadata.get("preview_checks") or []
+    latest_check = preview_checks[-1] if preview_checks else {}
+    if not latest_check:
+        raise HTTPException(status_code=400, detail="Run a preview check before asking NEXUS to fix preview issues.")
+    issue_instruction = "\n".join([
+        "Fix the latest workspace preview issue.",
+        f"Preview URL: {latest_check.get('url') or 'unknown'}",
+        f"Status: {latest_check.get('status')} HTTP {latest_check.get('status_code')}",
+        f"Title: {latest_check.get('title') or ''}",
+        f"Issues: {', '.join(latest_check.get('issues') or []) or 'No explicit marker; inspect likely frontend/runtime causes.'}",
+        f"User instruction: {request.instruction}".strip(),
+        "Prepare a safe patch only. Do not assume production deployment access.",
+    ])
+    job = create_agent_job(db, user_id, session.id, "fix_preview", issue_instruction, approval_state="pending")
+    plan = generate_plan(db, user_id, session, issue_instruction, provider, model)
+    patch = generate_patch(db, user_id, session, issue_instruction, provider, model, job)
+    record_usage(db, user_id, "/api/v1/code/fix-preview", provider, model, str(session_id), issue_instruction, patch, session.file_ids)
+    return {
+        "plan": plan,
+        "patch": patch,
+        "patch_preview": (session.metadata_json or {}).get("patch_preview") or [],
+        "job": serialize_job(job),
+    }
+
+@app.post("/api/v1/code/sessions/{session_id}/git/connect")
+def connect_code_session_git(
+    session_id: UUID,
+    request: CodeGitConnectRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import connect_git_repository, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    return connect_git_repository(db, session, request.repo_url, request.default_branch)
+
+@app.get("/api/v1/code/sessions/{session_id}/git/status")
+def get_code_session_git_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, git_status
+
+    session = get_code_session(db, user_id, session_id)
+    return git_status(session)
+
+@app.post("/api/v1/code/sessions/{session_id}/git/prepare-pr")
+def prepare_code_session_pull_request(
+    session_id: UUID,
+    request: CodePreparePullRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, prepare_pull_request
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "git", request.title or session.title)
+    result = prepare_pull_request(db, session, request.title, request.description, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/inline-edit")
+def inline_edit_code_selection(
+    session_id: UUID,
+    request: InlineCodeEditRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import append_activity, get_code_session
+    from .llm_router import get_chat_llm
+    from .usage import record_usage
+
+    if not request.instruction.strip():
+        raise HTTPException(status_code=400, detail="Inline edit instruction is required")
+    if not request.selected_text.strip():
+        raise HTTPException(status_code=400, detail="Select code before using inline edit")
+    if len(request.selected_text) > 20000:
+        raise HTTPException(status_code=413, detail="Selected code is too large for inline edit")
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "inline_edit", request.instruction, approval_state="pending")
+    llm = get_chat_llm(role="coding", provider=provider, model=model)
+    prompt = (
+        f"Filename: {request.filename}\n"
+        f"Instruction: {request.instruction}\n\n"
+        "Selected code:\n"
+        f"```\n{request.selected_text}\n```\n\n"
+        "Return only the replacement code for the selected region. "
+        "Do not include markdown fences, explanation, or surrounding unchanged file content."
+    )
+    response = llm.invoke([
+        SystemMessage(content="You are NEXUS Code inline edit mode. Rewrite only the selected code. Preserve style and APIs."),
+        HumanMessage(content=prompt),
+    ])
+    replacement = str(response.content).strip()
+    if replacement.startswith("```"):
+        lines = replacement.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        replacement = "\n".join(lines).strip()
+    append_activity(db, session, "edit", f"Inline edit prepared for {request.filename or request.file_id}", request.instruction[:220])
+    complete_job(db, job, "completed", {"replacement": replacement, "filename": request.filename}, files_touched=[{"file_id": str(request.file_id), "filename": request.filename}], approval_state="pending")
+    record_usage(db, user_id, "/api/v1/code/inline-edit", provider, model, str(session_id), prompt, replacement, [str(request.file_id)])
+    return {"replacement": replacement, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/complete")
+def complete_code_at_cursor(
+    session_id: UUID,
+    request: CodeCompletionRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import append_activity, get_code_session
+    from .llm_router import get_chat_llm
+    from .usage import record_usage
+
+    if not request.prefix.strip():
+        raise HTTPException(status_code=400, detail="Completion needs code before the cursor")
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "completion", request.filename, approval_state="pending")
+    llm = get_chat_llm(role="coding", provider=provider, model=model)
+    prompt = (
+        f"Filename: {request.filename}\n\n"
+        "Code before cursor:\n"
+        f"```\n{request.prefix[-12000:]}\n```\n\n"
+        "Code after cursor:\n"
+        f"```\n{request.suffix[:6000]}\n```\n\n"
+        "Return only the next useful code to insert at the cursor. "
+        "Keep it short, syntactically consistent, and do not repeat existing code."
+    )
+    response = llm.invoke([
+        SystemMessage(content="You are NEXUS Code autocomplete. Return only insertable code, no markdown or explanation."),
+        HumanMessage(content=prompt),
+    ])
+    completion = str(response.content).strip()
+    if completion.startswith("```"):
+        lines = completion.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        completion = "\n".join(lines).strip()
+    append_activity(db, session, "edit", f"Completion prepared for {request.filename or request.file_id}", completion[:220])
+    complete_job(db, job, "completed", {"completion": completion, "filename": request.filename}, files_touched=[{"file_id": str(request.file_id), "filename": request.filename}], approval_state="pending")
+    record_usage(db, user_id, "/api/v1/code/complete", provider, model, str(session_id), prompt, completion, [str(request.file_id)])
+    return {"completion": completion, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/apply")
 def apply_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import apply_patch_payload, get_code_session
+    from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
-    return apply_patch_payload(db, user_id, session)
+    job = create_agent_job(db, user_id, session.id, "apply", "Apply approved workspace patch", approval_state="approved")
+    result = apply_patch_payload(db, user_id, session, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/rollback")
+def rollback_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, rollback_last_apply
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "rollback", "Rollback last applied workspace patch", approval_state="approved")
+    result = rollback_last_apply(db, user_id, session, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/jobs", status_code=201)
+def create_agent_job_endpoint(request: AgentJobCreateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, serialize_job
+
+    job = create_agent_job(db, user_id, request.code_session_id, request.mode, request.prompt, request.approval_state)
+    return serialize_job(job)
+
+@app.get("/api/v1/code/jobs")
+def list_agent_jobs_endpoint(
+    code_session_id: Optional[UUID] = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import list_agent_jobs, serialize_job
+
+    return [serialize_job(job) for job in list_agent_jobs(db, user_id, code_session_id)]
+
+@app.get("/api/v1/code/jobs/{job_id}")
+def get_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import get_agent_job, serialize_job
+
+    return serialize_job(get_agent_job(db, user_id, job_id))
 
 @app.post("/api/v1/code/generate")
 def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

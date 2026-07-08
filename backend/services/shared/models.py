@@ -40,6 +40,7 @@ class User(Base):
     file_chunks = relationship("FileChunk", back_populates="user", cascade="all, delete-orphan")
     usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
     code_sessions = relationship("CodeSession", back_populates="user", cascade="all, delete-orphan")
+    agent_jobs = relationship("AgentJob", back_populates="user", cascade="all, delete-orphan")
     vault = relationship("UserVault", back_populates="user", uselist=False, cascade="all, delete-orphan")
     life_graph_nodes = relationship("LifeGraphNode", back_populates="user", cascade="all, delete-orphan")
     life_graph_edges = relationship("LifeGraphEdge", back_populates="user", cascade="all, delete-orphan")
@@ -154,6 +155,29 @@ class CodeSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="code_sessions")
+
+class AgentJob(Base):
+    __tablename__ = "agent_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_session_id = Column(UUID(as_uuid=True), ForeignKey("code_sessions.id", ondelete="CASCADE"), nullable=True)
+    mode = Column(String(100), default="code")
+    prompt = Column(Text, nullable=True)
+    status = Column(String(50), default="queued")
+    approval_state = Column(String(50), default="none")
+    logs = Column(JSON, default=list)
+    files_touched = Column(JSON, default=list)
+    commands_run = Column(JSON, default=list)
+    result = Column(JSON, default=dict)
+    metadata_json = Column(JSON, default=dict)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="agent_jobs")
+    code_session = relationship("CodeSession")
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -535,6 +559,9 @@ UsageEvent.__table__.append_constraint(CheckConstraint("total_tokens >= 0", name
 Index("idx_usage_user_created", UsageEvent.user_id, UsageEvent.created_at)
 Index("idx_usage_user_session", UsageEvent.user_id, UsageEvent.session_id)
 Index("idx_code_sessions_user_status", CodeSession.user_id, CodeSession.status)
+Index("idx_agent_jobs_user_created", AgentJob.user_id, AgentJob.created_at)
+Index("idx_agent_jobs_session_created", AgentJob.code_session_id, AgentJob.created_at)
+Index("idx_agent_jobs_user_status", AgentJob.user_id, AgentJob.status)
 
 Goal.__table__.append_constraint(CheckConstraint("priority BETWEEN 1 AND 5", name="ck_goals_priority_range"))
 Goal.__table__.append_constraint(CheckConstraint("progress_pct BETWEEN 0.0 AND 1.0", name="ck_goals_progress_pct_range"))
