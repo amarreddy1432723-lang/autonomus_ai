@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -70,10 +70,33 @@ def get_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
 
 
 def list_agent_jobs(db: Session, user_id: UUID, code_session_id: UUID | None = None, limit: int = 30) -> list[AgentJob]:
+    mark_stale_agent_jobs(db, user_id, code_session_id)
     query = db.query(AgentJob).filter(AgentJob.user_id == user_id)
     if code_session_id:
         query = query.filter(AgentJob.code_session_id == code_session_id)
     return query.order_by(AgentJob.created_at.desc()).limit(limit).all()
+
+
+def mark_stale_agent_jobs(db: Session, user_id: UUID, code_session_id: UUID | None = None, stale_after_minutes: int = 45) -> int:
+    cutoff = _now() - timedelta(minutes=stale_after_minutes)
+    query = db.query(AgentJob).filter(
+        AgentJob.user_id == user_id,
+        AgentJob.status.in_(["running", "queued"]),
+        AgentJob.started_at.isnot(None),
+        AgentJob.started_at < cutoff,
+    )
+    if code_session_id:
+        query = query.filter(AgentJob.code_session_id == code_session_id)
+    jobs = query.all()
+    for job in jobs:
+        job.status = "interrupted"
+        job.completed_at = _now()
+        logs = list(job.logs or [])
+        logs.append(_log("error", "Job interrupted", "Marked stale because no progress was recorded for too long."))
+        job.logs = logs[-300:]
+    if jobs:
+        db.commit()
+    return len(jobs)
 
 
 def cancel_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
@@ -84,6 +107,26 @@ def cancel_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
     job.completed_at = _now()
     logs = list(job.logs or [])
     logs.append(_log("error", "Job cancelled by user"))
+    job.logs = logs[-300:]
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def reset_background_job_for_retry(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
+    job = get_agent_job(db, user_id, job_id)
+    if not str(job.mode or "").startswith("background_") or not job.code_session_id:
+        raise HTTPException(status_code=400, detail="Only background Code jobs can be retried.")
+    if job.status in {"running", "queued"}:
+        raise HTTPException(status_code=409, detail="Job is already running.")
+    job.status = "running"
+    job.started_at = _now()
+    job.completed_at = None
+    job.result = {}
+    job.files_touched = []
+    job.commands_run = []
+    logs = list(job.logs or [])
+    logs.append(_log("start", "Job retried", (job.prompt or "")[:220]))
     job.logs = logs[-300:]
     db.commit()
     db.refresh(job)

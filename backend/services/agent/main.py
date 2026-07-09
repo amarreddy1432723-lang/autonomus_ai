@@ -1621,6 +1621,29 @@ def cancel_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_
 
     return serialize_job(cancel_agent_job(db, user_id, job_id))
 
+@app.post("/api/v1/code/jobs/{job_id}/retry", status_code=202)
+def retry_agent_job_endpoint(
+    job_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import reset_background_job_for_retry, serialize_job
+
+    job = reset_background_job_for_retry(db, user_id, job_id)
+    mode = str(job.mode or "")
+    background_tasks.add_task(
+        _run_code_background_job,
+        str(job.id),
+        str(user_id),
+        str(job.code_session_id),
+        job.prompt or "",
+        None,
+        None,
+        mode.endswith("_code"),
+    )
+    return {"status": "queued", "job": serialize_job(job)}
+
 @app.post("/api/v1/code/generate")
 def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .billing import check_entitlement

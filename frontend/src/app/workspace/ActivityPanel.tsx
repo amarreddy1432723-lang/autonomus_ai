@@ -105,6 +105,7 @@ type Props = {
   onRunChecks: () => void;
   onRefreshJobs: () => void;
   onCancelJob: (jobId: string) => void;
+  onRetryJob: (jobId: string) => void;
   onSyncRuntime: () => void;
   onAnalyzeWorkspace: () => void;
   previewUrl: string;
@@ -204,6 +205,7 @@ export default function ActivityPanel({
   onRunChecks,
   onRefreshJobs,
   onCancelJob,
+  onRetryJob,
   onSyncRuntime,
   onAnalyzeWorkspace,
   previewUrl,
@@ -493,11 +495,14 @@ export default function ActivityPanel({
             {jobs.length === 0 && <div className={styles.meta}>No durable jobs yet.</div>}
             {jobs.slice(0, 8).map((job) => {
               const running = ['running', 'queued'].includes(job.status);
+              const failed = ['failed', 'cancelled', 'timeout', 'blocked', 'interrupted'].includes(job.status);
+              const retryable = failed && job.mode?.startsWith('background_');
+              const statusClass = running ? styles.jobStatusRunning : failed ? styles.jobStatusError : styles.jobStatusDone;
               return (
               <details className={styles.jobDetail} key={job.id}>
                 <summary>
                   <span>{job.mode}</span>
-                  <strong className={running ? styles.jobStatusRunning : styles.jobStatusDone}>{job.status}</strong>
+                  <strong className={statusClass}>{job.status}</strong>
                 </summary>
                 {job.prompt && <p>{job.prompt}</p>}
                 <div className={styles.jobMetaLine}>
@@ -524,6 +529,11 @@ export default function ActivityPanel({
                 {running && (
                   <button className={styles.rejectButton} type="button" onClick={() => onCancelJob(job.id)}>
                     Cancel job
+                  </button>
+                )}
+                {retryable && (
+                  <button className={styles.fullWidthButton} type="button" onClick={() => onRetryJob(job.id)}>
+                    Retry background job
                   </button>
                 )}
               </details>

@@ -348,6 +348,17 @@ export default function WorkspacePage() {
     }
   };
 
+  const retryJob = async (jobId: string) => {
+    if (busy) return;
+    try {
+      const result = await apiRequest(`/api/v1/code/jobs/${jobId}/retry`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((item) => item.id !== result.job.id)].slice(0, 20));
+      addEvent({ kind: 'code', message: 'Background job retried', detail: result.job?.prompt || jobId });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Retry job failed', detail: error instanceof Error ? error.message : 'Could not retry job.' });
+    }
+  };
+
   const refreshCommands = async (idValue: string) => {
     if (!idValue) {
       setCommands([]);
@@ -1235,6 +1246,7 @@ export default function WorkspacePage() {
           onRunChecks={runChecks}
           onRefreshJobs={refreshCurrentJobs}
           onCancelJob={cancelJob}
+          onRetryJob={retryJob}
           onSyncRuntime={syncRuntime}
           onAnalyzeWorkspace={analyzeWorkspace}
           onPreviewUrlChange={setPreviewUrl}
