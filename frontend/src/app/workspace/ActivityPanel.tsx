@@ -25,15 +25,6 @@ export type AgentJob = {
   completed_at?: string;
 };
 
-export type OSContext = {
-  memories?: Array<{ id: string; type: string; content: string; importance?: number }>;
-  goals?: Array<{ id: string; title: string; status: string; progress_pct?: number }>;
-  tasks?: Array<{ id: string; title: string; status: string }>;
-  schedules?: Array<{ id: string; title: string; next_run_at?: string }>;
-  code_sessions?: Array<{ id: string; title: string; status: string }>;
-  jobs?: Array<{ id: string; mode: string; status: string }>;
-};
-
 export type PatchPreviewItem = {
   file_id: string;
   filename: string;
@@ -83,7 +74,6 @@ export type RollbackSnapshot = {
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
-  osContext: OSContext | null;
   patchPreview: PatchPreviewItem[];
   commands: WorkspaceCommand[];
   analysis: WorkspaceAnalysis | null;
@@ -157,7 +147,6 @@ const commands: WorkspaceCommand[] = [
 export default function ActivityPanel({
   events,
   jobs,
-  osContext,
   patchPreview,
   commands: workspaceCommands,
   analysis,
@@ -224,26 +213,6 @@ export default function ActivityPanel({
                   </button>
                 </div>
               </details>
-            ))}
-          </div>
-        )}
-        {osContext && (
-          <div className={styles.osContextPanel}>
-            <div className={styles.meta}>NEXUS OS Context</div>
-            <div className={styles.contextGrid}>
-              <span>{osContext.goals?.length || 0} goals</span>
-              <span>{osContext.tasks?.length || 0} tasks</span>
-              <span>{osContext.memories?.length || 0} memories</span>
-              <span>{osContext.jobs?.length || 0} jobs</span>
-            </div>
-            {(osContext.goals || []).slice(0, 2).map((goal) => (
-              <div className={styles.contextLine} key={goal.id}>
-                <strong>{goal.title}</strong>
-                <span>{goal.status}</span>
-              </div>
-            ))}
-            {(osContext.memories || []).slice(0, 2).map((memory) => (
-              <div className={styles.contextMemory} key={memory.id}>{memory.content}</div>
             ))}
           </div>
         )}

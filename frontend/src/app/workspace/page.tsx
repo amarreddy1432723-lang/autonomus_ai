@@ -4,7 +4,7 @@ import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, PatchPreviewItem, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -61,7 +61,6 @@ export default function WorkspacePage() {
   const [messages, setMessages] = useState<WorkspaceMessage[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [jobs, setJobs] = useState<AgentJob[]>([]);
-  const [osContext, setOsContext] = useState<OSContext | null>(null);
   const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
   const [analysis, setAnalysis] = useState<WorkspaceAnalysis | null>(null);
   const [rollbackSnapshots, setRollbackSnapshots] = useState<RollbackSnapshot[]>([]);
@@ -78,6 +77,7 @@ export default function WorkspacePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchFocusKey, setSearchFocusKey] = useState(0);
+  const [filesOpen, setFilesOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedFileIds = useMemo(
@@ -86,12 +86,7 @@ export default function WorkspacePage() {
   );
 
   const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
-    const sessionItems = (osContext?.code_sessions || []).slice(0, 3).map((session) => ({
-      id: `session-${session.id}`,
-      label: session.title || 'Code workspace',
-      detail: session.status || 'workspace',
-    }));
-    const jobItems = jobs.slice(0, 2).map((job) => ({
+    const jobItems = jobs.slice(0, 4).map((job) => ({
       id: `job-${job.id}`,
       label: job.prompt || `${job.mode || 'Agent'} job`,
       detail: job.status || 'job',
@@ -101,8 +96,8 @@ export default function WorkspacePage() {
       label: file.filename,
       detail: file.content_type || 'workspace file',
     }));
-    return [...sessionItems, ...jobItems, ...fileItems].slice(0, 8);
-  }, [files, jobs, osContext?.code_sessions]);
+    return [...jobItems, ...fileItems].slice(0, 8);
+  }, [files, jobs]);
 
   const addEvent = (event: Omit<ActivityEvent, 'id'>) => {
     setEvents((current) => [{ ...event, id: id('evt') }, ...current].slice(0, 80));
@@ -113,6 +108,7 @@ export default function WorkspacePage() {
   };
 
   const focusWorkspaceSearch = () => {
+    setFilesOpen(true);
     setSearchFocusKey((current) => current + 1);
   };
 
@@ -149,15 +145,6 @@ export default function WorkspacePage() {
     }
   };
 
-  const loadOsContext = async () => {
-    try {
-      const data = await apiRequest('/api/v1/os/context');
-      setOsContext(data);
-    } catch {
-      setOsContext(null);
-    }
-  };
-
   const hydrateSession = async (idValue: string) => {
     if (!idValue) return;
     try {
@@ -172,7 +159,6 @@ export default function WorkspacePage() {
       setJobs(jobData);
       await refreshCommands(session.id);
       await loadRollbackSnapshots(session.id);
-      await loadOsContext();
       if (session.patch_preview?.length) {
         session.patch_preview.forEach((item: any) => {
           addEvent({
@@ -237,7 +223,6 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     loadFiles();
-    loadOsContext();
     const savedSessionId = localStorage.getItem('nexus.code.session_id');
     if (savedSessionId) {
       hydrateSession(savedSessionId);
@@ -292,7 +277,6 @@ export default function WorkspacePage() {
         await refreshCommands(sessionId);
       }
       addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Upload failed', detail: error instanceof Error ? error.message : 'Unknown upload error.' });
     } finally {
@@ -366,7 +350,6 @@ export default function WorkspacePage() {
         await hydrateSession(sessionId);
       }
       await loadRollbackSnapshots(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Save failed', detail: error instanceof Error ? error.message : 'Could not save file.' });
     } finally {
@@ -406,7 +389,6 @@ export default function WorkspacePage() {
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Inline edit applied to editor', detail: 'Review the replacement, then save the file if it looks right.' });
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Inline edit failed', detail: error instanceof Error ? error.message : 'Could not edit selection.' });
     } finally {
@@ -443,7 +425,6 @@ export default function WorkspacePage() {
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Completion inserted into editor', detail: 'Review the insertion, then save the file if it looks right.' });
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Completion failed', detail: error instanceof Error ? error.message : 'Could not complete code.' });
     } finally {
@@ -555,7 +536,6 @@ export default function WorkspacePage() {
 
       addMessage('assistant', outputs.join('\n\n---\n\n') || 'Done.');
       addEvent({ kind: 'done', message: 'NEXUS Code finished', detail: modes.join(', ') });
-      await loadOsContext();
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Workspace run failed.';
       addEvent({ kind: 'error', message: 'Run failed', detail });
@@ -583,7 +563,6 @@ export default function WorkspacePage() {
       if (sessionId) {
         await hydrateSession(sessionId);
       }
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
     } finally {
@@ -609,7 +588,6 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply file failed', detail: error instanceof Error ? error.message : 'Could not apply selected file.' });
     } finally {
@@ -634,7 +612,6 @@ export default function WorkspacePage() {
         detail: result.output,
       });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Command failed', detail: error instanceof Error ? error.message : 'Could not run command.' });
     } finally {
@@ -655,7 +632,6 @@ export default function WorkspacePage() {
         detail: `${result.files_written?.length || 0} file(s) written. Runtime is ready for safe commands.`,
       });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Runtime sync failed', detail: error instanceof Error ? error.message : 'Could not sync runtime workspace.' });
     } finally {
@@ -678,7 +654,6 @@ export default function WorkspacePage() {
         detail: `${result.summary?.files || 0} file(s), ${result.summary?.total_lines || 0} line(s), ${result.imports?.length || 0} import signal(s).`,
       });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Workspace analysis failed', detail: error instanceof Error ? error.message : 'Could not analyze workspace.' });
     } finally {
@@ -705,7 +680,6 @@ export default function WorkspacePage() {
       ].filter(Boolean).join('\n');
       addEvent({ kind: result.status === 'passed' ? 'done' : 'error', message: `Preview check ${result.status}`, detail });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Preview check failed', detail: error instanceof Error ? error.message : 'Could not check preview.' });
     } finally {
@@ -736,7 +710,6 @@ export default function WorkspacePage() {
         detail: result.command || result.preview_url || 'Preview process started.',
       });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Live preview failed', detail: error instanceof Error ? error.message : 'Could not start live preview.' });
     } finally {
@@ -752,7 +725,6 @@ export default function WorkspacePage() {
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'done', message: 'Live preview stopped', detail: result.command || '' });
       await hydrateSession(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Stop preview failed', detail: error instanceof Error ? error.message : 'Could not stop live preview.' });
     } finally {
@@ -801,7 +773,6 @@ export default function WorkspacePage() {
       });
       addMessage('assistant', `Preview fix prepared. Review the patch in Activity, then approve to apply.\n\n${summarizePreview(preview)}`);
       await hydrateSession(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Fix preview failed', detail: error instanceof Error ? error.message : 'Could not prepare preview fix.' });
     } finally {
@@ -821,7 +792,6 @@ export default function WorkspacePage() {
       });
       addEvent({ kind: 'done', message: 'Repository connected', detail: `${result.repo_url} (${result.default_branch})` });
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Repository connect failed', detail: error instanceof Error ? error.message : 'Could not connect repository.' });
     } finally {
@@ -847,7 +817,6 @@ export default function WorkspacePage() {
       addEvent({ kind: 'done', message: 'GitHub repository imported', detail: `${result.imported?.length || 0} files imported, ${result.skipped || 0} skipped.` });
       await loadFiles();
       await hydrateSession(sid);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
     } finally {
@@ -891,7 +860,6 @@ export default function WorkspacePage() {
         detail: `${result.pull_request_url}\n${result.committed?.length || 0} file(s) committed to ${result.branch_name}.`,
       });
       await hydrateSession(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
     } finally {
@@ -943,7 +911,6 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Rollback failed', detail: error instanceof Error ? error.message : 'Could not rollback changes.' });
     } finally {
@@ -964,7 +931,6 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
-      await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Rollback snapshot failed', detail: error instanceof Error ? error.message : 'Could not restore selected snapshot.' });
     } finally {
@@ -981,6 +947,7 @@ export default function WorkspacePage() {
         onCreateProject={createProject}
         onNewChat={newChat}
         onSearch={focusWorkspaceSearch}
+        onOpenFiles={() => setFilesOpen(true)}
       />
       <header className={styles.topbar}>
         <input
@@ -999,20 +966,6 @@ export default function WorkspacePage() {
         </div>
       </header>
       <div className={styles.layout}>
-        <FileExplorer
-          files={files}
-          selectedIds={selectedFileIds}
-          searchQuery={searchQuery}
-          searchMatches={searchMatches}
-          busy={busy}
-          onRefresh={loadFiles}
-          onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
-          onOpenFile={openWorkspaceFile}
-          onSearchChange={setSearchQuery}
-          onSearch={searchWorkspace}
-          onUpload={uploadFiles}
-          searchFocusKey={searchFocusKey}
-        />
         <EditorPanel
           file={openFile}
           busy={busy}
@@ -1035,7 +988,6 @@ export default function WorkspacePage() {
         <ActivityPanel
           events={events}
           jobs={jobs}
-          osContext={osContext}
           patchPreview={patchPreview}
           commands={commands}
           analysis={analysis}
@@ -1073,6 +1025,33 @@ export default function WorkspacePage() {
           onOpenPr={openPr}
         />
       </div>
+      {filesOpen && (
+        <div className={styles.filesDrawerBackdrop} role="presentation" onMouseDown={() => setFilesOpen(false)}>
+          <div className={styles.filesDrawer} role="dialog" aria-label="Project files" onMouseDown={(event) => event.stopPropagation()}>
+            <div className={styles.drawerHeader}>
+              <span>Project Files</span>
+              <button type="button" onClick={() => setFilesOpen(false)}>Close</button>
+            </div>
+            <FileExplorer
+              files={files}
+              selectedIds={selectedFileIds}
+              searchQuery={searchQuery}
+              searchMatches={searchMatches}
+              busy={busy}
+              onRefresh={loadFiles}
+              onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
+              onOpenFile={(file) => {
+                openWorkspaceFile(file);
+                setFilesOpen(false);
+              }}
+              onSearchChange={setSearchQuery}
+              onSearch={searchWorkspace}
+              onUpload={uploadFiles}
+              searchFocusKey={searchFocusKey}
+            />
+          </div>
+        </div>
+      )}
       <input
         ref={fileInputRef}
         hidden

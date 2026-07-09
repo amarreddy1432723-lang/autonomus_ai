@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Code2, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
+import { Code2, Files, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceRecentItem = {
@@ -16,9 +16,10 @@ type Props = {
   onCreateProject: () => void;
   onNewChat: () => void;
   onSearch: () => void;
+  onOpenFiles: () => void;
 };
 
-export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch }: Props) {
+export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenFiles }: Props) {
   const items = recentItems.length
     ? recentItems
     : [
@@ -64,10 +65,16 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         ))}
       </section>
 
-      <Link className={styles.sidebarSettings} href="/settings">
-        <Settings size={16} />
-        Settings
-      </Link>
+      <div className={styles.sidebarUtilities}>
+        <button className={styles.sidebarSettings} type="button" onClick={onOpenFiles}>
+          <Files size={16} />
+          Project Files
+        </button>
+        <Link className={styles.sidebarSettings} href="/settings">
+          <Settings size={16} />
+          Settings
+        </Link>
+      </div>
     </aside>
   );
 }

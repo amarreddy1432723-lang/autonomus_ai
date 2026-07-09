@@ -143,8 +143,13 @@
   font-style: normal;
 }
 
-.sidebarSettings {
+.sidebarUtilities {
   margin-top: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.sidebarSettings {
   justify-content: flex-start;
   background: #101010;
 }
@@ -191,7 +196,7 @@
   grid-column: 2;
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(260px, 0.9fr) minmax(320px, 1.1fr) 300px;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(380px, 1.15fr) 320px;
 }
 
 .files,
@@ -205,6 +210,53 @@
 
 .files {
   border-right: 1px solid #1e1e1e;
+}
+
+.filesDrawerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.filesDrawer {
+  width: min(380px, 92vw);
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 46px 1fr;
+  border-right: 1px solid #252525;
+  background: #0c0c0f;
+  box-shadow: 24px 0 80px rgba(0, 0, 0, 0.45);
+}
+
+.filesDrawer .files {
+  min-height: 0;
+  border-right: 0;
+}
+
+.drawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1e1e1e;
+  padding: 0 12px;
+  color: #f2f2f2;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.drawerHeader button {
+  border: 1px solid #292929;
+  background: #151515;
+  color: #d8d8d8;
+  border-radius: 7px;
+  cursor: pointer;
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .editor {
@@ -732,14 +784,6 @@
   cursor: not-allowed;
 }
 
-.osContextPanel {
-  border: 1px solid rgba(124, 111, 255, 0.35);
-  background: rgba(124, 111, 255, 0.08);
-  border-radius: 7px;
-  padding: 10px;
-  margin-bottom: 10px;
-}
-
 .analysisPanel {
   border: 1px solid rgba(20, 184, 166, 0.35);
   background: rgba(20, 184, 166, 0.07);
@@ -1116,7 +1160,7 @@
 
 @media (max-width: 1120px) {
   .layout {
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .activity,
@@ -1126,12 +1170,21 @@
 }
 
 @media (max-width: 760px) {
+  .workspace,
   .layout {
     grid-template-columns: 1fr;
   }
 
+  .workspaceSidebar {
+    display: none;
+  }
+
   .files {
     display: none;
+  }
+
+  .filesDrawer .files {
+    display: block;
   }
 
   .search {
