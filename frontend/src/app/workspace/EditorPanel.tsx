@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { Braces, Code2, Save, Wand2 } from 'lucide-react';
+import { Braces, Code2, Save, Wand2, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 import styles from './Workspace.module.css';
 
@@ -19,9 +19,13 @@ export type OpenWorkspaceFile = {
 
 type Props = {
   file: OpenWorkspaceFile | null;
+  tabs: OpenWorkspaceFile[];
+  activeFileId: string;
   busy: boolean;
   onChange: (content: string) => void;
   onSave: () => void;
+  onSelectTab: (fileId: string) => void;
+  onCloseTab: (fileId: string) => void;
   onInlineEdit: (instruction: string, selectedText: string, start: number, end: number) => void;
   onComplete: (cursor: number) => void;
 };
@@ -53,7 +57,7 @@ function monacoLanguage(filename: string) {
   return 'plaintext';
 }
 
-export default function EditorPanel({ file, busy, onChange, onSave, onInlineEdit, onComplete }: Props) {
+export default function EditorPanel({ file, tabs, activeFileId, busy, onChange, onSave, onSelectTab, onCloseTab, onInlineEdit, onComplete }: Props) {
   const editorRef = useRef<any>(null);
   const [editInstruction, setEditInstruction] = useState('');
   const [lineTarget, setLineTarget] = useState('');
@@ -97,6 +101,29 @@ export default function EditorPanel({ file, busy, onChange, onSave, onInlineEdit
         <span className={styles.editorTitle}><Code2 size={15} /> {file ? file.filename : 'Editor'}</span>
         {file && <span className={styles.meta}>{languageLabel(file.filename)}{file.dirty ? ' - unsaved' : ''}</span>}
       </div>
+      {tabs.length > 0 && (
+        <div className={styles.editorTabs}>
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={tab.id === activeFileId ? styles.editorTabActive : styles.editorTab}
+              title={tab.filename}
+            >
+              <button type="button" onClick={() => onSelectTab(tab.id)}>
+                <span>{tab.filename}</span>
+              </button>
+              {tab.dirty && <strong aria-label="Unsaved changes" />}
+              <button
+                type="button"
+                onClick={() => onCloseTab(tab.id)}
+                aria-label={`Close ${tab.filename}`}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {file ? (
         <>
           <div className={styles.editorToolbar}>

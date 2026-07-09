@@ -357,6 +357,92 @@
   white-space: nowrap;
 }
 
+.editorTabs {
+  height: 38px;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0f0f0f;
+  padding: 5px 8px 0;
+}
+
+.editorTab,
+.editorTabActive {
+  max-width: 220px;
+  min-width: 110px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #252525;
+  border-bottom: 0;
+  background: #141414;
+  color: #9b9b9b;
+  border-radius: 7px 7px 0 0;
+  cursor: pointer;
+  padding: 0 7px 0 10px;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.editorTab button,
+.editorTabActive button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.editorTab button:first-child,
+.editorTabActive button:first-child {
+  flex: 1;
+  text-align: left;
+}
+
+.editorTabActive {
+  border-color: rgba(124, 111, 255, 0.55);
+  background: #191919;
+  color: #f4f4f4;
+}
+
+.editorTab button:first-child span,
+.editorTabActive button:first-child span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editorTab strong,
+.editorTabActive strong {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #f59e0b;
+}
+
+.editorTab button:last-child,
+.editorTabActive button:last-child {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  color: #777;
+}
+
+.editorTab button:last-child:hover,
+.editorTabActive button:last-child:hover {
+  background: #242424;
+  color: #fff;
+}
+
 .fileList,
 .activityList,
 .messages {

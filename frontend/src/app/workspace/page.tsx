@@ -84,7 +84,8 @@ export default function WorkspacePage() {
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewLogs, setPreviewLogs] = useState<PreviewLogs | null>(null);
   const [repoUrl, setRepoUrl] = useState('');
-  const [openFile, setOpenFile] = useState<OpenWorkspaceFile | null>(null);
+  const [openTabs, setOpenTabs] = useState<OpenWorkspaceFile[]>([]);
+  const [activeFileId, setActiveFileId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchFocusKey, setSearchFocusKey] = useState(0);
@@ -101,6 +102,11 @@ export default function WorkspacePage() {
   const activeProject = useMemo(
     () => projects.find((project) => project.id === projectId) || null,
     [projectId, projects]
+  );
+
+  const openFile = useMemo(
+    () => openTabs.find((file) => file.id === activeFileId) || openTabs[0] || null,
+    [activeFileId, openTabs]
   );
 
   const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
@@ -133,6 +139,22 @@ export default function WorkspacePage() {
     setMessages((current) => [...current, { id: id(role), role, content }]);
   };
 
+  const updateOpenTab = (fileId: string, updater: (file: OpenWorkspaceFile) => OpenWorkspaceFile) => {
+    setOpenTabs((current) => current.map((file) => file.id === fileId ? updater(file) : file));
+  };
+
+  const closeOpenTab = (fileId: string) => {
+    setOpenTabs((current) => {
+      const index = current.findIndex((file) => file.id === fileId);
+      const next = current.filter((file) => file.id !== fileId);
+      if (activeFileId === fileId) {
+        const fallback = next[Math.max(0, index - 1)] || next[0];
+        setActiveFileId(fallback?.id || '');
+      }
+      return next;
+    });
+  };
+
   const focusWorkspaceSearch = () => {
     setFilesOpen(true);
     setSearchFocusKey((current) => current + 1);
@@ -151,7 +173,8 @@ export default function WorkspacePage() {
     setRollbackSnapshots([]);
     setPatchPreview([]);
     setPatchReady(false);
-    setOpenFile(null);
+    setOpenTabs([]);
+    setActiveFileId('');
     setSearchMatches([]);
   };
 
@@ -415,7 +438,12 @@ export default function WorkspacePage() {
     setBusy(true);
     try {
       const data = await apiRequest(`/api/v1/files/${file.id}/content`);
-      setOpenFile({ id: data.id, filename: data.filename, content: data.content || '', dirty: false });
+      const nextFile = { id: data.id, filename: data.filename, content: data.content || '', dirty: false };
+      setOpenTabs((current) => {
+        const exists = current.some((item) => item.id === nextFile.id);
+        return exists ? current.map((item) => item.id === nextFile.id ? { ...nextFile, dirty: item.dirty, content: item.dirty ? item.content : nextFile.content } : item) : [...current, nextFile];
+      });
+      setActiveFileId(nextFile.id);
       addEvent({ kind: 'read', message: `Opened ${data.filename}`, detail: 'Loaded into the inline editor.' });
     } catch (error) {
       addEvent({ kind: 'error', message: 'Open file failed', detail: error instanceof Error ? error.message : 'Could not open file.' });
@@ -449,7 +477,7 @@ export default function WorkspacePage() {
         method: 'PUT',
         body: JSON.stringify({ content: openFile.content }),
       });
-      setOpenFile((current) => current ? { ...current, dirty: false } : current);
+      updateOpenTab(openFile.id, (file) => ({ ...file, dirty: false }));
       addEvent({ kind: 'done', message: `Saved ${result.filename}`, detail: `${result.size_bytes} bytes written to workspace storage.` });
       await loadFiles();
       if (sessionId) {
@@ -485,14 +513,11 @@ export default function WorkspacePage() {
         }),
       });
       const replacement = result.replacement || '';
-      setOpenFile((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          content: `${current.content.slice(0, start)}${replacement}${current.content.slice(end)}`,
-          dirty: true,
-        };
-      });
+      updateOpenTab(openFile.id, (file) => ({
+        ...file,
+        content: `${file.content.slice(0, start)}${replacement}${file.content.slice(end)}`,
+        dirty: true,
+      }));
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Inline edit applied to editor', detail: 'Review the replacement, then save the file if it looks right.' });
     } catch (error) {
@@ -521,14 +546,11 @@ export default function WorkspacePage() {
         }),
       });
       const completion = result.completion || '';
-      setOpenFile((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          content: `${current.content.slice(0, cursor)}${completion}${current.content.slice(cursor)}`,
-          dirty: true,
-        };
-      });
+      updateOpenTab(openFile.id, (file) => ({
+        ...file,
+        content: `${file.content.slice(0, cursor)}${completion}${file.content.slice(cursor)}`,
+        dirty: true,
+      }));
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Completion inserted into editor', detail: 'Review the insertion, then save the file if it looks right.' });
     } catch (error) {
@@ -1096,9 +1118,15 @@ export default function WorkspacePage() {
       <div className={styles.layout}>
         <EditorPanel
           file={openFile}
+          tabs={openTabs}
+          activeFileId={activeFileId}
           busy={busy}
-          onChange={(content) => setOpenFile((current) => current ? { ...current, content, dirty: true } : current)}
+          onChange={(content) => {
+            if (openFile) updateOpenTab(openFile.id, (file) => ({ ...file, content, dirty: true }));
+          }}
           onSave={saveOpenFile}
+          onSelectTab={setActiveFileId}
+          onCloseTab={closeOpenTab}
           onInlineEdit={inlineEditSelection}
           onComplete={completeAtCursor}
         />
