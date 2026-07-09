@@ -1336,6 +1336,10 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
     routes: list[dict] = []
     components: list[dict] = []
     hotspots: list[dict] = []
+    symbols: list[dict] = []
+    dependencies: dict[str, list[str]] = {}
+    entrypoints: list[dict] = []
+    risk_files: list[dict] = []
     total_lines = 0
     total_bytes = 0
 
@@ -1346,6 +1350,17 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
     ]
     export_pattern = re.compile(r"^\s*export\s+(?:default\s+)?(?:function|const|class)\s+([A-Za-z0-9_]+)?")
     component_pattern = re.compile(r"(?:function|const)\s+([A-Z][A-Za-z0-9_]*)")
+    function_patterns = [
+        re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)"),
+        re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\("),
+        re.compile(r"^\s*class\s+([A-Za-z_$][\w$]*)"),
+        re.compile(r"^\s*def\s+([A-Za-z_][\w]*)\s*\("),
+        re.compile(r"^\s*class\s+([A-Za-z_][\w]*)\s*[:\(]"),
+    ]
+    entry_names = {
+        "main.py", "app.py", "server.py", "index.js", "index.ts", "index.tsx", "main.tsx", "main.ts",
+        "app.tsx", "page.tsx", "layout.tsx", "package.json", "dockerfile", "Dockerfile",
+    }
 
     for record in files:
         filename = record.filename.replace("\\", "/")
@@ -1359,8 +1374,15 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
             continue
         lines = text.splitlines()
         total_lines += len(lines)
+        file_imports: list[str] = []
+        file_hotspots = 0
+        file_symbols: list[str] = []
 
-        if any(segment in filename for segment in ["/app/", "/pages/", "/routes/"]) or filename.startswith(("app/", "pages/", "routes/")):
+        path_name = Path(filename).name
+        if path_name in entry_names or filename.startswith(("src/main", "src/index", "app/page", "pages/index")):
+            entrypoints.append({"filename": filename, "kind": "entrypoint"})
+
+        if any(segment in filename for segment in ["/app/", "/pages/", "/routes/", "/api/"]) or filename.startswith(("app/", "pages/", "routes/", "api/")):
             if suffix in {".tsx", ".ts", ".jsx", ".js", ".py"}:
                 routes.append({"filename": filename, "kind": "route_or_page"})
 
@@ -1369,7 +1391,9 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
                 for pattern in import_patterns:
                     match = pattern.search(line)
                     if match:
-                        imports.append({"filename": filename, "line": index, "module": match.group(1)[:160]})
+                        module = match.group(1)[:160]
+                        imports.append({"filename": filename, "line": index, "module": module})
+                        file_imports.append(module)
                         break
             if len(exports) < 120:
                 match = export_pattern.search(line)
@@ -1379,9 +1403,30 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
                 match = component_pattern.search(line)
                 if match:
                     components.append({"filename": filename, "line": index, "name": match.group(1)})
+            if len(symbols) < 240:
+                for pattern in function_patterns:
+                    match = pattern.search(line)
+                    if match:
+                        name = match.group(1)
+                        kind = "class" if line.lstrip().startswith("class ") or " class " in line else "function"
+                        symbols.append({"filename": filename, "line": index, "name": name, "kind": kind})
+                        file_symbols.append(name)
+                        break
             lowered = line.lower()
-            if any(marker in lowered for marker in ["todo", "fixme", "hack", "any", "dangerouslysetinnerhtml", "eval("]):
+            if any(marker in lowered for marker in ["todo", "fixme", "hack", "any", "dangerouslysetinnerhtml", "eval(", "innerhtml", "password", "secret", "api_key"]):
                 hotspots.append({"filename": filename, "line": index, "snippet": line.strip()[:220]})
+                file_hotspots += 1
+
+        if file_imports:
+            dependencies[filename] = sorted(set(file_imports))[:40]
+        if file_hotspots or len(lines) > 500:
+            risk_files.append({
+                "filename": filename,
+                "hotspots": file_hotspots,
+                "lines": len(lines),
+                "symbols": file_symbols[:12],
+                "reason": "hotspots" if file_hotspots else "large_file",
+            })
 
     analysis = {
         "summary": {
@@ -1394,14 +1439,18 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
         "exports": exports[:60],
         "routes": routes[:80],
         "components": components[:80],
+        "symbols": symbols[:160],
+        "dependencies": dict(list(dependencies.items())[:120]),
+        "entrypoints": entrypoints[:80],
         "hotspots": hotspots[:80],
+        "risk_files": sorted(risk_files, key=lambda item: (item["hotspots"], item["lines"]), reverse=True)[:40],
         "analyzed_at": _now(),
     }
     metadata = _metadata(session)
     metadata["workspace_analysis"] = analysis
     _set_metadata(session, metadata)
     db.commit()
-    append_activity(db, session, "read", "Workspace analysis complete", f"{len(files)} file(s), {total_lines} line(s), {len(imports)} import signal(s).")
+    append_activity(db, session, "read", "Workspace analysis complete", f"{len(files)} file(s), {total_lines} line(s), {len(imports)} import signal(s), {len(symbols)} symbol(s).")
     return analysis
 
 

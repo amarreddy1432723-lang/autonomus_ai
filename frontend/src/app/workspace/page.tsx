@@ -867,14 +867,14 @@ export default function WorkspacePage() {
     setBusy(true);
     try {
       const sid = await ensureSession();
-      addEvent({ kind: 'read', message: 'Analyzing workspace', detail: 'Indexing imports, routes, components, languages, and hotspots.' });
+      addEvent({ kind: 'read', message: 'Analyzing workspace', detail: 'Indexing imports, symbols, routes, dependencies, entrypoints, and hotspots.' });
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/analyze`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       setAnalysis(result);
       addEvent({
         kind: 'done',
         message: 'Workspace analysis complete',
-        detail: `${result.summary?.files || 0} file(s), ${result.summary?.total_lines || 0} line(s), ${result.imports?.length || 0} import signal(s).`,
+        detail: `${result.summary?.files || 0} file(s), ${result.summary?.total_lines || 0} line(s), ${result.imports?.length || 0} import(s), ${result.symbols?.length || 0} symbol(s).`,
       });
       await hydrateSession(sid);
     } catch (error) {

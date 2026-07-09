@@ -69,9 +69,14 @@ export type WorkspaceAnalysis = {
     languages?: Record<string, number>;
   };
   imports?: Array<{ filename: string; line: number; module: string }>;
+  exports?: Array<{ filename: string; line: number; symbol: string }>;
   routes?: Array<{ filename: string; kind: string }>;
   components?: Array<{ filename: string; line: number; name: string }>;
+  symbols?: Array<{ filename: string; line: number; name: string; kind: string }>;
+  dependencies?: Record<string, string[]>;
+  entrypoints?: Array<{ filename: string; kind: string }>;
   hotspots?: Array<{ filename: string; line: number; snippet: string }>;
+  risk_files?: Array<{ filename: string; hotspots?: number; lines?: number; reason?: string; symbols?: string[] }>;
   analyzed_at?: string;
 };
 
@@ -345,6 +350,7 @@ export default function ActivityPanel({
               <span>{analysis.summary?.total_lines || 0} lines</span>
               <span>{Object.keys(analysis.summary?.languages || {}).length} languages</span>
               <span>{analysis.imports?.length || 0} imports</span>
+              <span>{analysis.symbols?.length || 0} symbols</span>
               <span>{analysis.hotspots?.length || 0} hotspots</span>
             </div>
             {Object.entries(analysis.summary?.languages || {}).slice(0, 6).map(([language, count]) => (
@@ -356,8 +362,27 @@ export default function ActivityPanel({
             {(analysis.routes || []).slice(0, 3).map((route) => (
               <div className={styles.contextMemory} key={route.filename}>Route: {route.filename}</div>
             ))}
+            {(analysis.entrypoints || []).slice(0, 4).map((entry) => (
+              <div className={styles.contextMemory} key={`entry-${entry.filename}`}>Entrypoint: {entry.filename}</div>
+            ))}
             {(analysis.components || []).slice(0, 3).map((component) => (
               <div className={styles.contextMemory} key={`${component.filename}-${component.line}`}>Component: {component.name} in {component.filename}</div>
+            ))}
+            {(analysis.symbols || []).slice(0, 6).map((symbol) => (
+              <div className={styles.contextLine} key={`${symbol.filename}-${symbol.line}-${symbol.name}`}>
+                <strong>{symbol.name}</strong>
+                <span>{symbol.kind} · {symbol.filename}:{symbol.line}</span>
+              </div>
+            ))}
+            {Object.entries(analysis.dependencies || {}).slice(0, 5).map(([filename, deps]) => (
+              <div className={styles.contextMemory} key={`deps-${filename}`}>
+                Depends: {filename} {'->'} {deps.slice(0, 4).join(', ')}
+              </div>
+            ))}
+            {(analysis.risk_files || []).slice(0, 4).map((file) => (
+              <div className={styles.hotspotLine} key={`risk-${file.filename}`}>
+                Risk: {file.filename} · {file.reason} · {file.hotspots || 0} hotspot(s) · {file.lines || 0} lines
+              </div>
             ))}
             {(analysis.hotspots || []).slice(0, 3).map((hotspot) => (
               <div className={styles.hotspotLine} key={`${hotspot.filename}-${hotspot.line}`}>{hotspot.filename}:{hotspot.line} {hotspot.snippet}</div>
