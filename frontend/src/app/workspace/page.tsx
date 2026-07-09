@@ -8,6 +8,7 @@ import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, Pr
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
+import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
 import styles from './Workspace.module.css';
 
 const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
@@ -76,6 +77,7 @@ export default function WorkspacePage() {
   const [openFile, setOpenFile] = useState<OpenWorkspaceFile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
+  const [searchFocusKey, setSearchFocusKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedFileIds = useMemo(
@@ -83,12 +85,59 @@ export default function WorkspacePage() {
     [selected]
   );
 
+  const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
+    const sessionItems = (osContext?.code_sessions || []).slice(0, 3).map((session) => ({
+      id: `session-${session.id}`,
+      label: session.title || 'Code workspace',
+      detail: session.status || 'workspace',
+    }));
+    const jobItems = jobs.slice(0, 2).map((job) => ({
+      id: `job-${job.id}`,
+      label: job.prompt || `${job.mode || 'Agent'} job`,
+      detail: job.status || 'job',
+    }));
+    const fileItems = files.slice(0, 4).map((file) => ({
+      id: `file-${file.id}`,
+      label: file.filename,
+      detail: file.content_type || 'workspace file',
+    }));
+    return [...sessionItems, ...jobItems, ...fileItems].slice(0, 8);
+  }, [files, jobs, osContext?.code_sessions]);
+
   const addEvent = (event: Omit<ActivityEvent, 'id'>) => {
     setEvents((current) => [{ ...event, id: id('evt') }, ...current].slice(0, 80));
   };
 
   const addMessage = (role: WorkspaceMessage['role'], content: string) => {
     setMessages((current) => [...current, { id: id(role), role, content }]);
+  };
+
+  const focusWorkspaceSearch = () => {
+    setSearchFocusKey((current) => current + 1);
+  };
+
+  const createProject = () => {
+    localStorage.removeItem('nexus.code.session_id');
+    setSessionId('');
+    setSelected({});
+    setMessages([]);
+    setEvents([]);
+    setJobs([]);
+    setCommands([]);
+    setAnalysis(null);
+    setRollbackSnapshots([]);
+    setPatchPreview([]);
+    setPatchReady(false);
+    setOpenFile(null);
+    setSearchMatches([]);
+    addEvent({ kind: 'start', message: 'New project ready', detail: 'Import a ZIP, repo files, or source files to begin.' });
+    fileInputRef.current?.click();
+  };
+
+  const newChat = () => {
+    setMessages([]);
+    setPrompt('');
+    addEvent({ kind: 'start', message: 'New chat started', detail: 'Current project files remain in context.' });
   };
 
   const loadFiles = async () => {
@@ -926,12 +975,24 @@ export default function WorkspacePage() {
   return (
     <DesktopOnlyGuard product="NEXUS Code" reason="NEXUS Code is optimized for desktop workspaces with files, editor, terminal-style actions, preview, diffs, jobs, and Git controls.">
       <main className={styles.workspace}>
+      <WorkspaceSidebar
+        recentItems={recentItems}
+        busy={busy}
+        onCreateProject={createProject}
+        onNewChat={newChat}
+        onSearch={focusWorkspaceSearch}
+      />
       <header className={styles.topbar}>
-        <div className={styles.brand}>
-          <span className={styles.logo}>N</span>
-          <span>NEXUS Code</span>
-        </div>
-        <input className={styles.search} placeholder="Search files, commands, agents..." />
+        <input
+          className={styles.search}
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          onFocus={focusWorkspaceSearch}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') searchWorkspace();
+          }}
+          placeholder="Search files, commands, agents..."
+        />
         <div className={styles.topActions}>
           <MoreHorizontal size={18} />
           <UserCircle size={22} />
@@ -950,6 +1011,7 @@ export default function WorkspacePage() {
           onSearchChange={setSearchQuery}
           onSearch={searchWorkspace}
           onUpload={uploadFiles}
+          searchFocusKey={searchFocusKey}
         />
         <EditorPanel
           file={openFile}

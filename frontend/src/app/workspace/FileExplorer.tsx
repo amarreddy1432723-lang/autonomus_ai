@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { FileCode2, FileText, Folder, RefreshCw, Upload } from 'lucide-react';
 import styles from './Workspace.module.css';
 
@@ -29,6 +30,7 @@ type Props = {
   onSearchChange: (value: string) => void;
   onSearch: () => void;
   onUpload: (files: FileList | null) => void;
+  searchFocusKey?: number;
 };
 
 function fileIcon(filename: string) {
@@ -51,11 +53,21 @@ export default function FileExplorer({
   onSearchChange,
   onSearch,
   onUpload,
+  searchFocusKey,
 }: Props) {
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (searchFocusKey) {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+  }, [searchFocusKey]);
+
   return (
     <aside className={styles.files}>
       <div className={styles.panelHeader}>
-        <span>Explorer</span>
+        <span>Project Files</span>
         <button className={styles.iconButton} type="button" onClick={onRefresh} disabled={busy} aria-label="Refresh files">
           <RefreshCw size={14} />
         </button>
@@ -63,6 +75,7 @@ export default function FileExplorer({
       <div className={styles.fileList}>
         <div className={styles.explorerSearch}>
           <input
+            ref={searchInputRef}
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
             onKeyDown={(event) => {
