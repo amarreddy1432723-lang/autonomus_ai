@@ -1525,6 +1525,12 @@ def get_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_use
 
     return serialize_job(get_agent_job(db, user_id, job_id))
 
+@app.post("/api/v1/code/jobs/{job_id}/cancel")
+def cancel_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import cancel_agent_job, serialize_job
+
+    return serialize_job(cancel_agent_job(db, user_id, job_id))
+
 @app.post("/api/v1/code/generate")
 def nexus_code_generate(request: NexusCodeRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .billing import check_entitlement

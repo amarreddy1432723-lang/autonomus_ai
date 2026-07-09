@@ -23,6 +23,7 @@ export type AgentJob = {
   commands_run?: Array<{ command?: string; status?: string; return_code?: number | null } | string>;
   result?: Record<string, any>;
   created_at?: string;
+  started_at?: string;
   completed_at?: string;
 };
 
@@ -102,6 +103,8 @@ type Props = {
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
   onRunChecks: () => void;
+  onRefreshJobs: () => void;
+  onCancelJob: (jobId: string) => void;
   onSyncRuntime: () => void;
   onAnalyzeWorkspace: () => void;
   previewUrl: string;
@@ -199,6 +202,8 @@ export default function ActivityPanel({
   canRunCommand,
   onRunCommand,
   onRunChecks,
+  onRefreshJobs,
+  onCancelJob,
   onSyncRuntime,
   onAnalyzeWorkspace,
   previewUrl,
@@ -478,15 +483,27 @@ export default function ActivityPanel({
 
         {activeTab === 'jobs' && (
           <div className={styles.jobStack}>
-            <div className={styles.meta}>Durable jobs</div>
+            <div className={styles.changesHeader}>
+              <span>Durable Jobs</span>
+              <strong>{jobs.length}</strong>
+            </div>
+            <button className={styles.fullWidthButton} type="button" onClick={onRefreshJobs}>
+              Refresh jobs
+            </button>
             {jobs.length === 0 && <div className={styles.meta}>No durable jobs yet.</div>}
-            {jobs.slice(0, 5).map((job) => (
+            {jobs.slice(0, 8).map((job) => {
+              const running = ['running', 'queued'].includes(job.status);
+              return (
               <details className={styles.jobDetail} key={job.id}>
                 <summary>
                   <span>{job.mode}</span>
-                  <strong>{job.status}</strong>
+                  <strong className={running ? styles.jobStatusRunning : styles.jobStatusDone}>{job.status}</strong>
                 </summary>
                 {job.prompt && <p>{job.prompt}</p>}
+                <div className={styles.jobMetaLine}>
+                  Started: {job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'not started'}
+                  {job.completed_at ? ` - Finished: ${new Date(job.completed_at).toLocaleTimeString()}` : ''}
+                </div>
                 {(job.logs || []).slice(-6).map((log, index) => (
                   <div className={styles.jobLogLine} key={`${job.id}-log-${index}`}>
                     <span>{log.kind}</span>
@@ -504,8 +521,14 @@ export default function ActivityPanel({
                     Commands: {(job.commands_run || []).map((command) => typeof command === 'string' ? command : command.command).filter(Boolean).join(', ')}
                   </div>
                 )}
+                {running && (
+                  <button className={styles.rejectButton} type="button" onClick={() => onCancelJob(job.id)}>
+                    Cancel job
+                  </button>
+                )}
               </details>
-            ))}
+              );
+            })}
           </div>
         )}
 

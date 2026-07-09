@@ -76,6 +76,20 @@ def list_agent_jobs(db: Session, user_id: UUID, code_session_id: UUID | None = N
     return query.order_by(AgentJob.created_at.desc()).limit(limit).all()
 
 
+def cancel_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
+    job = get_agent_job(db, user_id, job_id)
+    if job.status in {"completed", "failed", "cancelled", "blocked", "timeout"}:
+        return job
+    job.status = "cancelled"
+    job.completed_at = _now()
+    logs = list(job.logs or [])
+    logs.append(_log("error", "Job cancelled by user"))
+    job.logs = logs[-300:]
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def append_job_log(db: Session, job: AgentJob | None, kind: str, message: str, detail: str | None = None) -> None:
     if not job:
         return

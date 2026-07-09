@@ -327,6 +327,22 @@ export default function WorkspacePage() {
     }
   };
 
+  const refreshCurrentJobs = async () => {
+    if (!sessionId) return;
+    await refreshJobs(sessionId);
+  };
+
+  const cancelJob = async (jobId: string) => {
+    if (busy) return;
+    try {
+      const job = await apiRequest(`/api/v1/code/jobs/${jobId}/cancel`, { method: 'POST' });
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 20));
+      addEvent({ kind: 'done', message: 'Job cancelled', detail: `${job.mode} - ${job.status}` });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Cancel job failed', detail: error instanceof Error ? error.message : 'Could not cancel job.' });
+    }
+  };
+
   const refreshCommands = async (idValue: string) => {
     if (!idValue) {
       setCommands([]);
@@ -371,6 +387,16 @@ export default function WorkspacePage() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const hasRunningJob = jobs.some((job) => ['running', 'queued'].includes(job.status));
+    if (!hasRunningJob) return;
+    const timer = window.setInterval(() => {
+      void refreshJobs(sessionId);
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [jobs, sessionId]);
 
   const uploadFiles = async (fileList: FileList | null) => {
     if (!fileList?.length) return;
@@ -1174,6 +1200,8 @@ export default function WorkspacePage() {
           onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
           onRunCommand={runCommand}
           onRunChecks={runChecks}
+          onRefreshJobs={refreshCurrentJobs}
+          onCancelJob={cancelJob}
           onSyncRuntime={syncRuntime}
           onAnalyzeWorkspace={analyzeWorkspace}
           onPreviewUrlChange={setPreviewUrl}

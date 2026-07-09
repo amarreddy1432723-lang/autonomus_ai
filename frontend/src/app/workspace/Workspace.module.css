@@ -1334,6 +1334,27 @@
   text-transform: capitalize;
 }
 
+.jobStatusRunning,
+.jobStatusDone {
+  border: 1px solid #2a2a44;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.jobStatusRunning {
+  border-color: rgba(124, 111, 255, 0.55);
+  background: rgba(124, 111, 255, 0.16);
+  color: #c9c7ff;
+}
+
+.jobStatusDone {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.08);
+  color: #86efac;
+}
+
 .jobDetail p {
   color: #a7a7a7;
   font-size: 12px;
