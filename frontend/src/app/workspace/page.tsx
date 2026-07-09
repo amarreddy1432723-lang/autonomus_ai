@@ -507,7 +507,19 @@ export default function WorkspacePage() {
       const sid = await ensureSession();
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/search?q=${encodeURIComponent(query)}`);
       setSearchMatches(result.matches || []);
-      addEvent({ kind: 'read', message: 'Workspace search complete', detail: `${result.matches?.length || 0} match(es) for "${query}".` });
+      const summary = result.summary || {};
+      const breakdown = [
+        summary.symbols ? `${summary.symbols} symbol` : '',
+        summary.files ? `${summary.files} file` : '',
+        summary.dependencies ? `${summary.dependencies} import` : '',
+        summary.routes ? `${summary.routes} route` : '',
+        summary.text ? `${summary.text} text` : '',
+      ].filter(Boolean).join(' · ');
+      addEvent({
+        kind: 'read',
+        message: 'Workspace search complete',
+        detail: `${result.matches?.length || 0} match(es) for "${query}"${breakdown ? ` · ${breakdown}` : ''}.`,
+      });
       await hydrateSession(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Workspace search failed', detail: error instanceof Error ? error.message : 'Could not search files.' });

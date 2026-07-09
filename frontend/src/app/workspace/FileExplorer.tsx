@@ -16,6 +16,9 @@ export type WorkspaceSearchMatch = {
   filename: string;
   line: number;
   snippet: string;
+  kind?: 'file' | 'symbol' | 'dependency' | 'route' | 'text';
+  score?: number;
+  symbol?: string | null;
 };
 
 type Props = {
@@ -39,6 +42,14 @@ function fileIcon(filename: string) {
     return <FileCode2 size={15} />;
   }
   return <FileText size={15} />;
+}
+
+function searchKindLabel(kind?: WorkspaceSearchMatch['kind']) {
+  if (kind === 'symbol') return 'Symbol';
+  if (kind === 'dependency') return 'Import';
+  if (kind === 'route') return 'Route';
+  if (kind === 'file') return 'File';
+  return 'Text';
 }
 
 export default function FileExplorer({
@@ -91,14 +102,18 @@ export default function FileExplorer({
           <div className={styles.searchMatches}>
             {searchMatches.map((match) => (
               <button
-                key={`${match.file_id}-${match.line}-${match.snippet}`}
+                key={`${match.file_id}-${match.line}-${match.kind || 'text'}-${match.symbol || match.snippet}`}
                 type="button"
                 onClick={() => {
                   const file = files.find((item) => item.id === match.file_id);
                   if (file) onOpenFile(file);
                 }}
               >
-                <strong>{match.filename}:{match.line}</strong>
+                <strong>
+                  <span>{searchKindLabel(match.kind)}</span>
+                  {match.filename}:{match.line}
+                </strong>
+                {match.symbol && <em>{match.symbol}</em>}
                 <span>{match.snippet}</span>
               </button>
             ))}

@@ -1305,27 +1305,103 @@ def search_workspace_files(db: Session, user_id: UUID, session: CodeSession, que
     needle = query.strip().lower()
     if not needle:
         return {"query": query, "matches": []}
+    tokens = [token for token in re.findall(r"[a-zA-Z0-9_.$/@-]+", needle) if len(token) > 1]
+    symbol_patterns = [
+        re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)"),
+        re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\("),
+        re.compile(r"^\s*class\s+([A-Za-z_$][\w$]*)"),
+        re.compile(r"^\s*def\s+([A-Za-z_][\w]*)\s*\("),
+        re.compile(r"^\s*class\s+([A-Za-z_][\w]*)\s*[:\(]"),
+    ]
+    import_patterns = [
+        re.compile(r"^\s*import\s+(?:.+?\s+from\s+)?['\"]([^'\"]+)['\"]"),
+        re.compile(r"^\s*from\s+([\w.]+)\s+import\s+"),
+        re.compile(r"require\(['\"]([^'\"]+)['\"]\)"),
+    ]
+
+    def add_match(
+        bucket: list[dict],
+        seen: set[tuple[str, int, str, str]],
+        record: FileReference,
+        line: int,
+        snippet: str,
+        kind: str,
+        score: int,
+        symbol: str | None = None,
+    ) -> None:
+        key = (str(record.id), line, kind, symbol or snippet[:80])
+        if key in seen:
+            return
+        seen.add(key)
+        bucket.append({
+            "file_id": str(record.id),
+            "filename": record.filename,
+            "line": line,
+            "snippet": snippet.strip()[:240],
+            "kind": kind,
+            "score": score,
+            "symbol": symbol,
+        })
+
     matches = []
+    seen: set[tuple[str, int, str, str]] = set()
     for record in code_files(db, user_id, session):
-        if len(matches) >= limit:
-            break
         try:
             text = get_file_text(db, user_id, record.id)
         except Exception:
             continue
+        filename = record.filename.replace("\\", "/")
+        filename_lower = filename.lower()
+        basename = Path(filename_lower).name
+        if needle in filename_lower or any(token in filename_lower for token in tokens):
+            name_score = 95 if needle in basename else 78
+            add_match(matches, seen, record, 1, filename, "file", name_score)
+
         lines = text.splitlines()
         for index, line in enumerate(lines, start=1):
-            if needle in line.lower():
-                matches.append({
-                    "file_id": str(record.id),
-                    "filename": record.filename,
-                    "line": index,
-                    "snippet": line.strip()[:240],
-                })
-                if len(matches) >= limit:
+            lowered = line.lower()
+            stripped = line.strip()
+            symbol_name = None
+            for pattern in symbol_patterns:
+                symbol_match = pattern.search(line)
+                if symbol_match:
+                    symbol_name = symbol_match.group(1)
+                    if needle in symbol_name.lower() or any(token in symbol_name.lower() for token in tokens):
+                        add_match(matches, seen, record, index, stripped, "symbol", 100, symbol_name)
                     break
+            for pattern in import_patterns:
+                import_match = pattern.search(line)
+                if import_match:
+                    dependency = import_match.group(1)
+                    if needle in dependency.lower() or any(token in dependency.lower() for token in tokens):
+                        add_match(matches, seen, record, index, stripped, "dependency", 86, dependency)
+                    break
+            if "/api/" in filename_lower or filename_lower.startswith("api/") or "routes" in filename_lower:
+                if needle in filename_lower or any(token in lowered for token in tokens):
+                    add_match(matches, seen, record, index, stripped or filename, "route", 82)
+            if needle in lowered:
+                score = 72
+                if re.search(r"\b(def|class|function|const|export|import|from)\b", lowered):
+                    score += 8
+                add_match(matches, seen, record, index, stripped, "text", score, symbol_name)
+            elif tokens:
+                token_hits = sum(1 for token in tokens if token in lowered)
+                if token_hits >= max(1, min(2, len(tokens))):
+                    add_match(matches, seen, record, index, stripped, "text", 54 + token_hits * 6, symbol_name)
+    matches.sort(key=lambda item: (-int(item.get("score") or 0), item.get("filename") or "", int(item.get("line") or 0)))
+    matches = matches[:limit]
     append_activity(db, session, "read", "Workspace search complete", f"{len(matches)} match(es) for '{query}'")
-    return {"query": query, "matches": matches}
+    return {
+        "query": query,
+        "matches": matches,
+        "summary": {
+            "files": sum(1 for item in matches if item.get("kind") == "file"),
+            "symbols": sum(1 for item in matches if item.get("kind") == "symbol"),
+            "dependencies": sum(1 for item in matches if item.get("kind") == "dependency"),
+            "routes": sum(1 for item in matches if item.get("kind") == "route"),
+            "text": sum(1 for item in matches if item.get("kind") == "text"),
+        },
+    }
 
 
 def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession) -> dict:
