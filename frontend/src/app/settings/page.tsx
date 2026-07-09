@@ -139,6 +139,33 @@ export default function SettingsPage() {
     }
   };
 
+  const renameCodeProject = async (project: CodeProject) => {
+    const nextName = window.prompt('Project name', project.name)?.trim();
+    if (!nextName || nextName === project.name) return;
+    setCodeProjectsError('');
+    try {
+      await apiRequest(`/api/v1/code/projects/${project.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: nextName }),
+      });
+      await loadCodeProjects();
+    } catch (error) {
+      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to rename project');
+    }
+  };
+
+  const archiveCodeProject = async (project: CodeProject) => {
+    if (!window.confirm(`Archive "${project.name}"?`)) return;
+    setCodeProjectsError('');
+    try {
+      await apiRequest(`/api/v1/code/projects/${project.id}`, { method: 'DELETE' });
+      await loadCodeProjects();
+    } catch (error) {
+      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to archive project');
+    }
+  };
+
+
   const triggerSelfTraining = async () => {
     setIsTrainingInFlight(true);
     setTrainingError('');
@@ -603,6 +630,20 @@ export default function SettingsPage() {
                       <span style={{ color: 'var(--color-text-tertiary)', fontSize: '10px' }}>
                         Last opened: {project.last_opened_at ? new Date(project.last_opened_at).toLocaleString() : 'Not opened yet'}
                       </span>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '2px' }}>
+                        <button
+                          onClick={() => renameCodeProject(project)}
+                          style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: '10px', fontWeight: 800 }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => archiveCodeProject(project)}
+                          style={{ background: 'transparent', border: '1px solid rgba(239, 68, 68, 0.45)', color: '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: '10px', fontWeight: 800 }}
+                        >
+                          Archive
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {!codeProjectsLoading && codeProjects.length === 0 && (

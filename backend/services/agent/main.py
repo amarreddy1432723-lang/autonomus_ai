@@ -142,6 +142,12 @@ class CodeProjectCreate(BaseModel):
     repo_url: str = ""
     file_ids: List[str] = Field(default_factory=list)
 
+class CodeProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    repo_url: Optional[str] = None
+    status: Optional[str] = None
+
 class FileContentUpdate(BaseModel):
     content: str
 
@@ -988,6 +994,29 @@ def get_code_project_endpoint(
 
     project = get_code_project(db, user_id, project_id)
     return serialize_code_project(project, active_session_for_project(db, user_id, project))
+
+@app.patch("/api/v1/code/projects/{project_id}")
+def update_code_project_endpoint(
+    project_id: UUID,
+    request: CodeProjectUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import active_session_for_project, serialize_code_project, update_code_project
+
+    project = update_code_project(db, user_id, project_id, request.name, request.description, request.repo_url, request.status)
+    return serialize_code_project(project, active_session_for_project(db, user_id, project))
+
+@app.delete("/api/v1/code/projects/{project_id}")
+def archive_code_project_endpoint(
+    project_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import update_code_project
+
+    update_code_project(db, user_id, project_id, status="archived")
+    return {"archived": True, "project_id": str(project_id)}
 
 @app.get("/api/v1/code/sessions")
 def list_code_sessions_endpoint(

@@ -177,6 +177,33 @@ def get_code_project(db: Session, user_id: UUID, project_id: UUID) -> CodeProjec
     return project
 
 
+def update_code_project(
+    db: Session,
+    user_id: UUID,
+    project_id: UUID,
+    name: str | None = None,
+    description: str | None = None,
+    repo_url: str | None = None,
+    status: str | None = None,
+) -> CodeProject:
+    project = get_code_project(db, user_id, project_id)
+    if name is not None:
+        project.name = name.strip() or project.name
+    if description is not None:
+        project.description = description.strip() or None
+    if repo_url is not None:
+        project.repo_url = repo_url.strip() or None
+    if status is not None:
+        allowed = {"active", "archived", "deleted"}
+        if status not in allowed:
+            raise HTTPException(status_code=400, detail="Invalid code project status")
+        project.status = status
+    project.last_opened_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
 def active_session_for_project(db: Session, user_id: UUID, project: CodeProject) -> CodeSession | None:
     return (
         db.query(CodeSession)
