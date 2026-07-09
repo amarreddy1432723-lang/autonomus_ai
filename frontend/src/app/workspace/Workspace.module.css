@@ -611,6 +611,59 @@
   margin-bottom: 10px;
 }
 
+.rollbackPanel {
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  background: rgba(234, 179, 8, 0.06);
+  border-radius: 7px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.rollbackItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid rgba(234, 179, 8, 0.18);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.rollbackItem div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.rollbackItem strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff7d6;
+  font-size: 12px;
+}
+
+.rollbackItem span {
+  color: #d3bd6a;
+  font-size: 11px;
+}
+
+.rollbackItem button {
+  min-height: 30px;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  background: rgba(234, 179, 8, 0.12);
+  color: #fde68a;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rollbackItem button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .analysisGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

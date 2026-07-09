@@ -190,6 +190,9 @@ class CodePreparePullRequest(BaseModel):
 class CodePatchSelectionRequest(BaseModel):
     file_ids: List[str] = Field(default_factory=list)
 
+class CodeRollbackRequest(BaseModel):
+    snapshot_id: Optional[str] = None
+
 class AgentJobCreateRequest(BaseModel):
     code_session_id: Optional[UUID] = None
     mode: str = "code"
@@ -1395,14 +1398,27 @@ def apply_code_session_patch(
     return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/rollback")
-def rollback_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def rollback_code_session_patch(
+    session_id: UUID,
+    request: Optional[CodeRollbackRequest] = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
     from .agent_jobs import create_agent_job, serialize_job
-    from .code_workspace import get_code_session, rollback_last_apply
+    from .code_workspace import get_code_session, rollback_snapshot
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "rollback", "Rollback last applied workspace patch", approval_state="approved")
-    result = rollback_last_apply(db, user_id, session, job)
+    prompt = f"Rollback workspace snapshot {request.snapshot_id}" if request and request.snapshot_id else "Rollback last applied workspace patch"
+    job = create_agent_job(db, user_id, session.id, "rollback", prompt, approval_state="approved")
+    result = rollback_snapshot(db, user_id, session, request.snapshot_id if request else None, job)
     return {**result, "job": serialize_job(job)}
+
+@app.get("/api/v1/code/sessions/{session_id}/rollback-snapshots")
+def list_code_session_rollback_snapshots(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, list_rollback_snapshots
+
+    session = get_code_session(db, user_id, session_id)
+    return list_rollback_snapshots(session)
 
 @app.post("/api/v1/code/jobs", status_code=201)
 def create_agent_job_endpoint(request: AgentJobCreateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

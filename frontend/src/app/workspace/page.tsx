@@ -3,7 +3,7 @@
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -62,6 +62,7 @@ export default function WorkspacePage() {
   const [osContext, setOsContext] = useState<OSContext | null>(null);
   const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
   const [analysis, setAnalysis] = useState<WorkspaceAnalysis | null>(null);
+  const [rollbackSnapshots, setRollbackSnapshots] = useState<RollbackSnapshot[]>([]);
   const [mode, setMode] = useState<WorkspaceMode>('auto');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -120,6 +121,7 @@ export default function WorkspacePage() {
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
       setJobs(jobData);
       await refreshCommands(session.id);
+      await loadRollbackSnapshots(session.id);
       await loadOsContext();
       if (session.patch_preview?.length) {
         session.patch_preview.forEach((item: any) => {
@@ -142,6 +144,7 @@ export default function WorkspacePage() {
       setSessionId('');
       setPatchPreview([]);
       setAnalysis(null);
+      setRollbackSnapshots([]);
       setCommands([]);
     }
   };
@@ -166,6 +169,19 @@ export default function WorkspacePage() {
       setCommands(data.commands || []);
     } catch {
       setCommands([]);
+    }
+  };
+
+  const loadRollbackSnapshots = async (idValue = sessionId) => {
+    if (!idValue) {
+      setRollbackSnapshots([]);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/rollback-snapshots`);
+      setRollbackSnapshots(data.snapshots || []);
+    } catch {
+      setRollbackSnapshots([]);
     }
   };
 
@@ -299,6 +315,7 @@ export default function WorkspacePage() {
       if (sessionId) {
         await hydrateSession(sessionId);
       }
+      await loadRollbackSnapshots(sessionId);
       await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Save failed', detail: error instanceof Error ? error.message : 'Could not save file.' });
@@ -541,6 +558,7 @@ export default function WorkspacePage() {
       });
       await loadFiles();
       await hydrateSession(sessionId);
+      await loadRollbackSnapshots(sessionId);
       await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply file failed', detail: error instanceof Error ? error.message : 'Could not apply selected file.' });
@@ -874,9 +892,31 @@ export default function WorkspacePage() {
       addEvent({ kind: 'done', message: 'Rolled back last apply', detail: `${result.restored?.length || 0} file(s) restored.` });
       await loadFiles();
       await hydrateSession(sessionId);
+      await loadRollbackSnapshots(sessionId);
       await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Rollback failed', detail: error instanceof Error ? error.message : 'Could not rollback changes.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rollbackSnapshot = async (snapshotId: string) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/rollback`, {
+        method: 'POST',
+        body: JSON.stringify({ snapshot_id: snapshotId }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({ kind: 'done', message: 'Rollback snapshot restored', detail: `${result.restored?.length || 0} file(s) restored.` });
+      await loadFiles();
+      await hydrateSession(sessionId);
+      await loadRollbackSnapshots(sessionId);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Rollback snapshot failed', detail: error instanceof Error ? error.message : 'Could not restore selected snapshot.' });
     } finally {
       setBusy(false);
     }
@@ -935,6 +975,7 @@ export default function WorkspacePage() {
           patchPreview={patchPreview}
           commands={commands}
           analysis={analysis}
+          rollbackSnapshots={rollbackSnapshots}
           hasPatch={patchReady}
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
@@ -950,6 +991,8 @@ export default function WorkspacePage() {
           onApplyFile={applyFileChange}
           onRejectFile={rejectFileChange}
           onRollback={rollbackChanges}
+          onRollbackSnapshot={rollbackSnapshot}
+          onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
           onRunCommand={runCommand}
           onSyncRuntime={syncRuntime}
           onAnalyzeWorkspace={analyzeWorkspace}

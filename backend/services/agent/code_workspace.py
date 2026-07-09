@@ -1362,6 +1362,7 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
     ] if remaining_replacements else []
     metadata["patch_summary"] = payload.get("summary") or ""
     metadata["rollback_snapshots"] = (metadata.get("rollback_snapshots") or [])[-10:] + [{
+        "snapshot_id": uuid.uuid4().hex,
         "applied_at": _now(),
         "files": rollback_snapshots,
         "summary": payload.get("summary") or "",
@@ -1395,7 +1396,27 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
     }
 
 
-def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+def list_rollback_snapshots(session: CodeSession) -> dict:
+    metadata = _metadata(session)
+    snapshots = list(metadata.get("rollback_snapshots") or [])
+    summarized = []
+    for index, snapshot in enumerate(snapshots):
+        files = snapshot.get("files") or []
+        summarized.append({
+            "snapshot_id": snapshot.get("snapshot_id") or f"legacy-{index}",
+            "index": index,
+            "applied_at": snapshot.get("applied_at"),
+            "summary": snapshot.get("summary") or "",
+            "files": [
+                {"file_id": item.get("file_id"), "filename": item.get("filename")}
+                for item in files
+            ],
+            "file_count": len(files),
+        })
+    return {"snapshots": list(reversed(summarized))}
+
+
+def rollback_snapshot(db: Session, user_id: UUID, session: CodeSession, snapshot_id: str | None = None, job=None) -> dict:
     metadata = _metadata(session)
     snapshots = list(metadata.get("rollback_snapshots") or [])
     if not snapshots:
@@ -1403,7 +1424,16 @@ def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=No
         complete_job(db, job, "failed", {"error": "No rollback snapshot available"})
         raise HTTPException(status_code=400, detail="No rollback snapshot available")
 
-    snapshot = snapshots.pop()
+    target_index = len(snapshots) - 1
+    if snapshot_id:
+        for index, item in enumerate(snapshots):
+            if item.get("snapshot_id") == snapshot_id or f"legacy-{index}" == snapshot_id:
+                target_index = index
+                break
+        else:
+            raise HTTPException(status_code=404, detail="Rollback snapshot not found")
+
+    snapshot = snapshots.pop(target_index)
     restored = []
     for item in snapshot.get("files") or []:
         file_id = UUID(str(item.get("file_id")))
@@ -1420,6 +1450,14 @@ def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=No
     session.status = "rolled_back"
     db.commit()
     refresh_file_tree(db, user_id, session)
-    append_activity(db, session, "done", "Rolled back last apply", f"{len(restored)} file(s) restored")
-    complete_job(db, job, "completed", {"restored": restored}, files_touched=restored, approval_state="approved")
-    return {"restored": restored, "status": "rolled_back"}
+    append_activity(db, session, "done", "Rolled back applied patch", f"{len(restored)} file(s) restored")
+    complete_job(db, job, "completed", {"restored": restored, "snapshot": snapshot}, files_touched=restored, approval_state="approved")
+    return {"restored": restored, "status": "rolled_back", "snapshot": {
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "applied_at": snapshot.get("applied_at"),
+        "summary": snapshot.get("summary") or "",
+    }}
+
+
+def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+    return rollback_snapshot(db, user_id, session, None, job)

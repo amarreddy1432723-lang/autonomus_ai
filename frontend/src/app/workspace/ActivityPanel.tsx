@@ -71,6 +71,15 @@ export type WorkspaceAnalysis = {
   analyzed_at?: string;
 };
 
+export type RollbackSnapshot = {
+  snapshot_id: string;
+  index?: number;
+  applied_at?: string;
+  summary?: string;
+  file_count?: number;
+  files?: Array<{ file_id?: string; filename?: string }>;
+};
+
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
@@ -78,6 +87,7 @@ type Props = {
   patchPreview: PatchPreviewItem[];
   commands: WorkspaceCommand[];
   analysis: WorkspaceAnalysis | null;
+  rollbackSnapshots: RollbackSnapshot[];
   hasPatch: boolean;
   canApply: boolean;
   onApply: () => void;
@@ -85,6 +95,8 @@ type Props = {
   onApplyFile: (fileId: string) => void;
   onRejectFile: (fileId: string) => void;
   onRollback: () => void;
+  onRollbackSnapshot: (snapshotId: string) => void;
+  onLoadRollbackSnapshots: () => void;
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
   onSyncRuntime: () => void;
@@ -149,6 +161,7 @@ export default function ActivityPanel({
   patchPreview,
   commands: workspaceCommands,
   analysis,
+  rollbackSnapshots,
   hasPatch,
   canApply,
   onApply,
@@ -156,6 +169,8 @@ export default function ActivityPanel({
   onApplyFile,
   onRejectFile,
   onRollback,
+  onRollbackSnapshot,
+  onLoadRollbackSnapshots,
   canRunCommand,
   onRunCommand,
   onSyncRuntime,
@@ -261,6 +276,27 @@ export default function ActivityPanel({
             ))}
           </div>
         )}
+        <div className={styles.rollbackPanel}>
+          <div className={styles.changesHeader}>
+            <span>Rollback History</span>
+            <strong>{rollbackSnapshots.length}</strong>
+          </div>
+          <button className={styles.fullWidthButton} type="button" onClick={onLoadRollbackSnapshots} disabled={!canRunCommand}>
+            Refresh rollback history
+          </button>
+          {rollbackSnapshots.slice(0, 5).map((snapshot) => (
+            <div className={styles.rollbackItem} key={snapshot.snapshot_id}>
+              <div>
+                <strong>{snapshot.summary || 'Applied patch'}</strong>
+                <span>{snapshot.file_count || snapshot.files?.length || 0} file(s) {snapshot.applied_at ? `- ${new Date(snapshot.applied_at).toLocaleString()}` : ''}</span>
+              </div>
+              <button type="button" onClick={() => onRollbackSnapshot(snapshot.snapshot_id)} disabled={!canRunCommand}>
+                Restore
+              </button>
+            </div>
+          ))}
+          {rollbackSnapshots.length === 0 && <div className={styles.meta}>No applied patch snapshots yet.</div>}
+        </div>
         <div className={styles.previewPanel}>
           <div className={styles.meta}>Preview</div>
           <div className={styles.previewInputRow}>
