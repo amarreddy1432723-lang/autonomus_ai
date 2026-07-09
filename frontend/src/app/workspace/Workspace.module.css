@@ -289,6 +289,50 @@
   font-weight: 800;
 }
 
+.activityTabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  border-bottom: 1px solid #1e1e1e;
+  background: #0f0f0f;
+  padding: 8px 10px;
+}
+
+.activityTab,
+.activityTabActive {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #262626;
+  background: #141414;
+  color: #9a9a9a;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.activityTabActive {
+  border-color: rgba(124, 111, 255, 0.65);
+  background: rgba(124, 111, 255, 0.16);
+  color: #fff;
+}
+
+.activityTab strong,
+.activityTabActive strong {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(124, 111, 255, 0.22);
+  color: #fff;
+  font-size: 10px;
+}
+
 .editorTitle {
   min-width: 0;
   display: inline-flex;
@@ -369,7 +413,7 @@
 }
 
 .activityList {
-  height: calc(100vh - 52px - 46px - 92px);
+  height: calc(100vh - 52px - 46px - 47px);
   padding: 10px;
 }
 
@@ -784,6 +828,12 @@
   cursor: not-allowed;
 }
 
+.tabActionStack {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .analysisPanel {
   border: 1px solid rgba(20, 184, 166, 0.35);
   background: rgba(20, 184, 166, 0.07);
@@ -1055,6 +1105,12 @@
   margin-top: 8px;
   padding-top: 8px;
   font-size: 11px;
+}
+
+.eventStack {
+  border-top: 1px solid #1e1e1e;
+  margin-top: 12px;
+  padding-top: 10px;
 }
 
 .activityTitle {

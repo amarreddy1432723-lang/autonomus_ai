@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Check, CircleDot, Eye, FileCode2, FilePenLine, Rocket, Search, Sparkles, X } from 'lucide-react';
 import styles from './Workspace.module.css';
 
@@ -144,6 +145,17 @@ const commands: WorkspaceCommand[] = [
   { label: 'Typecheck', command: 'npm run typecheck' },
 ];
 
+type ActivityTab = 'changes' | 'jobs' | 'preview' | 'git' | 'checks' | 'rollback';
+
+const tabs: Array<{ id: ActivityTab; label: string }> = [
+  { id: 'changes', label: 'Changes' },
+  { id: 'jobs', label: 'Jobs' },
+  { id: 'preview', label: 'Preview' },
+  { id: 'git', label: 'Git' },
+  { id: 'checks', label: 'Checks' },
+  { id: 'rollback', label: 'Rollback' },
+];
+
 export default function ActivityPanel({
   events,
   jobs,
@@ -183,20 +195,38 @@ export default function ActivityPanel({
   onOpenPr,
   canUseGit,
 }: Props) {
+  const [activeTab, setActiveTab] = useState<ActivityTab>('changes');
   const commandButtons = workspaceCommands.length ? workspaceCommands : commands;
+
   return (
     <aside className={styles.activity}>
       <div className={styles.panelHeader}>
         <span>Activity / Changes</span>
         <Eye size={15} />
       </div>
+      <div className={styles.activityTabs}>
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            className={activeTab === tab.id ? styles.activityTabActive : styles.activityTab}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+            {tab.id === 'changes' && patchPreview.length > 0 && <strong>{patchPreview.length}</strong>}
+            {tab.id === 'jobs' && jobs.length > 0 && <strong>{jobs.length}</strong>}
+            {tab.id === 'rollback' && rollbackSnapshots.length > 0 && <strong>{rollbackSnapshots.length}</strong>}
+          </button>
+        ))}
+      </div>
       <div className={styles.activityList}>
-        {patchPreview.length > 0 && (
+        {activeTab === 'changes' && (
           <div className={styles.changesPanel}>
             <div className={styles.changesHeader}>
               <span>Pending Changes</span>
               <strong>{patchPreview.length}</strong>
             </div>
+            {patchPreview.length === 0 && <div className={styles.meta}>No pending changes. Ask NEXUS to edit code, then review diffs here.</div>}
             {patchPreview.map((item) => (
               <details className={styles.changeItem} key={item.file_id}>
                 <summary>
@@ -214,14 +244,39 @@ export default function ActivityPanel({
                 </div>
               </details>
             ))}
+            <div className={styles.tabActionStack}>
+              <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply}>
+                <Check size={15} /> Approve all changes
+              </button>
+              <button className={styles.rejectButton} type="button" onClick={onReject} disabled={!hasPatch}>
+                <X size={15} /> Reject changes
+              </button>
+            </div>
           </div>
         )}
-        {analysis && (
+
+        {activeTab === 'checks' && (
           <div className={styles.analysisPanel}>
             <div className={styles.changesHeader}>
               <span>Workspace Map</span>
-              <strong>{analysis.summary?.files || 0}</strong>
+              <strong>{analysis?.summary?.files || 0}</strong>
             </div>
+            <button className={styles.fullWidthButton} type="button" onClick={onAnalyzeWorkspace} disabled={!canRunCommand}>
+              Analyze Workspace
+            </button>
+            <button className={styles.fullWidthButton} type="button" onClick={onSyncRuntime} disabled={!canRunCommand}>
+              Sync Runtime
+            </button>
+            <div className={styles.commandGrid}>
+              {commandButtons.map((item) => (
+                <button key={item.command} className={styles.commandButton} type="button" title={item.script || item.source || item.command} onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {!analysis && <div className={styles.meta}>Run analysis or checks to map the current workspace.</div>}
+            {analysis && (
+              <>
             <div className={styles.analysisGrid}>
               <span>{analysis.summary?.total_lines || 0} lines</span>
               <span>{Object.keys(analysis.summary?.languages || {}).length} languages</span>
@@ -243,9 +298,13 @@ export default function ActivityPanel({
             {(analysis.hotspots || []).slice(0, 3).map((hotspot) => (
               <div className={styles.hotspotLine} key={`${hotspot.filename}-${hotspot.line}`}>{hotspot.filename}:{hotspot.line} {hotspot.snippet}</div>
             ))}
+              </>
+            )}
           </div>
         )}
-        <div className={styles.rollbackPanel}>
+
+        {activeTab === 'rollback' && (
+          <div className={styles.rollbackPanel}>
           <div className={styles.changesHeader}>
             <span>Rollback History</span>
             <strong>{rollbackSnapshots.length}</strong>
@@ -265,8 +324,14 @@ export default function ActivityPanel({
             </div>
           ))}
           {rollbackSnapshots.length === 0 && <div className={styles.meta}>No applied patch snapshots yet.</div>}
+          <button className={styles.rejectButton} type="button" onClick={onRollback} disabled={!canRunCommand}>
+            Rollback last apply
+          </button>
         </div>
-        <div className={styles.previewPanel}>
+        )}
+
+        {activeTab === 'preview' && (
+          <div className={styles.previewPanel}>
           <div className={styles.meta}>Preview</div>
           <div className={styles.previewInputRow}>
             <input
@@ -305,7 +370,10 @@ export default function ActivityPanel({
             <iframe className={styles.previewFrame} src={previewUrl.trim()} title="Workspace preview" sandbox="allow-scripts allow-same-origin allow-forms" />
           )}
         </div>
-        <div className={styles.previewPanel}>
+        )}
+
+        {activeTab === 'git' && (
+          <div className={styles.previewPanel}>
           <div className={styles.meta}>Git / PR</div>
           <div className={styles.previewInputRow}>
             <input
@@ -328,9 +396,12 @@ export default function ActivityPanel({
             Open GitHub PR
           </button>
         </div>
-        {jobs.length > 0 && (
+        )}
+
+        {activeTab === 'jobs' && (
           <div className={styles.jobStack}>
             <div className={styles.meta}>Durable jobs</div>
+            {jobs.length === 0 && <div className={styles.meta}>No durable jobs yet.</div>}
             {jobs.slice(0, 5).map((job) => (
               <details className={styles.jobDetail} key={job.id}>
                 <summary>
@@ -359,45 +430,25 @@ export default function ActivityPanel({
             ))}
           </div>
         )}
-        {events.map((event) => (
-          <div className={styles.activityItem} key={event.id}>
-            <div className={styles.activityTitle}>
-              <Icon kind={event.kind} />
-              <span>{event.message}</span>
+
+        <div className={styles.eventStack}>
+          <div className={styles.meta}>Recent activity</div>
+          {events.slice(0, 8).map((event) => (
+            <div className={styles.activityItem} key={event.id}>
+              <div className={styles.activityTitle}>
+                <Icon kind={event.kind} />
+                <span>{event.message}</span>
+              </div>
+              {event.detail && <div className={styles.activityDetail}>{event.detail}</div>}
+              {event.diff && activeTab === 'changes' && <Diff diff={event.diff} />}
             </div>
-            {event.detail && <div className={styles.activityDetail}>{event.detail}</div>}
-            {event.diff && <Diff diff={event.diff} />}
-          </div>
-        ))}
-        {events.length === 0 && (
-          <div className={styles.meta}>
-            Activity appears here as NEXUS reads files, researches, designs, edits, and prepares deployment steps.
-          </div>
-        )}
-      </div>
-      <div className={styles.activityFooter}>
-        <button className={styles.fullWidthButton} type="button" onClick={onAnalyzeWorkspace} disabled={!canRunCommand}>
-          Analyze Workspace
-        </button>
-        <button className={styles.fullWidthButton} type="button" onClick={onSyncRuntime} disabled={!canRunCommand}>
-          Sync Runtime
-        </button>
-        <div className={styles.commandGrid}>
-          {commandButtons.map((item) => (
-            <button key={item.command} className={styles.commandButton} type="button" title={item.script || item.source || item.command} onClick={() => onRunCommand(item.command)} disabled={!canRunCommand}>
-              {item.label}
-            </button>
           ))}
+          {events.length === 0 && (
+            <div className={styles.meta}>
+              Activity appears here as NEXUS reads files, researches, designs, edits, and prepares deployment steps.
+            </div>
+          )}
         </div>
-        <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply}>
-          <Check size={15} /> Approve all changes
-        </button>
-        <button className={styles.rejectButton} type="button" onClick={onReject} disabled={!hasPatch}>
-          <X size={15} /> Reject changes
-        </button>
-        <button className={styles.rejectButton} type="button" onClick={onRollback} disabled={!canRunCommand}>
-          Rollback last apply
-        </button>
       </div>
     </aside>
   );
