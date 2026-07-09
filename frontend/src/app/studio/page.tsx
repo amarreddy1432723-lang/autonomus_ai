@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
 
 export default function StudioPage() {
-  redirect('/workspace');
+  redirect('/workspace?agent=studio');
 }

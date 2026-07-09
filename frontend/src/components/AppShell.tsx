@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { 
-  MessageSquare, CheckSquare,
+  CheckSquare,
   Calendar, ShieldAlert,
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
   LogIn, UserPlus, LogOut, Mic, Sparkles, Lightbulb, PanelLeft, BriefcaseBusiness
@@ -106,7 +106,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
     return [
       { label: 'Workspace', icon: Code2, href: '/workspace' },
-      { label: 'Chat', icon: MessageSquare, href: '/chat' },
       { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
     ];
   }, [activeProduct.label, pendingApprovalCount]);
@@ -114,8 +113,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const currentItem = allNavItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || allNavItems[0];
 
   const commands = useMemo(() => [
-    { id: 'quick-chat', label: 'Ask NEXUS', hint: 'Ctrl+J', action: () => router.push('/chat') },
-    { id: 'quick-code', label: 'Generate code', hint: 'Ctrl+G', action: () => router.push('/workspace') },
+    { id: 'quick-code', label: 'Ask NEXUS Code', hint: 'Ctrl+J', action: () => router.push('/workspace') },
     { id: 'quick-design', label: 'Design in NEXUS Code', hint: 'Ctrl+D', action: () => router.push('/workspace?agent=design') },
     { id: 'quick-deploy', label: 'Deploy from NEXUS Code', hint: 'Ctrl+Shift+D', action: () => router.push('/workspace?agent=deploy') },
     { id: 'quick-research', label: 'Research in NEXUS Code', hint: 'Ctrl+R', action: () => router.push('/workspace?agent=research') },
@@ -126,8 +124,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       hint: index < 9 ? `${index + 1}` : '',
       action: () => router.push(item.href),
     })),
-    { id: 'new-goal', label: 'Create a new goal', hint: '', action: () => router.push('/goals?new=1') },
-    { id: 'chat', label: 'Open chat with AI', hint: 'Ctrl+J', action: () => router.push('/chat') },
     { id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) },
   ], [allNavItems, router, searchQuery, toggleSidebar]);
 
@@ -149,7 +145,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       }
       if (modifier && event.key.toLowerCase() === 'j') {
         event.preventDefault();
-        router.push('/chat');
+        router.push('/workspace');
       }
       if (modifier && event.key.toLowerCase() === 'g') {
         event.preventDefault();

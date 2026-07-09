@@ -2,6 +2,7 @@
 
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
 import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
@@ -923,7 +924,8 @@ export default function WorkspacePage() {
   };
 
   return (
-    <main className={styles.workspace}>
+    <DesktopOnlyGuard product="NEXUS Code" reason="NEXUS Code is optimized for desktop workspaces with files, editor, terminal-style actions, preview, diffs, jobs, and Git controls.">
+      <main className={styles.workspace}>
       <header className={styles.topbar}>
         <div className={styles.brand}>
           <span className={styles.logo}>N</span>
@@ -1017,6 +1019,7 @@ export default function WorkspacePage() {
         accept=".txt,.md,.json,.csv,.py,.js,.ts,.tsx,.html,.css,.pdf,.docx,.xlsx,.zip"
         onChange={(event) => uploadFiles(event.target.files)}
       />
-    </main>
+      </main>
+    </DesktopOnlyGuard>
   );
 }
