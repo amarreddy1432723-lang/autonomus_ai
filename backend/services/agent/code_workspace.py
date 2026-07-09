@@ -1,6 +1,7 @@
 import difflib
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -129,6 +130,7 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
         "plan_text": session.plan_text,
         "patch_text": session.patch_text,
         "patch_preview": metadata.get("patch_preview") or [],
+        "workspace_analysis": metadata.get("workspace_analysis") or None,
         "activity_log": metadata.get("activity_log") or [],
         "file_tree": file_tree or metadata_tree,
         "created_at": session.created_at.isoformat() if session.created_at else None,
@@ -1075,14 +1077,93 @@ def search_workspace_files(db: Session, user_id: UUID, session: CodeSession, que
     return {"query": query, "matches": matches}
 
 
+def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    files = code_files(db, user_id, session)
+    language_counts: dict[str, int] = {}
+    imports: list[dict] = []
+    exports: list[dict] = []
+    routes: list[dict] = []
+    components: list[dict] = []
+    hotspots: list[dict] = []
+    total_lines = 0
+    total_bytes = 0
+
+    import_patterns = [
+        re.compile(r"^\s*import\s+(?:.+?\s+from\s+)?['\"]([^'\"]+)['\"]"),
+        re.compile(r"^\s*from\s+([\w.]+)\s+import\s+"),
+        re.compile(r"require\(['\"]([^'\"]+)['\"]\)"),
+    ]
+    export_pattern = re.compile(r"^\s*export\s+(?:default\s+)?(?:function|const|class)\s+([A-Za-z0-9_]+)?")
+    component_pattern = re.compile(r"(?:function|const)\s+([A-Z][A-Za-z0-9_]*)")
+
+    for record in files:
+        filename = record.filename.replace("\\", "/")
+        suffix = Path(filename).suffix.lower() or Path(filename).name.lower()
+        language = suffix.lstrip(".") or "text"
+        language_counts[language] = language_counts.get(language, 0) + 1
+        total_bytes += int(record.size_bytes or 0)
+        try:
+            text = get_file_text(db, user_id, record.id)
+        except Exception:
+            continue
+        lines = text.splitlines()
+        total_lines += len(lines)
+
+        if any(segment in filename for segment in ["/app/", "/pages/", "/routes/"]) or filename.startswith(("app/", "pages/", "routes/")):
+            if suffix in {".tsx", ".ts", ".jsx", ".js", ".py"}:
+                routes.append({"filename": filename, "kind": "route_or_page"})
+
+        for index, line in enumerate(lines, start=1):
+            if len(imports) < 200:
+                for pattern in import_patterns:
+                    match = pattern.search(line)
+                    if match:
+                        imports.append({"filename": filename, "line": index, "module": match.group(1)[:160]})
+                        break
+            if len(exports) < 120:
+                match = export_pattern.search(line)
+                if match:
+                    exports.append({"filename": filename, "line": index, "symbol": match.group(1) or "default"})
+            if len(components) < 120 and suffix in {".tsx", ".jsx"}:
+                match = component_pattern.search(line)
+                if match:
+                    components.append({"filename": filename, "line": index, "name": match.group(1)})
+            lowered = line.lower()
+            if any(marker in lowered for marker in ["todo", "fixme", "hack", "any", "dangerouslysetinnerhtml", "eval("]):
+                hotspots.append({"filename": filename, "line": index, "snippet": line.strip()[:220]})
+
+    analysis = {
+        "summary": {
+            "files": len(files),
+            "total_lines": total_lines,
+            "total_bytes": total_bytes,
+            "languages": language_counts,
+        },
+        "imports": imports[:80],
+        "exports": exports[:60],
+        "routes": routes[:80],
+        "components": components[:80],
+        "hotspots": hotspots[:80],
+        "analyzed_at": _now(),
+    }
+    metadata = _metadata(session)
+    metadata["workspace_analysis"] = analysis
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "read", "Workspace analysis complete", f"{len(files)} file(s), {total_lines} line(s), {len(imports)} import signal(s).")
+    return analysis
+
+
 def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None) -> str:
     bundle = build_file_bundle(db, user_id, code_files(db, user_id, session))
+    metadata = _metadata(session)
+    analysis = metadata.get("workspace_analysis") or {}
     append_activity(db, session, "code", "Planning code changes", instruction[:180])
     append_job_log(db, job, "code", "Planning code changes", instruction[:180])
     llm = get_chat_llm(role="planning", provider=provider, model=model)
     response = llm.invoke([
         SystemMessage(content="You are Autonomus AI in coding workspace mode. Produce a concise implementation plan grounded in the provided files."),
-        HumanMessage(content=f"Instruction:\n{instruction}\n\nWorkspace files:\n{bundle}"),
+        HumanMessage(content=f"Instruction:\n{instruction}\n\nWorkspace analysis:\n{json.dumps(analysis, indent=2)[:12000]}\n\nWorkspace files:\n{bundle}"),
     ])
     session.plan_text = str(response.content)
     metadata = _metadata(session)

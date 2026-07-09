@@ -3,7 +3,7 @@
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -61,6 +61,7 @@ export default function WorkspacePage() {
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [osContext, setOsContext] = useState<OSContext | null>(null);
   const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
+  const [analysis, setAnalysis] = useState<WorkspaceAnalysis | null>(null);
   const [mode, setMode] = useState<WorkspaceMode>('auto');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -114,6 +115,7 @@ export default function WorkspacePage() {
       setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
       setEvents(normalizeEvents(session.activity_log || []));
       setPatchPreview(session.patch_preview || []);
+      setAnalysis(session.workspace_analysis || null);
       setPatchReady(Boolean(session.patch_preview?.length || session.patch_text));
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
       setJobs(jobData);
@@ -139,6 +141,7 @@ export default function WorkspacePage() {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
       setPatchPreview([]);
+      setAnalysis(null);
       setCommands([]);
     }
   };
@@ -592,6 +595,29 @@ export default function WorkspacePage() {
     }
   };
 
+  const analyzeWorkspace = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'read', message: 'Analyzing workspace', detail: 'Indexing imports, routes, components, languages, and hotspots.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/analyze`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setAnalysis(result);
+      addEvent({
+        kind: 'done',
+        message: 'Workspace analysis complete',
+        detail: `${result.summary?.files || 0} file(s), ${result.summary?.total_lines || 0} line(s), ${result.imports?.length || 0} import signal(s).`,
+      });
+      await hydrateSession(sid);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Workspace analysis failed', detail: error instanceof Error ? error.message : 'Could not analyze workspace.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const checkPreview = async () => {
     const url = previewUrl.trim();
     if (!url || busy) return;
@@ -908,6 +934,7 @@ export default function WorkspacePage() {
           osContext={osContext}
           patchPreview={patchPreview}
           commands={commands}
+          analysis={analysis}
           hasPatch={patchReady}
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
@@ -925,6 +952,7 @@ export default function WorkspacePage() {
           onRollback={rollbackChanges}
           onRunCommand={runCommand}
           onSyncRuntime={syncRuntime}
+          onAnalyzeWorkspace={analyzeWorkspace}
           onPreviewUrlChange={setPreviewUrl}
           onCheckPreview={checkPreview}
           onFixPreview={fixPreviewIssue}

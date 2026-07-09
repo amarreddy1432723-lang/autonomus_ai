@@ -57,12 +57,27 @@ export type PreviewLogs = {
   updated_at?: string;
 };
 
+export type WorkspaceAnalysis = {
+  summary?: {
+    files?: number;
+    total_lines?: number;
+    total_bytes?: number;
+    languages?: Record<string, number>;
+  };
+  imports?: Array<{ filename: string; line: number; module: string }>;
+  routes?: Array<{ filename: string; kind: string }>;
+  components?: Array<{ filename: string; line: number; name: string }>;
+  hotspots?: Array<{ filename: string; line: number; snippet: string }>;
+  analyzed_at?: string;
+};
+
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
   osContext: OSContext | null;
   patchPreview: PatchPreviewItem[];
   commands: WorkspaceCommand[];
+  analysis: WorkspaceAnalysis | null;
   hasPatch: boolean;
   canApply: boolean;
   onApply: () => void;
@@ -73,6 +88,7 @@ type Props = {
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
   onSyncRuntime: () => void;
+  onAnalyzeWorkspace: () => void;
   previewUrl: string;
   onPreviewUrlChange: (value: string) => void;
   onCheckPreview: () => void;
@@ -132,6 +148,7 @@ export default function ActivityPanel({
   osContext,
   patchPreview,
   commands: workspaceCommands,
+  analysis,
   hasPatch,
   canApply,
   onApply,
@@ -142,6 +159,7 @@ export default function ActivityPanel({
   canRunCommand,
   onRunCommand,
   onSyncRuntime,
+  onAnalyzeWorkspace,
   previewUrl,
   onPreviewUrlChange,
   onCheckPreview,
@@ -211,6 +229,35 @@ export default function ActivityPanel({
             ))}
             {(osContext.memories || []).slice(0, 2).map((memory) => (
               <div className={styles.contextMemory} key={memory.id}>{memory.content}</div>
+            ))}
+          </div>
+        )}
+        {analysis && (
+          <div className={styles.analysisPanel}>
+            <div className={styles.changesHeader}>
+              <span>Workspace Map</span>
+              <strong>{analysis.summary?.files || 0}</strong>
+            </div>
+            <div className={styles.analysisGrid}>
+              <span>{analysis.summary?.total_lines || 0} lines</span>
+              <span>{Object.keys(analysis.summary?.languages || {}).length} languages</span>
+              <span>{analysis.imports?.length || 0} imports</span>
+              <span>{analysis.hotspots?.length || 0} hotspots</span>
+            </div>
+            {Object.entries(analysis.summary?.languages || {}).slice(0, 6).map(([language, count]) => (
+              <div className={styles.contextLine} key={language}>
+                <strong>{language}</strong>
+                <span>{count} file(s)</span>
+              </div>
+            ))}
+            {(analysis.routes || []).slice(0, 3).map((route) => (
+              <div className={styles.contextMemory} key={route.filename}>Route: {route.filename}</div>
+            ))}
+            {(analysis.components || []).slice(0, 3).map((component) => (
+              <div className={styles.contextMemory} key={`${component.filename}-${component.line}`}>Component: {component.name} in {component.filename}</div>
+            ))}
+            {(analysis.hotspots || []).slice(0, 3).map((hotspot) => (
+              <div className={styles.hotspotLine} key={`${hotspot.filename}-${hotspot.line}`}>{hotspot.filename}:{hotspot.line} {hotspot.snippet}</div>
             ))}
           </div>
         )}
@@ -324,6 +371,9 @@ export default function ActivityPanel({
         )}
       </div>
       <div className={styles.activityFooter}>
+        <button className={styles.fullWidthButton} type="button" onClick={onAnalyzeWorkspace} disabled={!canRunCommand}>
+          Analyze Workspace
+        </button>
         <button className={styles.fullWidthButton} type="button" onClick={onSyncRuntime} disabled={!canRunCommand}>
           Sync Runtime
         </button>

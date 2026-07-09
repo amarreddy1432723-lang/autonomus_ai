@@ -1011,6 +1011,17 @@ def search_code_session_files(
     session = get_code_session(db, user_id, session_id)
     return search_workspace_files(db, user_id, session, q)
 
+@app.post("/api/v1/code/sessions/{session_id}/analyze")
+def analyze_code_session_workspace(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import analyze_workspace_structure, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "analyze", "Analyze workspace structure and code signals")
+    result = analyze_workspace_structure(db, user_id, session)
+    complete_job(db, job, "completed", result)
+    return {**result, "job": serialize_job(job)}
+
 @app.get("/api/v1/code/sessions/{session_id}/commands")
 def list_code_session_commands(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import discover_workspace_commands, get_code_session
