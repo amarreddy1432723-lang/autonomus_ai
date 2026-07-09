@@ -139,6 +139,17 @@ function Diff({ diff }: { diff: string }) {
   );
 }
 
+function diffStats(diff: string) {
+  return diff.split('\n').reduce(
+    (stats, line) => {
+      if (line.startsWith('+') && !line.startsWith('+++')) stats.additions += 1;
+      if (line.startsWith('-') && !line.startsWith('---')) stats.deletions += 1;
+      return stats;
+    },
+    { additions: 0, deletions: 0 }
+  );
+}
+
 const commands: WorkspaceCommand[] = [
   { label: 'Build', command: 'npm run build' },
   { label: 'Test', command: 'npm test' },
@@ -198,7 +209,10 @@ export default function ActivityPanel({
   canUseGit,
 }: Props) {
   const [activeTab, setActiveTab] = useState<ActivityTab>('changes');
+  const [selectedPatchFileId, setSelectedPatchFileId] = useState('');
   const commandButtons = workspaceCommands.length ? workspaceCommands : commands;
+  const selectedPatch = patchPreview.find((item) => item.file_id === selectedPatchFileId) || patchPreview[0] || null;
+  const selectedStats = selectedPatch ? diffStats(selectedPatch.diff || '') : { additions: 0, deletions: 0 };
 
   return (
     <aside className={styles.activity}>
@@ -229,23 +243,48 @@ export default function ActivityPanel({
               <strong>{patchPreview.length}</strong>
             </div>
             {patchPreview.length === 0 && <div className={styles.meta}>No pending changes. Ask NEXUS to edit code, then review diffs here.</div>}
-            {patchPreview.map((item) => (
-              <details className={styles.changeItem} key={item.file_id}>
-                <summary>
-                  <span><FileCode2 size={14} /> {item.filename}</span>
-                  <em>+{item.additions || 0} / -{item.deletions || 0}</em>
-                </summary>
-                <Diff diff={item.diff} />
-                <div className={styles.changeActions}>
-                  <button type="button" onClick={() => onApplyFile(item.file_id)} disabled={!canApply}>
-                    <Check size={14} /> Apply file
-                  </button>
-                  <button type="button" onClick={() => onRejectFile(item.file_id)} disabled={!hasPatch}>
-                    <X size={14} /> Reject file
-                  </button>
+            {patchPreview.length > 0 && (
+              <>
+                <div className={styles.reviewSummary}>
+                  <span>{patchPreview.reduce((total, item) => total + (item.additions || diffStats(item.diff || '').additions), 0)} added</span>
+                  <span>{patchPreview.reduce((total, item) => total + (item.deletions || diffStats(item.diff || '').deletions), 0)} removed</span>
                 </div>
-              </details>
-            ))}
+                <div className={styles.reviewFileList}>
+                  {patchPreview.map((item) => {
+                    const stats = diffStats(item.diff || '');
+                    const active = selectedPatch?.file_id === item.file_id;
+                    return (
+                      <button
+                        key={item.file_id}
+                        className={active ? styles.reviewFileActive : styles.reviewFile}
+                        type="button"
+                        onClick={() => setSelectedPatchFileId(item.file_id)}
+                      >
+                        <span><FileCode2 size={14} /> {item.filename}</span>
+                        <em>+{item.additions || stats.additions} / -{item.deletions || stats.deletions}</em>
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedPatch && (
+                  <div className={styles.reviewDetail}>
+                    <div className={styles.reviewDetailHeader}>
+                      <span>{selectedPatch.filename}</span>
+                      <em>+{selectedPatch.additions || selectedStats.additions} / -{selectedPatch.deletions || selectedStats.deletions}</em>
+                    </div>
+                    <Diff diff={selectedPatch.diff} />
+                    <div className={styles.changeActions}>
+                      <button type="button" onClick={() => onApplyFile(selectedPatch.file_id)} disabled={!canApply}>
+                        <Check size={14} /> Apply selected
+                      </button>
+                      <button type="button" onClick={() => onRejectFile(selectedPatch.file_id)} disabled={!hasPatch}>
+                        <X size={14} /> Reject selected
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
             <div className={styles.tabActionStack}>
               <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply}>
                 <Check size={15} /> Approve all changes
