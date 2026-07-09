@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { Code2, Files, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
+import { Code2, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceRecentItem = {
   id: string;
   label: string;
   detail?: string;
+  kind?: 'project' | 'job' | 'file';
 };
 
 type Props = {
@@ -16,10 +17,10 @@ type Props = {
   onCreateProject: () => void;
   onNewChat: () => void;
   onSearch: () => void;
-  onOpenFiles: () => void;
+  onOpenRecent: (item: WorkspaceRecentItem) => void;
 };
 
-export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenFiles }: Props) {
+export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent }: Props) {
   const items = recentItems.length
     ? recentItems
     : [
@@ -55,7 +56,7 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
       <section className={styles.sidebarRecent} aria-label="Recent workspace items">
         <div className={styles.sidebarSectionLabel}>Recent</div>
         {items.slice(0, 8).map((item) => (
-          <button className={styles.recentItem} key={item.id} type="button" onClick={onSearch} disabled={item.id.startsWith('empty-')}>
+          <button className={styles.recentItem} key={item.id} type="button" onClick={() => onOpenRecent(item)} disabled={item.id.startsWith('empty-')}>
             <Code2 size={14} />
             <span>
               <strong>{item.label}</strong>
@@ -66,10 +67,6 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
       </section>
 
       <div className={styles.sidebarUtilities}>
-        <button className={styles.sidebarSettings} type="button" onClick={onOpenFiles}>
-          <Files size={16} />
-          Project Files
-        </button>
         <Link className={styles.sidebarSettings} href="/settings">
           <Settings size={16} />
           Settings

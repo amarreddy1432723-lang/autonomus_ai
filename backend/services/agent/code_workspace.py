@@ -21,7 +21,7 @@ from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
-from services.shared.models import AuditLog, CodeSession, FileReference
+from services.shared.models import AuditLog, CodeProject, CodeSession, FileReference
 from .agent_jobs import append_job_log, complete_job
 from .config import settings
 from .file_service import get_file_text, put_object, storage_provider
@@ -124,6 +124,7 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
     metadata_tree = metadata.get("file_tree") or []
     return {
         "id": str(session.id),
+        "project_id": str(session.project_id) if session.project_id else None,
         "title": session.title,
         "file_ids": session.file_ids or [],
         "status": session.status,
@@ -138,6 +139,101 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
     }
 
 
+def serialize_code_project(project: CodeProject, active_session: CodeSession | None = None) -> dict:
+    return {
+        "id": str(project.id),
+        "name": project.name,
+        "description": project.description or "",
+        "repo_url": project.repo_url or "",
+        "default_branch": project.default_branch or "",
+        "status": project.status,
+        "file_ids": project.file_ids or [],
+        "settings": project.settings_json or {},
+        "metadata": project.metadata_json or {},
+        "active_session_id": str(active_session.id) if active_session else None,
+        "last_opened_at": project.last_opened_at.isoformat() if project.last_opened_at else None,
+        "created_at": project.created_at.isoformat() if project.created_at else None,
+        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
+
+
+def list_code_projects(db: Session, user_id: UUID, limit: int = 30) -> list[CodeProject]:
+    return (
+        db.query(CodeProject)
+        .filter(CodeProject.user_id == user_id, CodeProject.status != "deleted")
+        .order_by(CodeProject.last_opened_at.desc().nullslast(), CodeProject.updated_at.desc(), CodeProject.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_code_project(db: Session, user_id: UUID, project_id: UUID) -> CodeProject:
+    project = db.query(CodeProject).filter(CodeProject.id == project_id, CodeProject.user_id == user_id, CodeProject.status != "deleted").first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Code project not found")
+    project.last_opened_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+def active_session_for_project(db: Session, user_id: UUID, project: CodeProject) -> CodeSession | None:
+    return (
+        db.query(CodeSession)
+        .filter(CodeSession.user_id == user_id, CodeSession.project_id == project.id, CodeSession.status == "active")
+        .order_by(CodeSession.updated_at.desc(), CodeSession.created_at.desc())
+        .first()
+    )
+
+
+def create_code_project(
+    db: Session,
+    user_id: UUID,
+    name: str,
+    description: str = "",
+    repo_url: str = "",
+    file_ids: list[str] | None = None,
+) -> tuple[CodeProject, CodeSession]:
+    parsed_ids: list[UUID] = []
+    for value in file_ids or []:
+        try:
+            parsed_ids.append(UUID(str(value)))
+        except ValueError:
+            continue
+    valid_ids = [
+        str(item.id)
+        for item in db.query(FileReference.id).filter(FileReference.user_id == user_id, FileReference.id.in_(parsed_ids)).all()
+    ] if parsed_ids else []
+    now = datetime.now(timezone.utc)
+    project = CodeProject(
+        user_id=user_id,
+        name=name.strip() or "Untitled Code Project",
+        description=description.strip() or None,
+        repo_url=repo_url.strip() or None,
+        file_ids=valid_ids,
+        status="active",
+        settings_json={},
+        metadata_json={"created_from": "nexus_code"},
+        last_opened_at=now,
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    session = create_code_session(db, user_id, f"{project.name} workspace", valid_ids, project_id=project.id)
+    return project, session
+
+
+def update_project_files_from_session(db: Session, session: CodeSession) -> None:
+    if not session.project_id:
+        return
+    project = db.query(CodeProject).filter(CodeProject.id == session.project_id, CodeProject.user_id == session.user_id).first()
+    if not project:
+        return
+    project.file_ids = session.file_ids or []
+    project.last_opened_at = datetime.now(timezone.utc)
+    db.commit()
+
+
 def list_code_sessions(db: Session, user_id: UUID, limit: int = 20) -> list[CodeSession]:
     return (
         db.query(CodeSession)
@@ -148,9 +244,14 @@ def list_code_sessions(db: Session, user_id: UUID, limit: int = 20) -> list[Code
     )
 
 
-def create_code_session(db: Session, user_id: UUID, title: str, file_ids: list[str]) -> CodeSession:
+def create_code_session(db: Session, user_id: UUID, title: str, file_ids: list[str], project_id: UUID | None = None) -> CodeSession:
+    if project_id:
+        project = db.query(CodeProject.id).filter(CodeProject.id == project_id, CodeProject.user_id == user_id, CodeProject.status != "deleted").first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Code project not found")
     session = CodeSession(
         user_id=user_id,
+        project_id=project_id,
         title=title or "Code workspace",
         file_ids=file_ids,
         status="active",
@@ -420,6 +521,7 @@ def import_github_repository(db: Session, user_id: UUID, session: CodeSession, r
     _set_metadata(session, metadata)
     db.commit()
     refresh_file_tree(db, user_id, session)
+    update_project_files_from_session(db, session)
     append_activity(db, session, "read", "GitHub repository imported", f"{len(imported)} file(s) imported from {owner}/{repo}, {skipped} skipped")
     return {"imported": imported, "skipped": skipped, "file_ids": session.file_ids, "git": metadata["git"]}
 
@@ -483,6 +585,7 @@ def import_zip_project(db: Session, user_id: UUID, session: CodeSession, upload,
     session.file_ids = existing + [item["id"] for item in imported]
     db.commit()
     refresh_file_tree(db, user_id, session)
+    update_project_files_from_session(db, session)
     append_activity(db, session, "read", "Project archive imported", f"{len(imported)} file(s) imported, {skipped} skipped")
     return {"imported": imported, "skipped": skipped, "file_ids": session.file_ids}
 
@@ -1032,6 +1135,7 @@ def update_session_files(db: Session, user_id: UUID, session: CodeSession, file_
             continue
     session.file_ids = valid_ids
     refresh_file_tree(db, user_id, session)
+    update_project_files_from_session(db, session)
     append_activity(db, session, "read", "Workspace file tree updated", f"{len(valid_ids)} selected file(s)")
     db.refresh(session)
     return session

@@ -13,6 +13,17 @@ import styles from './Workspace.module.css';
 
 const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
 
+type CodeProject = {
+  id: string;
+  name: string;
+  description?: string;
+  repo_url?: string;
+  status?: string;
+  file_ids?: string[];
+  active_session_id?: string | null;
+  last_opened_at?: string | null;
+};
+
 function id(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -78,6 +89,8 @@ export default function WorkspacePage() {
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [projects, setProjects] = useState<CodeProject[]>([]);
+  const [projectId, setProjectId] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedFileIds = useMemo(
@@ -85,19 +98,32 @@ export default function WorkspacePage() {
     [selected]
   );
 
+  const activeProject = useMemo(
+    () => projects.find((project) => project.id === projectId) || null,
+    [projectId, projects]
+  );
+
   const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
+    const projectItems = projects.slice(0, 5).map((project) => ({
+      id: `project-${project.id}`,
+      label: project.name,
+      detail: project.repo_url || `${project.file_ids?.length || 0} file${project.file_ids?.length === 1 ? '' : 's'}`,
+      kind: 'project' as const,
+    }));
     const jobItems = jobs.slice(0, 4).map((job) => ({
       id: `job-${job.id}`,
       label: job.prompt || `${job.mode || 'Agent'} job`,
       detail: job.status || 'job',
+      kind: 'job' as const,
     }));
     const fileItems = files.slice(0, 4).map((file) => ({
       id: `file-${file.id}`,
       label: file.filename,
       detail: file.content_type || 'workspace file',
+      kind: 'file' as const,
     }));
-    return [...jobItems, ...fileItems].slice(0, 8);
-  }, [files, jobs]);
+    return [...projectItems, ...jobItems, ...fileItems].slice(0, 8);
+  }, [files, jobs, projects]);
 
   const addEvent = (event: Omit<ActivityEvent, 'id'>) => {
     setEvents((current) => [{ ...event, id: id('evt') }, ...current].slice(0, 80));
@@ -112,9 +138,10 @@ export default function WorkspacePage() {
     setSearchFocusKey((current) => current + 1);
   };
 
-  const createProject = () => {
+  const resetWorkspaceForProject = () => {
     localStorage.removeItem('nexus.code.session_id');
     setSessionId('');
+    setProjectId('');
     setSelected({});
     setMessages([]);
     setEvents([]);
@@ -126,8 +153,84 @@ export default function WorkspacePage() {
     setPatchReady(false);
     setOpenFile(null);
     setSearchMatches([]);
-    addEvent({ kind: 'start', message: 'New project ready', detail: 'Import a ZIP, repo files, or source files to begin.' });
-    fileInputRef.current?.click();
+  };
+
+  const createProject = async () => {
+    if (busy) return;
+    const fallbackName = `NEXUS Code Project ${new Date().toLocaleDateString()}`;
+    const name = window.prompt('Project name', fallbackName)?.trim() || fallbackName;
+    setBusy(true);
+    try {
+      resetWorkspaceForProject();
+      const project = await apiRequest('/api/v1/code/projects', {
+        method: 'POST',
+        body: JSON.stringify({ name, file_ids: [] }),
+      });
+      setProjectId(project.id);
+      if (project.session?.id) {
+        setSessionId(project.session.id);
+        localStorage.setItem('nexus.code.session_id', project.session.id);
+      }
+      await loadProjects();
+      addEvent({ kind: 'start', message: 'Code project created', detail: name });
+      setFilesOpen(true);
+      setTimeout(() => fileInputRef.current?.click(), 0);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Create project failed', detail: error instanceof Error ? error.message : 'Could not create project.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadProjects = async () => {
+    try {
+      const data = await apiRequest('/api/v1/code/projects');
+      setProjects(data || []);
+    } catch {
+      setProjects([]);
+    }
+  };
+
+  const openCodeProject = async (idValue: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const project = await apiRequest(`/api/v1/code/projects/${idValue}`);
+      setProjectId(project.id);
+      const fileIds = project.file_ids || [];
+      setSelected(Object.fromEntries(fileIds.map((fileId: string) => [fileId, true])));
+      if (project.active_session_id) {
+        localStorage.setItem('nexus.code.session_id', project.active_session_id);
+        await hydrateSession(project.active_session_id);
+      } else {
+        const session = await apiRequest('/api/v1/code/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ title: `${project.name} workspace`, file_ids: fileIds, project_id: project.id }),
+        });
+        setSessionId(session.id);
+        localStorage.setItem('nexus.code.session_id', session.id);
+        await hydrateSession(session.id);
+      }
+      await loadProjects();
+      addEvent({ kind: 'read', message: `Opened ${project.name}`, detail: `${fileIds.length} project file(s) linked.` });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Open project failed', detail: error instanceof Error ? error.message : 'Could not open project.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openRecent = (item: WorkspaceRecentItem) => {
+    if (item.kind === 'project') {
+      void openCodeProject(item.id.replace(/^project-/, ''));
+      return;
+    }
+    if (item.kind === 'file') {
+      const file = files.find((candidate) => `file-${candidate.id}` === item.id);
+      if (file) void openWorkspaceFile(file);
+      return;
+    }
+    focusWorkspaceSearch();
   };
 
   const newChat = () => {
@@ -150,6 +253,7 @@ export default function WorkspacePage() {
     try {
       const session = await apiRequest(`/api/v1/code/sessions/${idValue}`);
       setSessionId(session.id);
+      setProjectId(session.project_id || '');
       setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
       setEvents(normalizeEvents(session.activity_log || []));
       setPatchPreview(session.patch_preview || []);
@@ -222,6 +326,7 @@ export default function WorkspacePage() {
   };
 
   useEffect(() => {
+    loadProjects();
     loadFiles();
     const savedSessionId = localStorage.getItem('nexus.code.session_id');
     if (savedSessionId) {
@@ -275,6 +380,7 @@ export default function WorkspacePage() {
           body: JSON.stringify({ file_ids: fileIds }),
         });
         await refreshCommands(sessionId);
+        await loadProjects();
       }
       addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
     } catch (error) {
@@ -294,7 +400,7 @@ export default function WorkspacePage() {
     }
     const session = await apiRequest('/api/v1/code/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'NEXUS Code unified workspace', file_ids: selectedFileIds }),
+      body: JSON.stringify({ title: 'NEXUS Code unified workspace', file_ids: selectedFileIds, project_id: projectId || undefined }),
     });
     setSessionId(session.id);
     localStorage.setItem('nexus.code.session_id', session.id);
@@ -947,7 +1053,7 @@ export default function WorkspacePage() {
         onCreateProject={createProject}
         onNewChat={newChat}
         onSearch={focusWorkspaceSearch}
-        onOpenFiles={() => setFilesOpen(true)}
+        onOpenRecent={openRecent}
       />
       <header className={styles.topbar}>
         <input
@@ -961,6 +1067,7 @@ export default function WorkspacePage() {
           placeholder="Search files, commands, agents..."
         />
         <div className={styles.topActions}>
+          <span className={styles.projectBadge}>{activeProject?.name || 'No project'}</span>
           <MoreHorizontal size={18} />
           <UserCircle size={22} />
         </div>

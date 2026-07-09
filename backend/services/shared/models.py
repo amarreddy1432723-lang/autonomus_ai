@@ -39,6 +39,7 @@ class User(Base):
     file_references = relationship("FileReference", back_populates="user", cascade="all, delete-orphan")
     file_chunks = relationship("FileChunk", back_populates="user", cascade="all, delete-orphan")
     usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
+    code_projects = relationship("CodeProject", back_populates="user", cascade="all, delete-orphan")
     code_sessions = relationship("CodeSession", back_populates="user", cascade="all, delete-orphan")
     agent_jobs = relationship("AgentJob", back_populates="user", cascade="all, delete-orphan")
     vault = relationship("UserVault", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -144,6 +145,7 @@ class CodeSession(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="SET NULL"), nullable=True)
     title = Column(String(255), nullable=False)
     file_ids = Column(JSON, default=list)
     status = Column(String(50), default="active")
@@ -155,6 +157,27 @@ class CodeSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="code_sessions")
+    project = relationship("CodeProject", back_populates="sessions")
+
+class CodeProject(Base):
+    __tablename__ = "code_projects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    repo_url = Column(Text, nullable=True)
+    default_branch = Column(String(255), nullable=True)
+    status = Column(String(50), default="active")
+    file_ids = Column(JSON, default=list)
+    settings_json = Column(JSON, default=dict)
+    metadata_json = Column(JSON, default=dict)
+    last_opened_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="code_projects")
+    sessions = relationship("CodeSession", back_populates="project")
 
 class AgentJob(Base):
     __tablename__ = "agent_jobs"
@@ -559,6 +582,9 @@ UsageEvent.__table__.append_constraint(CheckConstraint("total_tokens >= 0", name
 Index("idx_usage_user_created", UsageEvent.user_id, UsageEvent.created_at)
 Index("idx_usage_user_session", UsageEvent.user_id, UsageEvent.session_id)
 Index("idx_code_sessions_user_status", CodeSession.user_id, CodeSession.status)
+Index("idx_code_sessions_project_updated", CodeSession.project_id, CodeSession.updated_at)
+Index("idx_code_projects_user_status", CodeProject.user_id, CodeProject.status)
+Index("idx_code_projects_user_opened", CodeProject.user_id, CodeProject.last_opened_at)
 Index("idx_agent_jobs_user_created", AgentJob.user_id, AgentJob.created_at)
 Index("idx_agent_jobs_session_created", AgentJob.code_session_id, AgentJob.created_at)
 Index("idx_agent_jobs_user_status", AgentJob.user_id, AgentJob.status)

@@ -134,6 +134,13 @@ class InterviewPlanRequest(BaseModel):
 class CodeSessionCreate(BaseModel):
     title: str = "Code workspace"
     file_ids: List[str] = Field(default_factory=list)
+    project_id: Optional[UUID] = None
+
+class CodeProjectCreate(BaseModel):
+    name: str = "Untitled Code Project"
+    description: str = ""
+    repo_url: str = ""
+    file_ids: List[str] = Field(default_factory=list)
 
 class FileContentUpdate(BaseModel):
     content: str
@@ -947,8 +954,40 @@ def create_code_session_endpoint(
 ):
     from .code_workspace import create_code_session, serialize_code_session
 
-    session = create_code_session(db, user_id, request.title, request.file_ids)
+    session = create_code_session(db, user_id, request.title, request.file_ids, project_id=request.project_id)
     return serialize_code_session(db, user_id, session)
+
+@app.get("/api/v1/code/projects")
+def list_code_projects_endpoint(
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import active_session_for_project, list_code_projects, serialize_code_project
+
+    projects = list_code_projects(db, user_id)
+    return [serialize_code_project(project, active_session_for_project(db, user_id, project)) for project in projects]
+
+@app.post("/api/v1/code/projects", status_code=201)
+def create_code_project_endpoint(
+    request: CodeProjectCreate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import create_code_project, serialize_code_project
+
+    project, session = create_code_project(db, user_id, request.name, request.description, request.repo_url, request.file_ids)
+    return {**serialize_code_project(project, session), "session": {"id": str(session.id), "title": session.title}}
+
+@app.get("/api/v1/code/projects/{project_id}")
+def get_code_project_endpoint(
+    project_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import active_session_for_project, get_code_project, serialize_code_project
+
+    project = get_code_project(db, user_id, project_id)
+    return serialize_code_project(project, active_session_for_project(db, user_id, project))
 
 @app.get("/api/v1/code/sessions")
 def list_code_sessions_endpoint(
