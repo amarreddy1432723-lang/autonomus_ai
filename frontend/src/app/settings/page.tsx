@@ -1,8 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
-import { AlertTriangle, Bell, CheckCircle2, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, Code2, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
 import { deriveVaultKey, generateSaltHex, getVaultKey, setVaultKey, clearVaultKey } from '../../utils/vault';
 
@@ -55,6 +56,17 @@ type BillingSummary = {
   plans: Record<string, any>;
 };
 
+type CodeProject = {
+  id: string;
+  name: string;
+  description?: string;
+  repo_url?: string;
+  status?: string;
+  file_ids?: string[];
+  active_session_id?: string | null;
+  last_opened_at?: string | null;
+};
+
 const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
   { value: 'observer', label: 'Observer' },
   { value: 'assistant', label: 'Assistant' },
@@ -63,7 +75,7 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault'>('autonomy');
+  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code'>('autonomy');
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -77,6 +89,9 @@ export default function SettingsPage() {
   const [trainingError, setTrainingError] = useState('');
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [billingMessage, setBillingMessage] = useState('');
+  const [codeProjects, setCodeProjects] = useState<CodeProject[]>([]);
+  const [codeProjectsLoading, setCodeProjectsLoading] = useState(false);
+  const [codeProjectsError, setCodeProjectsError] = useState('');
 
   const loadAutonomyStatus = async () => {
     setLoadingAutonomy(true);
@@ -111,6 +126,19 @@ export default function SettingsPage() {
     }
   };
 
+  const loadCodeProjects = async () => {
+    setCodeProjectsLoading(true);
+    setCodeProjectsError('');
+    try {
+      const data = await apiRequest('/api/v1/code/projects');
+      setCodeProjects(data || []);
+    } catch (error) {
+      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to load NEXUS Code projects');
+    } finally {
+      setCodeProjectsLoading(false);
+    }
+  };
+
   const triggerSelfTraining = async () => {
     setIsTrainingInFlight(true);
     setTrainingError('');
@@ -129,6 +157,7 @@ export default function SettingsPage() {
     loadAutonomyStatus();
     loadTrainingData();
     loadBillingSummary();
+    loadCodeProjects();
   }, []);
 
   const startCheckout = async (plan: string) => {
@@ -219,6 +248,9 @@ export default function SettingsPage() {
             </button>
             <button style={tabButtonStyle('training')} onClick={() => setActiveTab('training')}>
               <RefreshCw size={14} /> Model Self-Training
+            </button>
+            <button style={tabButtonStyle('code')} onClick={() => setActiveTab('code')}>
+              <Code2 size={14} /> NEXUS Code
             </button>
             <button style={tabButtonStyle('vault')} onClick={() => setActiveTab('vault')}>
               <Shield size={14} /> Privacy Vault
@@ -523,6 +555,65 @@ export default function SettingsPage() {
               <VaultSection />
             )}
 
+            {activeTab === 'code' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div>
+                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 800 }}>NEXUS Code Projects</h2>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                      Manage workspace project records separately from PA and Interview. Files stay attached only to Code projects.
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <button
+                      onClick={loadCodeProjects}
+                      disabled={codeProjectsLoading}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+                    >
+                      <RefreshCw size={14} /> Refresh
+                    </button>
+                    <Link
+                      href="/workspace"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-primary)', color: 'white', padding: '8px 12px', borderRadius: 'var(--radius-sm)', textDecoration: 'none', fontSize: 'var(--text-xs)', fontWeight: 800 }}
+                    >
+                      <Code2 size={14} /> Open Workspace
+                    </Link>
+                  </div>
+                </div>
+
+                {codeProjectsError && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: '#ef4444' }}>
+                    <AlertTriangle size={14} /> {codeProjectsError}
+                  </span>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
+                  {codeProjects.map((project) => (
+                    <div key={project.id} style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                        <strong style={{ fontSize: 'var(--text-sm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.name}</strong>
+                        <span style={{ color: project.status === 'active' ? 'var(--color-success)' : 'var(--color-text-secondary)', fontSize: '10px', fontWeight: 800, textTransform: 'uppercase' }}>{project.status || 'active'}</span>
+                      </div>
+                      <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                        {(project.file_ids || []).length} Code file{(project.file_ids || []).length === 1 ? '' : 's'} attached
+                      </span>
+                      {project.repo_url && (
+                        <span style={{ color: 'var(--color-text-tertiary)', fontSize: '10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project.repo_url}</span>
+                      )}
+                      <span style={{ color: 'var(--color-text-tertiary)', fontSize: '10px' }}>
+                        Last opened: {project.last_opened_at ? new Date(project.last_opened_at).toLocaleString() : 'Not opened yet'}
+                      </span>
+                    </div>
+                  ))}
+                  {!codeProjectsLoading && codeProjects.length === 0 && (
+                    <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                      No NEXUS Code projects yet. Open the workspace and create your first project.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* INTEGRATIONS SYNC */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
               <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>Connected Developer Tools</h2>
@@ -770,4 +861,3 @@ function VaultSection() {
     </div>
   );
 }
-
