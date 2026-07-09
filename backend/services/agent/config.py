@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     VAULT_KEY_DERIVATION: str = os.getenv("VAULT_KEY_DERIVATION", "pbkdf2")  # pbkdf2 | argon2
     VAULT_PBKDF2_ITERATIONS: int = int(os.getenv("VAULT_PBKDF2_ITERATIONS", "600000"))
 
+    # ── Sandbox Runtime ──────────────────────────────────────
+    SANDBOX_PROVIDER: str = os.getenv("SANDBOX_PROVIDER", "local")
+    SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim")
+    E2B_API_KEY: Optional[str] = os.getenv("E2B_API_KEY")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -45,15 +45,18 @@ def create_agent_job(
     mode: str,
     prompt: str,
     approval_state: str = "none",
+    status: str = "running",
+    metadata_json: dict | None = None,
 ) -> AgentJob:
     job = AgentJob(
         user_id=user_id,
         code_session_id=code_session_id,
         mode=mode or "code",
         prompt=prompt,
-        status="running",
+        status=status,
         approval_state=approval_state,
-        started_at=_now(),
+        started_at=_now() if status == "running" else None,
+        metadata_json=metadata_json or {},
         logs=[_log("start", f"{(mode or 'code').title()} job started", prompt[:220])],
     )
     db.add(job)
@@ -119,8 +122,8 @@ def reset_background_job_for_retry(db: Session, user_id: UUID, job_id: UUID) -> 
         raise HTTPException(status_code=400, detail="Only background Code jobs can be retried.")
     if job.status in {"running", "queued"}:
         raise HTTPException(status_code=409, detail="Job is already running.")
-    job.status = "running"
-    job.started_at = _now()
+    job.status = "queued"
+    job.started_at = None
     job.completed_at = None
     job.result = {}
     job.files_touched = []

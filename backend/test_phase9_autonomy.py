@@ -135,6 +135,7 @@ def test_chat_stream_does_not_expose_internal_intent_classifier():
     client = TestClient(agent_app)
     response = client.post(
         "/api/v1/agents/chat",
+        headers={"x-user-id": str(USER_ID)},
         json={
             "user_id": str(USER_ID),
             "session_id": "phase9-chat-stream",

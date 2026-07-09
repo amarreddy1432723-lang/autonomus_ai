@@ -15,6 +15,9 @@ TEST_EMAIL = "phase7-test@example.com"
 
 @pytest.fixture()
 def db():
+    from services.shared.database import engine
+    from services.shared.models import Base
+    Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     verify_default_user(session)
     session.query(Goal).filter(Goal.user_id == USER_ID, Goal.title.like("Phase7 test%")).delete()

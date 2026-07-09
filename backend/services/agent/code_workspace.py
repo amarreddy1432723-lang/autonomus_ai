@@ -346,6 +346,12 @@ def _workspace_runtime_root(session: CodeSession) -> Path:
     return root
 
 
+def get_session_sandbox(session: CodeSession):
+    from .sandbox import get_sandbox
+    root = _workspace_runtime_root(session)
+    return get_sandbox(str(session.id), root, settings)
+
+
 def _remove_managed_paths(root: Path, paths: list[str]) -> None:
     for path in paths:
         if not path:
@@ -715,10 +721,25 @@ def _detect_preview_command(db: Session, user_id: UUID, session: CodeSession) ->
 def preview_status(session: CodeSession) -> dict:
     metadata = _metadata(session)
     preview = metadata.get("preview_runtime") or {}
-    process = PREVIEW_PROCESSES.get(str(session.id))
-    running = bool(process and process.poll() is None)
+    provider = settings.SANDBOX_PROVIDER.lower()
+    
+    if provider == "local":
+        process = PREVIEW_PROCESSES.get(str(session.id))
+        running = bool(process and process.poll() is None)
+        status = "running" if running else "stopped"
+    elif provider == "docker":
+        container_name = f"nexus-sandbox-{session.id}"
+        try:
+            res = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", container_name], capture_output=True, text=True)
+            running = res.stdout.strip() == "true" and preview.get("port") is not None
+            status = "running" if running else "stopped"
+        except Exception:
+            status = "stopped"
+    else:
+        status = preview.get("status", "stopped")
+
     return {
-        "status": "running" if running else "stopped",
+        "status": status,
         "preview_url": preview.get("preview_url"),
         "local_url": preview.get("local_url"),
         "command": preview.get("command"),
@@ -773,55 +794,65 @@ def read_preview_logs(session: CodeSession, max_chars: int = 12000) -> dict:
 
 
 def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
-    existing = PREVIEW_PROCESSES.get(str(session.id))
-    if existing and existing.poll() is None:
-        return preview_status(session)
-
-    runtime = sync_workspace_runtime(db, user_id, session)
-    root = Path(runtime["root"])
+    provider = settings.SANDBOX_PROVIDER.lower()
     preview_command = _detect_preview_command(db, user_id, session)
     port = _workspace_preview_port(session)
     token = uuid.uuid4().hex
-    log_dir = root / ".nexus"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "preview.log"
-    env = {
-        **os.environ,
-        "PORT": str(port),
-        "HOST": "127.0.0.1",
-        "HOSTNAME": "127.0.0.1",
-        "BROWSER": "none",
-    }
-    parts = _command_parts(preview_command["command"])
+    
     append_activity(db, session, "deploy", "Starting workspace preview", preview_command["command"])
     append_job_log(db, job, "deploy", "Starting workspace preview", f"{preview_command['command']} on port {port}")
-    log_file = log_path.open("a", encoding="utf-8", errors="ignore")
-    try:
-        process = subprocess.Popen(
-            parts,
-            cwd=root,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-        )
-    finally:
-        log_file.close()
-    PREVIEW_PROCESSES[str(session.id)] = process
 
-    local_url = f"http://127.0.0.1:{port}"
-    status = "starting"
-    for _ in range(16):
-        if process.poll() is not None:
-            status = "failed"
-            break
+    if provider == "local":
+        existing = PREVIEW_PROCESSES.get(str(session.id))
+        if existing and existing.poll() is None:
+            return preview_status(session)
+        runtime = sync_workspace_runtime(db, user_id, session)
+        root = Path(runtime["root"])
+        log_dir = root / ".nexus"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "preview.log"
+        env = {
+            **os.environ,
+            "PORT": str(port),
+            "HOST": "127.0.0.1",
+            "HOSTNAME": "127.0.0.1",
+            "BROWSER": "none",
+        }
+        parts = _command_parts(preview_command["command"])
+        log_file = log_path.open("a", encoding="utf-8", errors="ignore")
         try:
-            with urllib.request.urlopen(local_url, timeout=1.0) as response:
-                if response.status < 500:
-                    status = "running"
-                    break
-        except Exception:
-            time.sleep(0.5)
+            process = subprocess.Popen(
+                parts,
+                cwd=root,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+            )
+        finally:
+            log_file.close()
+        PREVIEW_PROCESSES[str(session.id)] = process
+
+        local_url = f"http://127.0.0.1:{port}"
+        status = "starting"
+        for _ in range(16):
+            if process.poll() is not None:
+                status = "failed"
+                break
+            try:
+                with urllib.request.urlopen(local_url, timeout=1.0) as response:
+                    if response.status < 500:
+                        status = "running"
+                        break
+            except Exception:
+                time.sleep(0.5)
+    else:
+        # Docker or E2B Sandbox
+        sandbox = get_session_sandbox(session)
+        res = sandbox.start_preview_server(preview_command["command"], port)
+        status = res.get("status", "running")
+        local_url = res.get("proxy_url") or f"http://localhost:{port}"
+        log_path = ""
 
     proxy_url = f"/api/v1/code/sessions/{session.id}/preview/proxy/?token={token}"
     metadata = _metadata(session)
@@ -832,7 +863,7 @@ def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, jo
         "port": port,
         "token": token,
         "command": preview_command["command"],
-        "log_path": str(log_path),
+        "log_path": str(log_path) if log_path else "",
         "started_at": _now(),
     }
     _set_metadata(session, metadata)
@@ -843,15 +874,22 @@ def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, jo
 
 
 def stop_workspace_preview(db: Session, session: CodeSession, job=None) -> dict:
-    process = PREVIEW_PROCESSES.pop(str(session.id), None)
+    provider = settings.SANDBOX_PROVIDER.lower()
     stopped = False
-    if process and process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        stopped = True
+    
+    if provider == "local":
+        process = PREVIEW_PROCESSES.pop(str(session.id), None)
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            stopped = True
+    else:
+        sandbox = get_session_sandbox(session)
+        stopped = sandbox.stop_preview_server()
+
     metadata = _metadata(session)
     preview = metadata.get("preview_runtime") or {}
     preview["status"] = "stopped"
@@ -899,28 +937,27 @@ def run_workspace_command(
     append_job_log(db, job, "deploy", f"Running command: {command}", f"Runtime workspace: {workspace_root}")
 
     try:
-        completed = subprocess.run(
-            parts,
-            cwd=workspace_root,
-            capture_output=True,
-            text=True,
-            timeout=max(5, min(timeout_seconds, 120)),
-            check=False,
-        )
-        output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+        sandbox = get_session_sandbox(session)
+        result_data = sandbox.run_command(command, timeout=max(5, min(timeout_seconds, 120)))
+        
+        status = result_data["status"]
+        output = result_data["output"]
+        return_code = result_data["return_code"]
+        ran_at = result_data["ran_at"]
+        
         clipped = output[-12000:] if output else "(no output)"
-        status = "passed" if completed.returncode == 0 else "failed"
-        event_kind = "done" if completed.returncode == 0 else "error"
+        event_kind = "done" if status == "passed" else "error"
         append_activity(db, session, event_kind, f"Command {status}: {command}", clipped)
+        
         metadata = _metadata(session)
         command_log = list(metadata.get("command_log") or [])
         result = {
             "command": command,
             "status": status,
-            "return_code": completed.returncode,
+            "return_code": return_code,
             "output": clipped,
             "workspace_root": str(workspace_root),
-            "ran_at": _now(),
+            "ran_at": ran_at,
         }
         command_log.append(result)
         metadata["command_log"] = command_log[-50:]
@@ -979,47 +1016,17 @@ def run_workspace_checks(
     append_job_log(db, job, "deploy", "Running workspace checks", f"{len(commands)} command(s) in {workspace_root}")
 
     results = []
+    sandbox = get_session_sandbox(session)
     for command in commands:
-        parts = _command_parts(command)
-        try:
-            completed = subprocess.run(
-                parts,
-                cwd=workspace_root,
-                capture_output=True,
-                text=True,
-                timeout=max(10, min(timeout_seconds, 180)),
-                check=False,
-            )
-            output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
-            clipped = output[-8000:] if output else "(no output)"
-            status = "passed" if completed.returncode == 0 else "failed"
-            result = {
-                "command": command,
-                "status": status,
-                "return_code": completed.returncode,
-                "output": clipped,
-                "workspace_root": str(workspace_root),
-                "ran_at": _now(),
-            }
-        except FileNotFoundError:
-            result = {
-                "command": command,
-                "status": "failed",
-                "return_code": None,
-                "output": f"Command unavailable: {parts[0]}",
-                "workspace_root": str(workspace_root),
-                "ran_at": _now(),
-            }
-        except subprocess.TimeoutExpired as exc:
-            output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
-            result = {
-                "command": command,
-                "status": "timeout",
-                "return_code": None,
-                "output": output[-8000:] if output else "Command timed out before producing output.",
-                "workspace_root": str(workspace_root),
-                "ran_at": _now(),
-            }
+        res = sandbox.run_command(command, timeout=max(10, min(timeout_seconds, 180)))
+        result = {
+            "command": command,
+            "status": res["status"],
+            "return_code": res["return_code"],
+            "output": res["output"][-8000:] if res["output"] else "(no output)",
+            "workspace_root": str(workspace_root),
+            "ran_at": res["ran_at"],
+        }
         results.append(result)
         append_activity(db, session, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"])
         append_job_log(db, job, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"][:1000])
@@ -1530,16 +1537,28 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
     return analysis
 
 
+def _build_diagnostics_context(session: CodeSession) -> str:
+    metadata = _metadata(session)
+    check_run = metadata.get("last_check_run")
+    if not check_run:
+        return ""
+    diagnostics = f"\n\nActive Sandbox Diagnostics (Last build/test/lint run):\nStatus: {check_run.get('status')}\nPassed: {check_run.get('passed')}/{check_run.get('total')}\nCommands Output:\n"
+    for cmd_res in check_run.get("commands") or []:
+        diagnostics += f"- Command: {cmd_res.get('command')}\n  Status: {cmd_res.get('status')}\n  Output:\n{cmd_res.get('output')[:1500]}\n"
+    return diagnostics
+
+
 def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
     bundle = build_file_bundle(db, user_id, code_files(db, user_id, session))
     metadata = _metadata(session)
     analysis = metadata.get("workspace_analysis") or {}
+    diagnostics = _build_diagnostics_context(session)
     append_activity(db, session, "code", "Planning code changes", instruction[:180])
     append_job_log(db, job, "code", "Planning code changes", instruction[:180])
     llm = get_chat_llm(role="planning", provider=provider, model=model)
     response = llm.invoke([
         SystemMessage(content="You are Autonomus AI in coding workspace mode. Produce a concise implementation plan grounded in the provided files."),
-        HumanMessage(content=f"Instruction:\n{instruction}\n\nWorkspace analysis:\n{json.dumps(analysis, indent=2)[:12000]}\n\nWorkspace files:\n{bundle}"),
+        HumanMessage(content=f"Instruction:\n{instruction}{diagnostics}\n\nWorkspace analysis:\n{json.dumps(analysis, indent=2)[:12000]}\n\nWorkspace files:\n{bundle}"),
     ])
     session.plan_text = str(response.content)
     metadata = _metadata(session)
@@ -1555,6 +1574,7 @@ def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction:
 def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
     files = code_files(db, user_id, session)
     bundle = build_file_bundle(db, user_id, files)
+    diagnostics = _build_diagnostics_context(session)
     append_activity(db, session, "edit", "Generating reviewable patch", "The patch will remain pending until approved.")
     append_job_log(db, job, "edit", "Generating reviewable patch", "Patch remains pending until user approval.")
     llm = get_chat_llm(role="reasoning", provider=provider, model=model)
@@ -1564,7 +1584,7 @@ def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction
             "{\"files\":[{\"file_id\":\"...\",\"filename\":\"...\",\"content\":\"full updated file content\"}],\"summary\":\"...\"}. "
             "Use full replacement content so the app can apply safely."
         )),
-        HumanMessage(content=f"Instruction:\n{instruction}\n\nCurrent plan:\n{session.plan_text or ''}\n\nWorkspace files:\n{bundle}"),
+        HumanMessage(content=f"Instruction:\n{instruction}{diagnostics}\n\nCurrent plan:\n{session.plan_text or ''}\n\nWorkspace files:\n{bundle}"),
     ])
     raw = str(response.content)
     session.patch_text = raw
@@ -1594,10 +1614,89 @@ def _parse_patch_payload(patch_text: str) -> dict:
     raise HTTPException(status_code=400, detail="Patch is not valid replacement JSON")
 
 
+def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
+    import difflib
+    diff = list(difflib.unified_diff(
+        old_text.splitlines(),
+        new_text.splitlines(),
+        lineterm=""
+    ))
+    
+    hunks = []
+    current_hunk = None
+    hunk_idx = 0
+    
+    for line in diff:
+        if line.startswith("---") or line.startswith("+++"):
+            continue
+        if line.startswith("@@"):
+            match = re.match(r"@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@", line)
+            if match:
+                old_start = int(match.group(1))
+                old_len = int(match.group(2)) if match.group(2) else 1
+                new_start = int(match.group(3))
+                new_len = int(match.group(4)) if match.group(4) else 1
+                
+                if current_hunk:
+                    hunks.append(current_hunk)
+                
+                current_hunk = {
+                    "index": hunk_idx,
+                    "old_start": old_start,
+                    "old_len": old_len,
+                    "new_start": new_start,
+                    "new_len": new_len,
+                    "header": line,
+                    "lines": [],
+                    "old_lines": [],
+                    "new_lines": [],
+                    "status": "pending",
+                }
+                hunk_idx += 1
+            continue
+            
+        if current_hunk is not None:
+            current_hunk["lines"].append(line)
+            if line.startswith("-"):
+                current_hunk["old_lines"].append(line[1:])
+            elif line.startswith("+"):
+                current_hunk["new_lines"].append(line[1:])
+            else:
+                current_hunk["old_lines"].append(line[1:])
+                current_hunk["new_lines"].append(line[1:])
+                
+    if current_hunk:
+        hunks.append(current_hunk)
+        
+    return hunks
+
+
+def apply_hunks_to_file(old_text: str, hunks: list[dict]) -> str:
+    lines = old_text.splitlines()
+    sorted_hunks = sorted(hunks, key=lambda h: h["old_start"])
+    
+    offset = 0
+    for hunk in sorted_hunks:
+        if hunk.get("status") == "rejected":
+            continue
+            
+        start_idx = hunk["old_start"] + offset - 1
+        end_idx = start_idx + hunk["old_len"]
+        
+        lines[start_idx:end_idx] = hunk["new_lines"]
+        
+        shift = len(hunk["new_lines"]) - hunk["old_len"]
+        offset += shift
+        
+    return "\n".join(lines)
+
+
 def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> list[dict]:
     if not session.patch_text:
         return []
     payload = _parse_patch_payload(session.patch_text)
+    metadata = _metadata(session)
+    hunks_state = metadata.get("patch_hunks_state") or {}
     previews = []
     for item in payload.get("files") or []:
         file_id = UUID(str(item.get("file_id")))
@@ -1613,14 +1712,23 @@ def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> l
             tofile=f"b/{record.filename}",
             lineterm="",
         ))
+        
+        # Parse hunks and assign status
+        hunks = parse_diff_to_hunks(old_text, new_text)
+        for hunk in hunks:
+            hunk_id = f"{record.id}-{hunk['index']}"
+            hunk["id"] = hunk_id
+            if hunk_id in hunks_state:
+                hunk["status"] = hunks_state[hunk_id]
+                
         previews.append({
             "file_id": str(record.id),
             "filename": record.filename,
             "diff": diff,
             "additions": sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")),
             "deletions": sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")),
+            "hunks": hunks,
         })
-    metadata = _metadata(session)
     metadata["patch_preview"] = previews
     metadata["patch_summary"] = payload.get("summary") or ""
     _set_metadata(session, metadata)
@@ -1702,6 +1810,21 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
             raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
         old_text = get_file_text(db, user_id, record.id)
         new_text = str(item.get("content") or "")
+        
+        # Resolve hunk states
+        session_metadata = _metadata(session)
+        hunks_state = session_metadata.get("patch_hunks_state") or {}
+        hunks = parse_diff_to_hunks(old_text, new_text)
+        hunks_modified = False
+        for hunk in hunks:
+            hunk_id = f"{record.id}-{hunk['index']}"
+            if hunks_state.get(hunk_id) == "rejected":
+                hunk["status"] = "rejected"
+                hunks_modified = True
+                
+        if hunks_modified:
+            new_text = apply_hunks_to_file(old_text, hunks)
+            
         if not new_text:
             continue
         rollback_snapshots.append({

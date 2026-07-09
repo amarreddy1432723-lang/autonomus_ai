@@ -111,6 +111,7 @@ def _memory_to_dict(memory: Memory, score: float | None = None, similarity: floa
         "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
         "score": float(score) if score is not None else None,
         "similarity": float(similarity) if similarity is not None else None,
+        "meta_data": memory.meta_data or {},
     }
 
 
@@ -141,6 +142,7 @@ class PineconeVectorStore:
     def upsert_memory(self, memory: Memory, vector: list[float]) -> bool:
         if not self.enabled:
             return False
+        product_scope = (memory.meta_data or {}).get("product_scope") or "pa"
         payload = {
             "vectors": [{
                 "id": str(memory.id),
@@ -153,9 +155,10 @@ class PineconeVectorStore:
                     "is_archived": bool(memory.is_archived),
                     "created_at": memory.created_at.isoformat() if memory.created_at else None,
                     "tags": memory.tags or [],
+                    "product_scope": product_scope,
                 },
             }],
-            "namespace": f"user_{memory.user_id}",
+            "namespace": f"user_{memory.user_id}_{product_scope}",
         }
         response = httpx.post(
             f"{self.host.rstrip('/')}/vectors/upsert",
@@ -166,7 +169,7 @@ class PineconeVectorStore:
         response.raise_for_status()
         return True
 
-    def query(self, user_id: UUID, vector: list[float], top_k: int = 20) -> list[dict]:
+    def query(self, user_id: UUID, vector: list[float], top_k: int = 20, product_scope: str = "pa") -> list[dict]:
         if not self.enabled:
             return []
         response = httpx.post(
@@ -176,7 +179,7 @@ class PineconeVectorStore:
                 "vector": vector,
                 "topK": top_k,
                 "includeMetadata": True,
-                "namespace": f"user_{user_id}",
+                "namespace": f"user_{user_id}_{product_scope}",
                 "filter": {"is_archived": {"$eq": False}},
             },
             timeout=10.0,
@@ -329,13 +332,19 @@ class PostgresMemoryStore:
         memory_type: str | None = None,
         include_archived: bool = False,
         limit: int = 100,
+        product_scope: str | None = None,
     ) -> list[Memory]:
         query = self.db.query(Memory).filter(Memory.user_id == user_id)
         if not include_archived:
             query = query.filter(Memory.is_archived == False)
         if memory_type:
             query = query.filter(or_(Memory.memory_type == memory_type, Memory.type == memory_type))
-        memories = query.order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(min(limit, 500)).all()
+        memories = query.order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(min(limit * 2, 1000)).all()
+        
+        if product_scope:
+            memories = [m for m in memories if (m.meta_data or {}).get("product_scope") == product_scope]
+            
+        memories = memories[:limit]
         for m in memories:
             decrypted = decrypt_content(m.content, self.vault_key)
             if decrypted != m.content:
@@ -446,15 +455,15 @@ class PostgresMemoryStore:
         except Exception:
             pass
 
-    def hybrid_search(self, user_id: UUID, query: str, limit: int = 10, memory_type: str | None = None) -> list[dict]:
+    def hybrid_search(self, user_id: UUID, query: str, limit: int = 10, memory_type: str | None = None, product_scope: str | None = None) -> list[dict]:
         query_vector = get_embedding(query)
-        candidates = self.list_memories(user_id, memory_type=memory_type, include_archived=False, limit=500)
+        candidates = self.list_memories(user_id, memory_type=memory_type, include_archived=False, limit=500, product_scope=product_scope)
         dense_ranked = self._dense_rank(candidates, query_vector)
         sparse_ranked = self._sparse_rank(candidates, query)
 
         external_matches = []
         try:
-            external_matches = self.pinecone.query(user_id, query_vector, top_k=limit) if self.pinecone.enabled else []
+            external_matches = self.pinecone.query(user_id, query_vector, top_k=limit, product_scope=product_scope or "pa") if self.pinecone.enabled else []
         except Exception:
             external_matches = []
 
@@ -650,10 +659,10 @@ class PostgresMemoryStore:
         }
 
 
-def retrieve_context(user_id: UUID, query: str, limit: int = 5) -> list[dict]:
+def retrieve_context(user_id: UUID, query: str, limit: int = 5, product_scope: str = "pa") -> list[dict]:
     db = SessionLocal()
     try:
-        return PostgresMemoryStore(db).hybrid_search(user_id, query, limit=limit)
+        return PostgresMemoryStore(db).hybrid_search(user_id, query, limit=limit, product_scope=product_scope)
     except Exception as e:
         print(f"Error retrieving memory context: {e}")
         return []
@@ -661,12 +670,14 @@ def retrieve_context(user_id: UUID, query: str, limit: int = 5) -> list[dict]:
         db.close()
 
 
-def save_memory(user_id: UUID, content: str, mem_type: str, importance: int = 5, meta_data: dict | None = None) -> bool:
+def save_memory(user_id: UUID, content: str, mem_type: str, importance: int = 5, meta_data: dict | None = None, product_scope: str = "pa") -> bool:
     db = SessionLocal()
     try:
-        source = (meta_data or {}).get("source", "ai_extracted")
-        confidence = float((meta_data or {}).get("confidence", 0.8))
-        tags = (meta_data or {}).get("tags", [])
+        meta = dict(meta_data or {})
+        meta["product_scope"] = product_scope
+        source = meta.get("source", "ai_extracted")
+        confidence = float(meta.get("confidence", 0.8))
+        tags = meta.get("tags", [])
         PostgresMemoryStore(db).create_memory(
             user_id,
             MemoryWrite(
@@ -677,7 +688,7 @@ def save_memory(user_id: UUID, content: str, mem_type: str, importance: int = 5,
                 confidence=confidence,
                 source=source,
                 tags=tags,
-                meta_data=meta_data or {},
+                meta_data=meta,
             ),
         )
         return True

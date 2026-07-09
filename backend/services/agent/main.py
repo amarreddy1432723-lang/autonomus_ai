@@ -41,6 +41,7 @@ JWT_ALGORITHM = "HS256"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from services.shared.database import SessionLocal, verify_default_user, engine, Base
+    from .worker import worker_queue
     # Auto-create any new tables in the database
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -48,7 +49,13 @@ async def lifespan(app: FastAPI):
         verify_default_user(db)
     finally:
         db.close()
-    yield
+    
+    # Start background worker queue
+    worker_queue.start()
+    try:
+        yield
+    finally:
+        worker_queue.stop()
 
 app = FastAPI(title="my-ai Agent Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "agent-service")
@@ -1151,9 +1158,10 @@ def get_code_session_preview_logs(session_id: UUID, user_id: UUID = Depends(get_
     session = get_code_session(db, user_id, session_id)
     return read_preview_logs(session)
 
-@app.get("/api/v1/code/sessions/{session_id}/preview/proxy/{path:path}")
-def proxy_code_session_preview_path(session_id: UUID, path: str, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
+@app.api_route("/api/v1/code/sessions/{session_id}/preview/proxy/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"])
+async def proxy_code_session_preview_path(session_id: UUID, path: str, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
     from services.shared.models import CodeSession
+    import httpx
 
     session = db.query(CodeSession).filter(CodeSession.id == session_id).first()
     if not session:
@@ -1167,19 +1175,31 @@ def proxy_code_session_preview_path(session_id: UUID, path: str, request: Reques
     query = [(key, value) for key, value in request.query_params.multi_items() if key != "token"]
     query_string = ("?" + "&".join(f"{quote(key)}={quote(value)}" for key, value in query)) if query else ""
     target = f"{local_url}/{path}{query_string}"
+    
+    body = await request.body()
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in ("host", "authorization")}
     try:
-        with urllib.request.urlopen(target, timeout=10) as upstream:
-            content = upstream.read()
-            content_type = upstream.headers.get("content-type") or "application/octet-stream"
-            return Response(content=content, media_type=content_type, status_code=upstream.status)
-    except urllib.error.HTTPError as exc:
-        return Response(content=exc.read(), status_code=exc.code, media_type=exc.headers.get("content-type") or "text/plain")
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(
+                method=request.method,
+                url=target,
+                headers=headers,
+                content=body,
+                timeout=15.0,
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers={key: value for key, value in resp.headers.items() if key.lower() not in ("content-length", "transfer-encoding")},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Upstream preview error: {exc}")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Preview proxy failed: {exc}")
 
-@app.get("/api/v1/code/sessions/{session_id}/preview/proxy/")
-def proxy_code_session_preview_root(session_id: UUID, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
-    return proxy_code_session_preview_path(session_id, "", request, token, db)
+@app.api_route("/api/v1/code/sessions/{session_id}/preview/proxy/", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"])
+async def proxy_code_session_preview_root(session_id: UUID, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
+    return await proxy_code_session_preview_path(session_id, "", request, token, db)
 
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -1206,6 +1226,101 @@ def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_i
     patch = generate_patch(db, user_id, session, request.instruction, provider, model, job)
     record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
     return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or [], "job": serialize_job(job)}
+
+class CreatePullRequestRequest(BaseModel):
+    branch_name: str
+    title: str
+    body: str
+
+@app.post("/api/v1/code/sessions/{session_id}/create-pr")
+def create_session_pr(
+    session_id: UUID,
+    request: CreatePullRequestRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session
+    from .github_service import create_pull_request
+    
+    session = get_code_session(db, user_id, session_id)
+    if not session.project:
+        raise HTTPException(status_code=400, detail="This session is not associated with any Code Project.")
+        
+    result = create_pull_request(
+        db,
+        user_id,
+        session.project,
+        session,
+        request.branch_name,
+        request.title,
+        request.body,
+    )
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error"))
+    return result
+
+@app.post("/api/v1/code/sessions/{session_id}/hunks/{hunk_id}/approve")
+def approve_patch_hunk(
+    session_id: UUID,
+    hunk_id: str,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, _metadata, _set_metadata
+    
+    session = get_code_session(db, user_id, session_id)
+    metadata = _metadata(session)
+    hunks_state = metadata.get("patch_hunks_state") or {}
+    hunks_state[hunk_id] = "approved"
+    metadata["patch_hunks_state"] = hunks_state
+    
+    previews = metadata.get("patch_preview") or []
+    for file_prev in previews:
+        for hunk in file_prev.get("hunks") or []:
+            if hunk.get("id") == hunk_id:
+                hunk["status"] = "approved"
+                
+    _set_metadata(session, metadata)
+    db.commit()
+    return {"status": "success", "hunk_id": hunk_id, "state": "approved"}
+
+@app.post("/api/v1/code/sessions/{session_id}/hunks/{hunk_id}/reject")
+def reject_patch_hunk(
+    session_id: UUID,
+    hunk_id: str,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, _metadata, _set_metadata
+    
+    session = get_code_session(db, user_id, session_id)
+    metadata = _metadata(session)
+    hunks_state = metadata.get("patch_hunks_state") or {}
+    hunks_state[hunk_id] = "rejected"
+    metadata["patch_hunks_state"] = hunks_state
+    
+    previews = metadata.get("patch_preview") or []
+    for file_prev in previews:
+        for hunk in file_prev.get("hunks") or []:
+            if hunk.get("id") == hunk_id:
+                hunk["status"] = "rejected"
+                
+    _set_metadata(session, metadata)
+    db.commit()
+    return {"status": "success", "hunk_id": hunk_id, "state": "rejected"}
+
+@app.get("/api/v1/code/sessions/{session_id}/diagnostics")
+def get_session_diagnostics(
+    session_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session
+    from .diagnostics import run_diagnostics_checks
+    
+    session = get_code_session(db, user_id, session_id)
+    diagnostics = run_diagnostics_checks(db, user_id, session)
+    return {"diagnostics": diagnostics}
 
 def _run_code_background_job(
     job_id: str,
@@ -1268,7 +1383,6 @@ def _run_code_background_job(
 def run_code_session_background(
     session_id: UUID,
     request: CodeBackgroundRunRequest,
-    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
@@ -1278,16 +1392,17 @@ def run_code_session_background(
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
     mode = request.mode if request.mode in {"plan", "code"} else "code"
-    job = create_agent_job(db, user_id, session.id, f"background_{mode}", request.instruction, approval_state="pending" if mode == "code" else "none")
-    background_tasks.add_task(
-        _run_code_background_job,
-        str(job.id),
-        str(user_id),
-        str(session.id),
-        request.instruction,
-        provider,
-        model,
-        mode == "code",
+    
+    # Enqueue job with queued status and pass model configurations
+    job = create_agent_job(
+        db, 
+        user_id, 
+        session.id, 
+        f"background_{mode}", 
+        request.instruction, 
+        approval_state="pending" if mode == "code" else "none",
+        status="queued",
+        metadata_json={"llm_provider": provider, "llm_model": model}
     )
     return {"status": "queued", "job": serialize_job(job)}
 
@@ -1309,6 +1424,54 @@ def reject_code_session_patch(
 
     session = get_code_session(db, user_id, session_id)
     return reject_patch_payload(db, session, request.file_ids if request else None)
+
+class MobileSystemStatusRequest(BaseModel):
+    battery_level: int
+    is_charging: bool
+    network_type: str
+    active_apps: List[str]
+
+class CallInterceptRequest(BaseModel):
+    caller_number: str
+    direction: str = "incoming"
+
+class VoiceTelemetryRequest(BaseModel):
+    stt_ms: float
+    llm_ms: float
+    tts_ms: float
+    network_ms: float = 20.0
+
+@app.post("/api/v1/pa/system-status")
+def post_pa_system_status(request: MobileSystemStatusRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .pa_os.mobile_daemon import MobileOSDaemon
+    daemon = MobileOSDaemon(user_id)
+    status = daemon.update_system_status(
+        request.battery_level,
+        request.is_charging,
+        request.network_type,
+        request.active_apps,
+    )
+    return {"status": "success", "system_status": status}
+
+@app.post("/api/v1/pa/calls/intercept")
+def intercept_pa_call(request: CallInterceptRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .pa_os.mobile_daemon import MobileOSDaemon
+    daemon = MobileOSDaemon(user_id)
+    call = daemon.intercept_call(request.caller_number, request.direction)
+    return {"status": "success", "call": call}
+
+@app.post("/api/v1/pa/voice/telemetry")
+def log_pa_voice_telemetry(request: VoiceTelemetryRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .pa_os.voice_pipeline import VoiceTelemetryTracker
+    tracker = VoiceTelemetryTracker()
+    log = tracker.log_latency(
+        session_id="pa-voice-session",
+        stt_ms=request.stt_ms,
+        llm_ms=request.llm_ms,
+        tts_ms=request.tts_ms,
+        network_ms=request.network_ms,
+    )
+    return {"status": "success", "telemetry": log}
 
 @app.post("/api/v1/code/sessions/{session_id}/run-command")
 def run_code_session_command(
