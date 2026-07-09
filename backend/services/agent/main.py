@@ -1,10 +1,13 @@
 import json
 import os
+import urllib.error
+import urllib.request
 import jwt
 from uuid import UUID
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile
+from urllib.parse import quote
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional
@@ -1025,6 +1028,63 @@ def sync_code_session_runtime(session_id: UUID, user_id: UUID = Depends(get_curr
     result = sync_workspace_runtime(db, user_id, session)
     complete_job(db, job, "completed", result, files_touched=[{"filename": path} for path in result.get("files_written") or []])
     return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/preview/start")
+def start_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, start_workspace_preview
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "preview_start", "Start live workspace preview")
+    result = start_workspace_preview(db, user_id, session, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/preview/stop")
+def stop_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, stop_workspace_preview
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "preview_stop", "Stop live workspace preview")
+    result = stop_workspace_preview(db, session, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.get("/api/v1/code/sessions/{session_id}/preview/status")
+def get_code_session_preview_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, preview_status
+
+    session = get_code_session(db, user_id, session_id)
+    return preview_status(session)
+
+@app.get("/api/v1/code/sessions/{session_id}/preview/proxy/{path:path}")
+def proxy_code_session_preview_path(session_id: UUID, path: str, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
+    from services.shared.models import CodeSession
+
+    session = db.query(CodeSession).filter(CodeSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Code session not found")
+    preview = (session.metadata_json or {}).get("preview_runtime") or {}
+    if not token or token != preview.get("token"):
+        raise HTTPException(status_code=403, detail="Preview token is invalid")
+    local_url = str(preview.get("local_url") or "").rstrip("/")
+    if not local_url:
+        raise HTTPException(status_code=404, detail="Preview is not running")
+    query = [(key, value) for key, value in request.query_params.multi_items() if key != "token"]
+    query_string = ("?" + "&".join(f"{quote(key)}={quote(value)}" for key, value in query)) if query else ""
+    target = f"{local_url}/{path}{query_string}"
+    try:
+        with urllib.request.urlopen(target, timeout=10) as upstream:
+            content = upstream.read()
+            content_type = upstream.headers.get("content-type") or "application/octet-stream"
+            return Response(content=content, media_type=content_type, status_code=upstream.status)
+    except urllib.error.HTTPError as exc:
+        return Response(content=exc.read(), status_code=exc.code, media_type=exc.headers.get("content-type") or "text/plain")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Preview proxy failed: {exc}")
+
+@app.get("/api/v1/code/sessions/{session_id}/preview/proxy/")
+def proxy_code_session_preview_root(session_id: UUID, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
+    return proxy_code_session_preview_path(session_id, "", request, token, db)
 
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

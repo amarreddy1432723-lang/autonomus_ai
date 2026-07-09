@@ -618,6 +618,45 @@ export default function WorkspacePage() {
     }
   };
 
+  const startLivePreview = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'deploy', message: 'Starting live preview', detail: 'Using the persistent runtime workspace.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/preview/start`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      if (result.preview_url) setPreviewUrl(result.preview_url);
+      addEvent({
+        kind: result.status === 'running' ? 'done' : 'deploy',
+        message: `Live preview ${result.status}`,
+        detail: result.command || result.preview_url || 'Preview process started.',
+      });
+      await hydrateSession(sid);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Live preview failed', detail: error instanceof Error ? error.message : 'Could not start live preview.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopLivePreview = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/preview/stop`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({ kind: 'done', message: 'Live preview stopped', detail: result.command || '' });
+      await hydrateSession(sessionId);
+      await loadOsContext();
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Stop preview failed', detail: error instanceof Error ? error.message : 'Could not stop live preview.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const fixPreviewIssue = async () => {
     if (!sessionId || busy) return;
     setBusy(true);
@@ -846,8 +885,9 @@ export default function WorkspacePage() {
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
           previewUrl={previewUrl}
-          canCheckPreview={Boolean(previewUrl.trim()) && !busy}
+          canCheckPreview={/^https?:\/\//.test(previewUrl.trim()) && !busy}
           canFixPreview={Boolean(sessionId) && !busy}
+          canStartPreview={selectedFileIds.length > 0 && !busy}
           repoUrl={repoUrl}
           canUseGit={Boolean(repoUrl.trim()) && !busy}
           onApply={applyChanges}
@@ -860,6 +900,8 @@ export default function WorkspacePage() {
           onPreviewUrlChange={setPreviewUrl}
           onCheckPreview={checkPreview}
           onFixPreview={fixPreviewIssue}
+          onStartPreview={startLivePreview}
+          onStopPreview={stopLivePreview}
           onRepoUrlChange={setRepoUrl}
           onConnectRepo={connectRepo}
           onImportRepo={importRepo}

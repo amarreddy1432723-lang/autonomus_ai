@@ -71,6 +71,9 @@ type Props = {
   canCheckPreview: boolean;
   onFixPreview: () => void;
   canFixPreview: boolean;
+  onStartPreview: () => void;
+  onStopPreview: () => void;
+  canStartPreview: boolean;
   repoUrl: string;
   onRepoUrlChange: (value: string) => void;
   onConnectRepo: () => void;
@@ -135,6 +138,9 @@ export default function ActivityPanel({
   canCheckPreview,
   onFixPreview,
   canFixPreview,
+  onStartPreview,
+  onStopPreview,
+  canStartPreview,
   repoUrl,
   onRepoUrlChange,
   onConnectRepo,
@@ -212,6 +218,14 @@ export default function ActivityPanel({
           <button className={styles.fullWidthButton} type="button" onClick={onFixPreview} disabled={!canFixPreview}>
             Fix preview issue
           </button>
+          <div className={styles.previewButtonRow}>
+            <button className={styles.commandButton} type="button" onClick={onStartPreview} disabled={!canStartPreview}>
+              Start live
+            </button>
+            <button className={styles.commandButton} type="button" onClick={onStopPreview} disabled={!canStartPreview}>
+              Stop
+            </button>
+          </div>
           {previewUrl.trim() && (
             <iframe className={styles.previewFrame} src={previewUrl.trim()} title="Workspace preview" sandbox="allow-scripts allow-same-origin allow-forms" />
           )}

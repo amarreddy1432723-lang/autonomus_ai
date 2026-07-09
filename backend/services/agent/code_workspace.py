@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -41,6 +42,7 @@ ALLOWED_COMMAND_PREFIXES = (
 )
 SAFE_SCRIPT_NAMES = {"build", "test", "lint", "typecheck", "check", "validate"}
 BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
+PREVIEW_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
 class _TitleParser(HTMLParser):
@@ -533,6 +535,154 @@ def discover_workspace_commands(db: Session, user_id: UUID, session: CodeSession
             "script": "Run Python tests with pytest.",
         })
     return {"commands": commands[:12]}
+
+
+def _workspace_preview_port(session: CodeSession) -> int:
+    digest = hashlib.sha256(str(session.id).encode("utf-8")).hexdigest()
+    return 4300 + (int(digest[:4], 16) % 1000)
+
+
+def _package_manager_for_files(files: list[FileReference]) -> str:
+    filenames = {Path(item.filename).name for item in files}
+    if "pnpm-lock.yaml" in filenames:
+        return "pnpm"
+    if "yarn.lock" in filenames:
+        return "yarn"
+    return "npm"
+
+
+def _detect_preview_command(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    files = code_files(db, user_id, session)
+    package_manager = _package_manager_for_files(files)
+    for record in files:
+        if Path(record.filename).name != "package.json":
+            continue
+        try:
+            package = json.loads(get_file_text(db, user_id, record.id))
+        except Exception:
+            continue
+        scripts = package.get("scripts") or {}
+        for script_name in ("dev", "start"):
+            script_body = str(scripts.get(script_name) or "")
+            if not script_body:
+                continue
+            lowered_body = script_body.lower()
+            if any(token in lowered_body.split() for token in BLOCKED_TOKENS):
+                continue
+            return {
+                "command": f"{package_manager} run {script_name}",
+                "script": script_name,
+                "source": record.filename,
+                "script_body": script_body[:180],
+            }
+    raise HTTPException(status_code=400, detail="No safe dev/start preview script was found in package.json")
+
+
+def preview_status(session: CodeSession) -> dict:
+    metadata = _metadata(session)
+    preview = metadata.get("preview_runtime") or {}
+    process = PREVIEW_PROCESSES.get(str(session.id))
+    running = bool(process and process.poll() is None)
+    return {
+        "status": "running" if running else "stopped",
+        "preview_url": preview.get("preview_url"),
+        "local_url": preview.get("local_url"),
+        "command": preview.get("command"),
+        "port": preview.get("port"),
+        "started_at": preview.get("started_at"),
+    }
+
+
+def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+    existing = PREVIEW_PROCESSES.get(str(session.id))
+    if existing and existing.poll() is None:
+        return preview_status(session)
+
+    runtime = sync_workspace_runtime(db, user_id, session)
+    root = Path(runtime["root"])
+    preview_command = _detect_preview_command(db, user_id, session)
+    port = _workspace_preview_port(session)
+    token = uuid.uuid4().hex
+    log_dir = root / ".nexus"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "preview.log"
+    env = {
+        **os.environ,
+        "PORT": str(port),
+        "HOST": "127.0.0.1",
+        "HOSTNAME": "127.0.0.1",
+        "BROWSER": "none",
+    }
+    parts = _command_parts(preview_command["command"])
+    append_activity(db, session, "deploy", "Starting workspace preview", preview_command["command"])
+    append_job_log(db, job, "deploy", "Starting workspace preview", f"{preview_command['command']} on port {port}")
+    log_file = log_path.open("a", encoding="utf-8", errors="ignore")
+    try:
+        process = subprocess.Popen(
+            parts,
+            cwd=root,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+    finally:
+        log_file.close()
+    PREVIEW_PROCESSES[str(session.id)] = process
+
+    local_url = f"http://127.0.0.1:{port}"
+    status = "starting"
+    for _ in range(16):
+        if process.poll() is not None:
+            status = "failed"
+            break
+        try:
+            with urllib.request.urlopen(local_url, timeout=1.0) as response:
+                if response.status < 500:
+                    status = "running"
+                    break
+        except Exception:
+            time.sleep(0.5)
+
+    proxy_url = f"/api/v1/code/sessions/{session.id}/preview/proxy/?token={token}"
+    metadata = _metadata(session)
+    metadata["preview_runtime"] = {
+        "status": status,
+        "local_url": local_url,
+        "preview_url": proxy_url,
+        "port": port,
+        "token": token,
+        "command": preview_command["command"],
+        "log_path": str(log_path),
+        "started_at": _now(),
+    }
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "done" if status == "running" else "error", f"Preview {status}", proxy_url)
+    complete_job(db, job, "completed" if status in {"running", "starting"} else "failed", metadata["preview_runtime"])
+    return preview_status(session)
+
+
+def stop_workspace_preview(db: Session, session: CodeSession, job=None) -> dict:
+    process = PREVIEW_PROCESSES.pop(str(session.id), None)
+    stopped = False
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        stopped = True
+    metadata = _metadata(session)
+    preview = metadata.get("preview_runtime") or {}
+    preview["status"] = "stopped"
+    preview["stopped_at"] = _now()
+    metadata["preview_runtime"] = preview
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "done", "Preview stopped", preview.get("command") or "")
+    complete_job(db, job, "completed", {"stopped": stopped, "status": "stopped"})
+    return preview_status(session)
 
 
 def _dynamic_command_allowed(parts: list[str], commands: list[dict]) -> bool:
