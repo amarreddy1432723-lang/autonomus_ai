@@ -725,6 +725,27 @@ export default function WorkspacePage() {
     }
   };
 
+  const runChecks = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'deploy', message: 'Running workspace checks', detail: 'NEXUS will run detected safe build/test/lint/typecheck commands.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-checks`, { method: 'POST' });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({
+        kind: result.status === 'passed' ? 'done' : 'error',
+        message: `Workspace checks ${result.status}`,
+        detail: `${result.passed || 0}/${result.total || 0} check(s) passed.`,
+      });
+      await hydrateSession(sid);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Workspace checks failed', detail: error instanceof Error ? error.message : 'Could not run workspace checks.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const syncRuntime = async () => {
     if (busy) return;
     setBusy(true);
@@ -1117,6 +1138,7 @@ export default function WorkspacePage() {
           onRollbackSnapshot={rollbackSnapshot}
           onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
           onRunCommand={runCommand}
+          onRunChecks={runChecks}
           onSyncRuntime={syncRuntime}
           onAnalyzeWorkspace={analyzeWorkspace}
           onPreviewUrlChange={setPreviewUrl}

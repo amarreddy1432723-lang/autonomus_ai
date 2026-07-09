@@ -930,6 +930,111 @@ def run_workspace_command(
         return result
 
 
+def run_workspace_checks(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    timeout_seconds: int = 60,
+    job=None,
+) -> dict:
+    discovered_commands = discover_workspace_commands(db, user_id, session).get("commands") or []
+    priority = {"build": 0, "typecheck": 1, "lint": 2, "test": 3, "pytest": 3}
+    ordered = sorted(
+        discovered_commands,
+        key=lambda item: priority.get(str(item.get("label") or "").lower(), 9),
+    )
+    commands = []
+    seen: set[str] = set()
+    for item in ordered:
+        command = str(item.get("command") or "").strip()
+        if not command or command in seen:
+            continue
+        parts = _command_parts(command)
+        if not _command_allowed(parts, discovered_commands):
+            continue
+        commands.append(command)
+        seen.add(command)
+        if len(commands) >= 6:
+            break
+
+    if not commands:
+        append_activity(db, session, "error", "No safe checks found", "Add package scripts such as build, test, lint, or typecheck.")
+        complete_job(db, job, "blocked", {"error": "No safe checks found"}, commands_run=[])
+        raise HTTPException(status_code=400, detail="No safe build/test/lint/typecheck commands found.")
+
+    runtime = sync_workspace_runtime(db, user_id, session)
+    workspace_root = Path(runtime["root"])
+    append_activity(db, session, "deploy", "Running workspace checks", ", ".join(commands))
+    append_job_log(db, job, "deploy", "Running workspace checks", f"{len(commands)} command(s) in {workspace_root}")
+
+    results = []
+    for command in commands:
+        parts = _command_parts(command)
+        try:
+            completed = subprocess.run(
+                parts,
+                cwd=workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=max(10, min(timeout_seconds, 180)),
+                check=False,
+            )
+            output = "\n".join(part for part in [completed.stdout, completed.stderr] if part).strip()
+            clipped = output[-8000:] if output else "(no output)"
+            status = "passed" if completed.returncode == 0 else "failed"
+            result = {
+                "command": command,
+                "status": status,
+                "return_code": completed.returncode,
+                "output": clipped,
+                "workspace_root": str(workspace_root),
+                "ran_at": _now(),
+            }
+        except FileNotFoundError:
+            result = {
+                "command": command,
+                "status": "failed",
+                "return_code": None,
+                "output": f"Command unavailable: {parts[0]}",
+                "workspace_root": str(workspace_root),
+                "ran_at": _now(),
+            }
+        except subprocess.TimeoutExpired as exc:
+            output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
+            result = {
+                "command": command,
+                "status": "timeout",
+                "return_code": None,
+                "output": output[-8000:] if output else "Command timed out before producing output.",
+                "workspace_root": str(workspace_root),
+                "ran_at": _now(),
+            }
+        results.append(result)
+        append_activity(db, session, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"])
+        append_job_log(db, job, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"][:1000])
+
+    passed = sum(1 for item in results if item["status"] == "passed")
+    summary = {
+        "status": "passed" if passed == len(results) else "failed",
+        "passed": passed,
+        "failed": len(results) - passed,
+        "total": len(results),
+        "commands": results,
+        "workspace_root": str(workspace_root),
+        "ran_at": _now(),
+    }
+    metadata = _metadata(session)
+    command_log = list(metadata.get("command_log") or [])
+    command_log.extend(results)
+    metadata["command_log"] = command_log[-50:]
+    metadata["last_check_run"] = summary
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "done" if summary["status"] == "passed" else "error", f"Workspace checks {summary['status']}", f"{passed}/{len(results)} check(s) passed")
+    complete_job(db, job, "completed" if summary["status"] == "passed" else "failed", summary, commands_run=results)
+    return summary
+
+
 def check_preview_url(db: Session, session: CodeSession, url: str, job=None) -> dict:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:

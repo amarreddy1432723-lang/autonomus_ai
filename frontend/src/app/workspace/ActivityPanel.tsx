@@ -90,6 +90,7 @@ type Props = {
   onLoadRollbackSnapshots: () => void;
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
+  onRunChecks: () => void;
   onSyncRuntime: () => void;
   onAnalyzeWorkspace: () => void;
   previewUrl: string;
@@ -174,6 +175,7 @@ export default function ActivityPanel({
   onLoadRollbackSnapshots,
   canRunCommand,
   onRunCommand,
+  onRunChecks,
   onSyncRuntime,
   onAnalyzeWorkspace,
   previewUrl,
@@ -266,6 +268,9 @@ export default function ActivityPanel({
             </button>
             <button className={styles.fullWidthButton} type="button" onClick={onSyncRuntime} disabled={!canRunCommand}>
               Sync Runtime
+            </button>
+            <button className={styles.fullWidthButton} type="button" onClick={onRunChecks} disabled={!canRunCommand}>
+              Run all checks
             </button>
             <div className={styles.commandGrid}>
               {commandButtons.map((item) => (
