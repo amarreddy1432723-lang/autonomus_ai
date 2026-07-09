@@ -44,9 +44,20 @@ export type WorkspaceCommand = {
 export type PreviewLogs = {
   logs?: string;
   issues?: string[];
+  excerpts?: string[];
   status?: string;
   command?: string;
   updated_at?: string;
+};
+
+export type PreviewCheck = {
+  url: string;
+  status: string;
+  status_code?: number | null;
+  title?: string;
+  issues?: string[];
+  checked_at?: string;
+  content_type?: string;
 };
 
 export type WorkspaceAnalysis = {
@@ -94,6 +105,7 @@ type Props = {
   onSyncRuntime: () => void;
   onAnalyzeWorkspace: () => void;
   previewUrl: string;
+  previewChecks: PreviewCheck[];
   onPreviewUrlChange: (value: string) => void;
   onCheckPreview: () => void;
   canCheckPreview: boolean;
@@ -190,6 +202,7 @@ export default function ActivityPanel({
   onSyncRuntime,
   onAnalyzeWorkspace,
   previewUrl,
+  previewChecks,
   onPreviewUrlChange,
   onCheckPreview,
   canCheckPreview,
@@ -376,7 +389,10 @@ export default function ActivityPanel({
 
         {activeTab === 'preview' && (
           <div className={styles.previewPanel}>
-          <div className={styles.meta}>Preview</div>
+          <div className={styles.changesHeader}>
+            <span>Preview</span>
+            <strong>{previewChecks.length}</strong>
+          </div>
           <div className={styles.previewInputRow}>
             <input
               className={styles.previewInput}
@@ -402,11 +418,29 @@ export default function ActivityPanel({
           <button className={styles.fullWidthButton} type="button" onClick={onLoadPreviewLogs} disabled={!canStartPreview}>
             Load preview logs
           </button>
+          {previewChecks.length > 0 && (
+            <div className={styles.previewEvidence}>
+              {previewChecks.slice(-4).reverse().map((check, index) => (
+                <div className={check.status === 'passed' ? styles.previewEvidencePass : styles.previewEvidenceFail} key={`${check.url}-${check.checked_at || index}`}>
+                  <div>
+                    <strong>{check.status || 'unknown'} {check.status_code ? `HTTP ${check.status_code}` : ''}</strong>
+                    <span>{check.title || check.url}</span>
+                  </div>
+                  {check.issues?.length ? <em>{check.issues.join(', ')}</em> : <em>No issue markers</em>}
+                </div>
+              ))}
+            </div>
+          )}
           {previewLogs?.logs && (
             <div className={styles.previewLogs}>
               <div className={styles.meta}>
                 {previewLogs.status || 'preview'} {previewLogs.issues?.length ? `- ${previewLogs.issues.join(', ')}` : ''}
               </div>
+              {previewLogs.excerpts?.length ? (
+                <div className={styles.previewExcerpts}>
+                  {previewLogs.excerpts.map((line, index) => <span key={`${line}-${index}`}>{line}</span>)}
+                </div>
+              ) : null}
               <pre>{previewLogs.logs}</pre>
             </div>
           )}

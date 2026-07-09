@@ -1200,6 +1200,77 @@
   padding: 9px;
 }
 
+.previewEvidence {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.previewEvidencePass,
+.previewEvidenceFail {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #242424;
+  background: #101010;
+  border-radius: 7px;
+  padding: 8px;
+}
+
+.previewEvidencePass {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.07);
+}
+
+.previewEvidenceFail {
+  border-color: rgba(239, 68, 68, 0.38);
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.previewEvidencePass div,
+.previewEvidenceFail div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.previewEvidencePass strong,
+.previewEvidenceFail strong {
+  color: #f2f2f2;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.previewEvidencePass span,
+.previewEvidenceFail span,
+.previewEvidencePass em,
+.previewEvidenceFail em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #aaa;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.previewExcerpts {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.previewExcerpts span {
+  border-left: 2px solid #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  color: #fecaca;
+  padding: 6px 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
 .previewLogs pre {
   max-height: 180px;
   overflow: auto;

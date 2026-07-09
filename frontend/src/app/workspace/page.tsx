@@ -4,7 +4,7 @@ import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, PatchPreviewItem, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -83,6 +83,7 @@ export default function WorkspacePage() {
   const [patchPreview, setPatchPreview] = useState<PatchPreviewItem[]>([]);
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewLogs, setPreviewLogs] = useState<PreviewLogs | null>(null);
+  const [previewChecks, setPreviewChecks] = useState<PreviewCheck[]>([]);
   const [repoUrl, setRepoUrl] = useState('');
   const [openTabs, setOpenTabs] = useState<OpenWorkspaceFile[]>([]);
   const [activeFileId, setActiveFileId] = useState('');
@@ -173,6 +174,8 @@ export default function WorkspacePage() {
     setRollbackSnapshots([]);
     setPatchPreview([]);
     setPatchReady(false);
+    setPreviewChecks([]);
+    setPreviewLogs(null);
     setOpenTabs([]);
     setActiveFileId('');
     setSearchMatches([]);
@@ -280,6 +283,8 @@ export default function WorkspacePage() {
       setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
       setEvents(normalizeEvents(session.activity_log || []));
       setPatchPreview(session.patch_preview || []);
+      setPreviewChecks(session.preview_checks || []);
+      if (session.preview_runtime?.preview_url && !previewUrl) setPreviewUrl(session.preview_runtime.preview_url);
       setAnalysis(session.workspace_analysis || null);
       setPatchReady(Boolean(session.patch_preview?.length || session.patch_text));
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
@@ -828,6 +833,7 @@ export default function WorkspacePage() {
         result.issues?.length ? `Issues: ${result.issues.join(', ')}` : '',
       ].filter(Boolean).join('\n');
       addEvent({ kind: result.status === 'passed' ? 'done' : 'error', message: `Preview check ${result.status}`, detail });
+      setPreviewChecks((current) => [...current, result].slice(-30));
       await hydrateSession(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Preview check failed', detail: error instanceof Error ? error.message : 'Could not check preview.' });
@@ -1152,6 +1158,7 @@ export default function WorkspacePage() {
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
           previewUrl={previewUrl}
+          previewChecks={previewChecks}
           previewLogs={previewLogs}
           canCheckPreview={/^https?:\/\//.test(previewUrl.trim()) && !busy}
           canFixPreview={Boolean(sessionId) && !busy}

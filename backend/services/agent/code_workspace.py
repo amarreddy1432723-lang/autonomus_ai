@@ -131,6 +131,8 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
         "plan_text": session.plan_text,
         "patch_text": session.patch_text,
         "patch_preview": metadata.get("patch_preview") or [],
+        "preview_checks": metadata.get("preview_checks") or [],
+        "preview_runtime": metadata.get("preview_runtime") or {},
         "workspace_analysis": metadata.get("workspace_analysis") or None,
         "activity_log": metadata.get("activity_log") or [],
         "file_tree": file_tree or metadata_tree,
@@ -751,9 +753,18 @@ def read_preview_logs(session: CodeSession, max_chars: int = 12000) -> dict:
     ]
     lower = text.lower()
     issues = sorted({marker for marker in markers if marker in lower})
+    excerpts = []
+    if text:
+        for line in text.splitlines():
+            lowered = line.lower()
+            if any(marker in lowered for marker in markers):
+                excerpts.append(line.strip()[:400])
+            if len(excerpts) >= 8:
+                break
     return {
         "logs": text,
         "issues": issues,
+        "excerpts": excerpts,
         "status": preview_status(session).get("status"),
         "command": preview.get("command"),
         "log_path": log_path,
@@ -1049,21 +1060,31 @@ def check_preview_url(db: Session, session: CodeSession, url: str, job=None) -> 
         headers={"User-Agent": "NEXUS-Code-Preview/1.0"},
         method="GET",
     )
+    metadata = _metadata(session)
+
+    def store_result(result: dict) -> dict:
+        preview_checks = list(metadata.get("preview_checks") or [])
+        preview_checks.append(result)
+        metadata["preview_checks"] = preview_checks[-30:]
+        _set_metadata(session, metadata)
+        db.commit()
+        return result
+
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             status_code = response.getcode()
             content_type = response.headers.get("content-type", "")
             body = response.read(250_000).decode("utf-8", errors="ignore")
     except urllib.error.HTTPError as exc:
-        result = {"url": url, "status": "failed", "status_code": exc.code, "title": "", "issues": [f"HTTP {exc.code}"]}
+        result = {"url": url, "status": "failed", "status_code": exc.code, "title": "", "issues": [f"HTTP {exc.code}"], "checked_at": _now()}
         append_activity(db, session, "error", "Preview check failed", f"HTTP {exc.code}")
         complete_job(db, job, "failed", result)
-        return result
+        return store_result(result)
     except Exception as exc:
-        result = {"url": url, "status": "failed", "status_code": None, "title": "", "issues": [str(exc)]}
+        result = {"url": url, "status": "failed", "status_code": None, "title": "", "issues": [str(exc)], "checked_at": _now()}
         append_activity(db, session, "error", "Preview check failed", str(exc))
         complete_job(db, job, "failed", result)
-        return result
+        return store_result(result)
 
     parser = _TitleParser()
     if "html" in content_type.lower():
@@ -1095,14 +1116,8 @@ def check_preview_url(db: Session, session: CodeSession, url: str, job=None) -> 
     if issues:
         detail = f"{detail}\nPotential issue markers: {', '.join(issues)}"
     append_activity(db, session, "done" if status == "passed" else "error", f"Preview check {status}", detail)
-    metadata = _metadata(session)
-    preview_checks = list(metadata.get("preview_checks") or [])
-    preview_checks.append(result)
-    metadata["preview_checks"] = preview_checks[-30:]
-    _set_metadata(session, metadata)
-    db.commit()
     complete_job(db, job, "completed" if status == "passed" else "failed", result)
-    return result
+    return store_result(result)
 
 
 def connect_git_repository(db: Session, session: CodeSession, repo_url: str, default_branch: str = "main") -> dict:
