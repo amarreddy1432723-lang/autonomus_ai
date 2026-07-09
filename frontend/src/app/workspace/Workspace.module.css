@@ -799,7 +799,21 @@
   font-weight: 800;
 }
 
+.sendButtonSecondary {
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #292929;
+  background: #151515;
+  color: #d8d8d8;
+  border-radius: 8px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
 .sendButton:disabled,
+.sendButtonSecondary:disabled,
 .modePill:disabled,
 .iconButton:disabled,
 .approveButton:disabled,

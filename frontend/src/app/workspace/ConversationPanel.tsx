@@ -20,6 +20,7 @@ type Props = {
   onModeChange: (mode: WorkspaceMode) => void;
   onPromptChange: (value: string) => void;
   onSubmit: () => void;
+  onSubmitBackground: () => void;
   onAttachClick: () => void;
 };
 
@@ -41,6 +42,7 @@ export default function ConversationPanel({
   onModeChange,
   onPromptChange,
   onSubmit,
+  onSubmitBackground,
   onAttachClick,
 }: Props) {
   return (
@@ -97,6 +99,9 @@ export default function ConversationPanel({
           />
           <button className={styles.sendButton} type="button" onClick={onSubmit} disabled={busy || !prompt.trim()}>
             <Send size={16} /> {busy ? 'Working' : 'Send'}
+          </button>
+          <button className={styles.sendButtonSecondary} type="button" onClick={onSubmitBackground} disabled={busy || !prompt.trim()}>
+            Background
           </button>
         </div>
       </div>

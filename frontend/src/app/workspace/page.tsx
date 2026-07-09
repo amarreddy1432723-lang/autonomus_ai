@@ -322,6 +322,11 @@ export default function WorkspacePage() {
     try {
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(idValue)}`);
       setJobs(jobData);
+      const completedBackground = (jobData || []).find((job: AgentJob) => job.status === 'completed' && job.mode?.startsWith('background_') && Array.isArray(job.result?.patch_preview));
+      if (completedBackground?.result?.patch_preview?.length) {
+        setPatchPreview(completedBackground.result.patch_preview);
+        setPatchReady(true);
+      }
     } catch {
       setJobs([]);
     }
@@ -699,6 +704,33 @@ export default function WorkspacePage() {
       const detail = error instanceof Error ? error.message : 'Workspace run failed.';
       addEvent({ kind: 'error', message: 'Run failed', detail });
       addMessage('assistant', `I hit an error while running the workspace agents:\n\n${detail}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runWorkspaceBackground = async () => {
+    const instruction = prompt.trim();
+    if (!instruction || busy) return;
+    setBusy(true);
+    setPatchReady(false);
+    addMessage('user', instruction);
+    setPrompt('');
+    try {
+      const sid = await ensureSession();
+      const modes = inferModes(instruction, mode);
+      const backgroundMode = modes.includes('code') ? 'code' : 'plan';
+      addEvent({ kind: 'code', message: 'Background job queued', detail: `${backgroundMode}: ${instruction}` });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-background`, {
+        method: 'POST',
+        body: JSON.stringify({ instruction, mode: backgroundMode, ...model }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addMessage('assistant', `Background ${backgroundMode} job started. Track it in Activity / Jobs; pending patches will appear in Changes when ready.`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Could not start background job.';
+      addEvent({ kind: 'error', message: 'Background job failed to start', detail });
+      addMessage('assistant', `I could not start the background job:\n\n${detail}`);
     } finally {
       setBusy(false);
     }
@@ -1171,6 +1203,7 @@ export default function WorkspacePage() {
           onModeChange={setMode}
           onPromptChange={setPrompt}
           onSubmit={runWorkspace}
+          onSubmitBackground={runWorkspaceBackground}
           onAttachClick={() => fileInputRef.current?.click()}
         />
         <ActivityPanel

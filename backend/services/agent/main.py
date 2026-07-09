@@ -7,7 +7,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile, Request, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile, Request, Response, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional
@@ -147,6 +147,12 @@ class CodeProjectUpdate(BaseModel):
     description: Optional[str] = None
     repo_url: Optional[str] = None
     status: Optional[str] = None
+
+class CodeBackgroundRunRequest(BaseModel):
+    instruction: str
+    mode: str = "code"
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
 
 class FileContentUpdate(BaseModel):
     content: str
@@ -1200,6 +1206,90 @@ def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_i
     patch = generate_patch(db, user_id, session, request.instruction, provider, model, job)
     record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
     return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or [], "job": serialize_job(job)}
+
+def _run_code_background_job(
+    job_id: str,
+    user_id: str,
+    session_id: str,
+    instruction: str,
+    provider: str | None,
+    model: str | None,
+    run_patch: bool,
+) -> None:
+    from services.shared.database import SessionLocal
+    from .agent_jobs import append_job_log, complete_job, get_agent_job
+    from .code_workspace import generate_patch, generate_plan, get_code_session
+    from .usage import record_usage
+
+    db = SessionLocal()
+    try:
+        user_uuid = UUID(user_id)
+        session_uuid = UUID(session_id)
+        job_uuid = UUID(job_id)
+        job = get_agent_job(db, user_uuid, job_uuid)
+        session = get_code_session(db, user_uuid, session_uuid)
+        if job.status == "cancelled":
+            return
+        append_job_log(db, job, "code", "Background plan started", instruction[:220])
+        plan = generate_plan(db, user_uuid, session, instruction, provider, model, job, finalize_job=False)
+        if job.status == "cancelled":
+            return
+        patch = ""
+        preview = []
+        if run_patch:
+            append_job_log(db, job, "edit", "Background patch started", "Patch will remain pending until reviewed.")
+            patch = generate_patch(db, user_uuid, session, instruction, provider, model, job, finalize_job=False)
+            preview = (session.metadata_json or {}).get("patch_preview") or []
+        result = {
+            "plan": plan,
+            "patch": patch,
+            "patch_preview": preview,
+            "summary": (session.metadata_json or {}).get("patch_summary") or "",
+        }
+        record_usage(db, user_uuid, "/api/v1/code/background-run", provider, model, str(session_uuid), instruction, "\n".join([plan, patch]), session.file_ids)
+        complete_job(
+            db,
+            job,
+            "completed",
+            result,
+            files_touched=[{"file_id": item["file_id"], "filename": item["filename"]} for item in preview],
+            approval_state="pending" if preview else "none",
+        )
+    except Exception as exc:
+        try:
+            job = get_agent_job(db, UUID(user_id), UUID(job_id))
+            complete_job(db, job, "failed", {"error": str(exc)})
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+@app.post("/api/v1/code/sessions/{session_id}/run-background", status_code=202)
+def run_code_session_background(
+    session_id: UUID,
+    request: CodeBackgroundRunRequest,
+    background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    mode = request.mode if request.mode in {"plan", "code"} else "code"
+    job = create_agent_job(db, user_id, session.id, f"background_{mode}", request.instruction, approval_state="pending" if mode == "code" else "none")
+    background_tasks.add_task(
+        _run_code_background_job,
+        str(job.id),
+        str(user_id),
+        str(session.id),
+        request.instruction,
+        provider,
+        model,
+        mode == "code",
+    )
+    return {"status": "queued", "job": serialize_job(job)}
 
 @app.get("/api/v1/code/sessions/{session_id}/patch-preview")
 def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

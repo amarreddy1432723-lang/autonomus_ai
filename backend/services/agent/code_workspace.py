@@ -1405,7 +1405,7 @@ def analyze_workspace_structure(db: Session, user_id: UUID, session: CodeSession
     return analysis
 
 
-def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None) -> str:
+def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
     bundle = build_file_bundle(db, user_id, code_files(db, user_id, session))
     metadata = _metadata(session)
     analysis = metadata.get("workspace_analysis") or {}
@@ -1422,11 +1422,12 @@ def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction:
     _set_metadata(session, metadata)
     db.commit()
     append_activity(db, session, "done", "Implementation plan stored", (session.plan_text or "")[:220])
-    complete_job(db, job, "completed", {"plan": session.plan_text or ""})
+    if finalize_job:
+        complete_job(db, job, "completed", {"plan": session.plan_text or ""})
     return session.plan_text or ""
 
 
-def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None) -> str:
+def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
     files = code_files(db, user_id, session)
     bundle = build_file_bundle(db, user_id, files)
     append_activity(db, session, "edit", "Generating reviewable patch", "The patch will remain pending until approved.")
@@ -1445,14 +1446,15 @@ def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction
     db.commit()
     preview = preview_patch_payload(db, user_id, session)
     append_activity(db, session, "edit", "Patch ready for review", f"{len(preview)} file diff(s) prepared")
-    complete_job(
-        db,
-        job,
-        "completed",
-        {"patch_preview": preview, "summary": (_metadata(session).get("patch_summary") or "")},
-        files_touched=[{"file_id": item["file_id"], "filename": item["filename"]} for item in preview],
-        approval_state="pending",
-    )
+    if finalize_job:
+        complete_job(
+            db,
+            job,
+            "completed",
+            {"patch_preview": preview, "summary": (_metadata(session).get("patch_summary") or "")},
+            files_touched=[{"file_id": item["file_id"], "filename": item["filename"]} for item in preview],
+            approval_state="pending",
+        )
     return raw
 
 
