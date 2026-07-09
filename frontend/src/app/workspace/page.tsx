@@ -3,7 +3,7 @@
 import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, OSContext, PatchPreviewItem, PreviewLogs, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -68,6 +68,7 @@ export default function WorkspacePage() {
   const [patchReady, setPatchReady] = useState(false);
   const [patchPreview, setPatchPreview] = useState<PatchPreviewItem[]>([]);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [previewLogs, setPreviewLogs] = useState<PreviewLogs | null>(null);
   const [repoUrl, setRepoUrl] = useState('');
   const [openFile, setOpenFile] = useState<OpenWorkspaceFile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -627,6 +628,14 @@ export default function WorkspacePage() {
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/preview/start`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       if (result.preview_url) setPreviewUrl(result.preview_url);
+      if (result.status === 'running' || result.status === 'failed') {
+        try {
+          const logs = await apiRequest(`/api/v1/code/sessions/${sid}/preview/logs`);
+          setPreviewLogs(logs);
+        } catch {
+          setPreviewLogs(null);
+        }
+      }
       addEvent({
         kind: result.status === 'running' ? 'done' : 'deploy',
         message: `Live preview ${result.status}`,
@@ -652,6 +661,24 @@ export default function WorkspacePage() {
       await loadOsContext();
     } catch (error) {
       addEvent({ kind: 'error', message: 'Stop preview failed', detail: error instanceof Error ? error.message : 'Could not stop live preview.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadPreviewLogs = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const logs = await apiRequest(`/api/v1/code/sessions/${sessionId}/preview/logs`);
+      setPreviewLogs(logs);
+      addEvent({
+        kind: logs.issues?.length ? 'error' : 'done',
+        message: 'Preview logs loaded',
+        detail: logs.issues?.length ? `Issues: ${logs.issues.join(', ')}` : 'No common error markers detected in recent logs.',
+      });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Preview logs unavailable', detail: error instanceof Error ? error.message : 'Could not load preview logs.' });
     } finally {
       setBusy(false);
     }
@@ -885,6 +912,7 @@ export default function WorkspacePage() {
           canApply={patchReady && !!sessionId && !busy}
           canRunCommand={selectedFileIds.length > 0 && !busy}
           previewUrl={previewUrl}
+          previewLogs={previewLogs}
           canCheckPreview={/^https?:\/\//.test(previewUrl.trim()) && !busy}
           canFixPreview={Boolean(sessionId) && !busy}
           canStartPreview={selectedFileIds.length > 0 && !busy}
@@ -902,6 +930,7 @@ export default function WorkspacePage() {
           onFixPreview={fixPreviewIssue}
           onStartPreview={startLivePreview}
           onStopPreview={stopLivePreview}
+          onLoadPreviewLogs={loadPreviewLogs}
           onRepoUrlChange={setRepoUrl}
           onConnectRepo={connectRepo}
           onImportRepo={importRepo}

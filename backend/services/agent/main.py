@@ -1056,6 +1056,13 @@ def get_code_session_preview_status(session_id: UUID, user_id: UUID = Depends(ge
     session = get_code_session(db, user_id, session_id)
     return preview_status(session)
 
+@app.get("/api/v1/code/sessions/{session_id}/preview/logs")
+def get_code_session_preview_logs(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, read_preview_logs
+
+    session = get_code_session(db, user_id, session_id)
+    return read_preview_logs(session)
+
 @app.get("/api/v1/code/sessions/{session_id}/preview/proxy/{path:path}")
 def proxy_code_session_preview_path(session_id: UUID, path: str, request: Request, token: str = Query(""), db: Session = Depends(get_db)):
     from services.shared.models import CodeSession
@@ -1169,7 +1176,7 @@ def fix_code_session_preview_issue(
     db: Session = Depends(get_db),
 ):
     from .agent_jobs import create_agent_job, serialize_job
-    from .code_workspace import generate_patch, generate_plan, get_code_session
+    from .code_workspace import generate_patch, generate_plan, get_code_session, read_preview_logs
     from .usage import record_usage
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
@@ -1177,14 +1184,18 @@ def fix_code_session_preview_issue(
     metadata = session.metadata_json or {}
     preview_checks = metadata.get("preview_checks") or []
     latest_check = preview_checks[-1] if preview_checks else {}
-    if not latest_check:
-        raise HTTPException(status_code=400, detail="Run a preview check before asking NEXUS to fix preview issues.")
+    preview_logs = read_preview_logs(session)
+    if not latest_check and not preview_logs.get("logs"):
+        raise HTTPException(status_code=400, detail="Run a preview check or start live preview before asking NEXUS to fix preview issues.")
     issue_instruction = "\n".join([
         "Fix the latest workspace preview issue.",
         f"Preview URL: {latest_check.get('url') or 'unknown'}",
         f"Status: {latest_check.get('status')} HTTP {latest_check.get('status_code')}",
         f"Title: {latest_check.get('title') or ''}",
         f"Issues: {', '.join(latest_check.get('issues') or []) or 'No explicit marker; inspect likely frontend/runtime causes.'}",
+        f"Live preview command: {preview_logs.get('command') or 'unknown'}",
+        f"Live preview log issues: {', '.join(preview_logs.get('issues') or []) or 'none detected'}",
+        f"Live preview logs:\n{preview_logs.get('logs') or '(no live preview logs)'}",
         f"User instruction: {request.instruction}".strip(),
         "Prepare a safe patch only. Do not assume production deployment access.",
     ])

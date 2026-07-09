@@ -593,6 +593,42 @@ def preview_status(session: CodeSession) -> dict:
     }
 
 
+def read_preview_logs(session: CodeSession, max_chars: int = 12000) -> dict:
+    metadata = _metadata(session)
+    preview = metadata.get("preview_runtime") or {}
+    log_path = preview.get("log_path")
+    text = ""
+    if log_path:
+        path = Path(str(log_path))
+        try:
+            if path.exists() and path.is_file():
+                raw = path.read_text(encoding="utf-8", errors="ignore")
+                text = raw[-max_chars:]
+        except OSError:
+            text = ""
+    markers = [
+        "error",
+        "failed",
+        "exception",
+        "traceback",
+        "module not found",
+        "syntaxerror",
+        "typeerror",
+        "referenceerror",
+        "eaddrinuse",
+    ]
+    lower = text.lower()
+    issues = sorted({marker for marker in markers if marker in lower})
+    return {
+        "logs": text,
+        "issues": issues,
+        "status": preview_status(session).get("status"),
+        "command": preview.get("command"),
+        "log_path": log_path,
+        "updated_at": _now(),
+    }
+
+
 def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
     existing = PREVIEW_PROCESSES.get(str(session.id))
     if existing and existing.poll() is None:

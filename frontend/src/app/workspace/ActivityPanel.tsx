@@ -49,6 +49,14 @@ export type WorkspaceCommand = {
   script?: string;
 };
 
+export type PreviewLogs = {
+  logs?: string;
+  issues?: string[];
+  status?: string;
+  command?: string;
+  updated_at?: string;
+};
+
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
@@ -73,7 +81,9 @@ type Props = {
   canFixPreview: boolean;
   onStartPreview: () => void;
   onStopPreview: () => void;
+  onLoadPreviewLogs: () => void;
   canStartPreview: boolean;
+  previewLogs: PreviewLogs | null;
   repoUrl: string;
   onRepoUrlChange: (value: string) => void;
   onConnectRepo: () => void;
@@ -140,7 +150,9 @@ export default function ActivityPanel({
   canFixPreview,
   onStartPreview,
   onStopPreview,
+  onLoadPreviewLogs,
   canStartPreview,
+  previewLogs,
   repoUrl,
   onRepoUrlChange,
   onConnectRepo,
@@ -226,6 +238,17 @@ export default function ActivityPanel({
               Stop
             </button>
           </div>
+          <button className={styles.fullWidthButton} type="button" onClick={onLoadPreviewLogs} disabled={!canStartPreview}>
+            Load preview logs
+          </button>
+          {previewLogs?.logs && (
+            <div className={styles.previewLogs}>
+              <div className={styles.meta}>
+                {previewLogs.status || 'preview'} {previewLogs.issues?.length ? `- ${previewLogs.issues.join(', ')}` : ''}
+              </div>
+              <pre>{previewLogs.logs}</pre>
+            </div>
+          )}
           {previewUrl.trim() && (
             <iframe className={styles.previewFrame} src={previewUrl.trim()} title="Workspace preview" sandbox="allow-scripts allow-same-origin allow-forms" />
           )}

@@ -681,6 +681,25 @@
   margin-top: 10px;
 }
 
+.previewLogs {
+  border: 1px solid #242424;
+  background: #080808;
+  border-radius: 7px;
+  margin-top: 10px;
+  padding: 9px;
+}
+
+.previewLogs pre {
+  max-height: 180px;
+  overflow: auto;
+  color: #cfd3ff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
 .jobItem {
   display: flex;
   align-items: center;
