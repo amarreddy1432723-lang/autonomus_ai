@@ -75,7 +75,8 @@ export default function ConversationPanel({
               className={`${styles.message} ${message.role === 'user' ? styles.userMessage : styles.assistantMessage}`}
               key={message.id}
             >
-              {message.content}
+              <span className={styles.messageAvatar}>{message.role === 'user' ? 'U' : 'N'}</span>
+              <div className={styles.messageContent}>{message.content}</div>
             </article>
           ))
         )}
@@ -105,8 +106,8 @@ export default function ConversationPanel({
               </select>
               <ChevronDown size={12} />
             </div>
-            <select className={styles.modelSelect} defaultValue="nexus-agent-fast" title="Agent model">
-              <option value="nexus-agent-fast">NEXUS Agent Fast</option>
+            <select className={styles.modelSelect} defaultValue="composer-2.5-fast" title="Agent model">
+              <option value="composer-2.5-fast">Composer 2.5 Fast</option>
               <option value="nexus-agent-pro">NEXUS Agent Pro</option>
               <option value="autonomus-ai">Autonomus AI</option>
             </select>

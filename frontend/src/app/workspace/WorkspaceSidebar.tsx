@@ -59,12 +59,12 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         {isElectron ? (
           <button type="button" onClick={openLocalFolder} disabled={busy}>
             <FolderPlus size={13} />
-            Open Local Folder
+            Open Folder
           </button>
         ) : (
           <button type="button" onClick={onCreateProject} disabled={busy}>
             <FolderPlus size={13} />
-            Create Project
+            Open Folder
           </button>
         )}
         <button type="button" onClick={onNewChat} disabled={busy}>
@@ -77,11 +77,11 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         </button>
         <button type="button" onClick={onToggleFiles} disabled={busy}>
           <Folder size={13} />
-          Files Explorer
+          Explorer
         </button>
         <button type="button" onClick={onToggleEditor}>
           <Code2 size={13} />
-          {editorOpen ? 'Close Editor' : 'Open Editor'}
+          Toggle Editor
         </button>
       </div>
 
