@@ -11,6 +11,7 @@ const isPublicRoute = createRouteMatcher([
 ]);
 
 const hasClerkKeys = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+const requireAuth = process.env.NEXT_PUBLIC_REQUIRE_AUTH === 'true';
 
 export default function proxy(request: NextRequest, event: any) {
   if (hasClerkKeys) {
@@ -22,6 +23,10 @@ export default function proxy(request: NextRequest, event: any) {
   }
 
   // Mock authentication fallback for demo mode
+  if (!requireAuth) {
+    return NextResponse.next();
+  }
+
   const isProtected = !isPublicRoute(request);
   const mockToken = request.cookies.get('my-ai.mock_token')?.value;
   const isApiRoute = request.nextUrl.pathname.startsWith('/api/');

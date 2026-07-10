@@ -9,7 +9,7 @@ export default function SignInPage() {
   const handleDemoSignIn = () => {
     // Set cookie for mock authentication
     document.cookie = 'my-ai.mock_token=demo-token; path=/; max-age=86400';
-    router.push('/dashboard');
+    router.push('/workspace');
   };
 
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
