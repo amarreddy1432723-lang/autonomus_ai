@@ -344,6 +344,10 @@ export default function WorkspacePage() {
         // Git metadata is optional for early workspaces.
       }
       await refreshGithubState();
+      
+      if (session.metadata_json?.local_workspace_path && typeof window !== 'undefined' && (window as any).electron) {
+        (window as any).electron.watchDirectory(session.metadata_json.local_workspace_path);
+      }
     } catch {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
@@ -489,6 +493,33 @@ export default function WorkspacePage() {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [jobs, sessionId]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && (window as any).electron && sessionId) {
+      const unsubscribe = (window as any).electron.onDirectoryChanged(async (change: any) => {
+        console.log('Local directory change detected:', change);
+        try {
+          const updatedSession = await apiRequest(`/api/v1/code/sessions/${sessionId}/sync-local-file`, {
+            method: 'POST',
+            body: JSON.stringify({
+              action: change.event,
+              relative_path: change.path
+            })
+          });
+          setSelected(Object.fromEntries((updatedSession.file_ids || []).map((fileId: string) => [fileId, true])));
+          await loadFiles();
+          addEvent({
+            kind: 'done',
+            message: 'Workspace synced',
+            detail: `${change.event} file: ${change.path}`
+          });
+        } catch (err) {
+          console.error('Failed to sync local folder change:', err);
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [sessionId]);
 
   const uploadFiles = async (fileList: FileList | null) => {
     if (!fileList?.length) return;

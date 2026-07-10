@@ -1129,6 +1129,87 @@ def import_local_workspace_session(
     payload = serialize_code_session(db, user_id, session)
     payload["skipped_errors"] = skipped_errors
     return payload
+
+class CodeSessionSyncLocalFileRequest(BaseModel):
+    action: str
+    relative_path: str
+
+@app.post("/api/v1/code/sessions/{session_id}/sync-local-file", status_code=200)
+def sync_local_workspace_file(
+    session_id: UUID,
+    request: CodeSessionSyncLocalFileRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    import os
+    import hashlib
+    import uuid
+    from pathlib import Path
+    from services.shared.models import CodeSession, FileReference
+    from .file_service import put_object, storage_provider
+    from .code_workspace import refresh_file_tree, serialize_code_session
+    
+    session = db.query(CodeSession).filter(CodeSession.id == session_id, CodeSession.user_id == user_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    local_path = session.metadata_json.get("local_workspace_path")
+    if not local_path:
+        raise HTTPException(status_code=400, detail="Not a local workspace session")
+        
+    rel_path = request.relative_path.replace("\\", "/")
+    filepath = os.path.join(local_path, rel_path)
+    
+    if request.action == "unlink":
+        record = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == rel_path).first()
+        if record:
+            db.delete(record)
+            if str(record.id) in session.file_ids:
+                session.file_ids = [fid for fid in session.file_ids if fid != str(record.id)]
+            db.commit()
+    else:
+        if not os.path.exists(filepath):
+            raise HTTPException(status_code=404, detail="File does not exist locally")
+            
+        if os.path.getsize(filepath) > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
+            raise HTTPException(status_code=400, detail="File too large")
+            
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+            
+        if "\x00" in content:
+            raise HTTPException(status_code=400, detail="Binary files are not supported")
+            
+        record = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == rel_path).first()
+        if not record:
+            record = FileReference(
+                user_id=user_id,
+                filename=rel_path,
+                size_bytes=len(content.encode("utf-8")),
+                owner_type="code_workspace",
+                owner_id=session.id,
+                storage_provider=storage_provider(),
+                bucket=settings.S3_BUCKET,
+                object_key=f"users/{user_id}/code/{session.id}/{uuid.uuid4()}{Path(rel_path).suffix or '.txt'}",
+                content_type="text/plain",
+                checksum_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                status="active",
+                metadata_json={"local_workspace_path": local_path, "local_relative_path": rel_path},
+            )
+            db.add(record)
+            db.flush()
+            
+            session.file_ids = list(session.file_ids) + [str(record.id)]
+        else:
+            record.size_bytes = len(content.encode("utf-8"))
+            record.checksum_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            
+        put_object(record.object_key, content.encode("utf-8"), "text/plain")
+        db.commit()
+        
+    refresh_file_tree(db, user_id, session)
+    return serialize_code_session(db, user_id, session)
+
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(
     request: CodeSessionCreate,

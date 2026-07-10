@@ -62,6 +62,40 @@ function startFrontendService() {
     console.log("Started Next.js frontend developer server.");
 }
 
+let launcherWindow;
+
+function createLauncherWindow() {
+    launcherWindow = new BrowserWindow({
+        width: 600,
+        height: 160,
+        title: "NEXUS Launcher",
+        frame: false,
+        resizable: false,
+        show: false,
+        alwaysOnTop: true,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, "preload.js")
+        },
+        backgroundColor: "#0d0e12"
+    });
+
+    launcherWindow.setMenuBarVisibility(false);
+
+    setTimeout(() => {
+        launcherWindow.loadURL("http://localhost:3000/launcher");
+    }, 4500);
+
+    launcherWindow.on("blur", () => {
+        if (launcherWindow) launcherWindow.hide();
+    });
+
+    launcherWindow.on("closed", () => {
+        launcherWindow = null;
+    });
+}
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1366,
@@ -119,6 +153,43 @@ ipcMain.handle("dialog-select-directory", async () => {
     return result.filePaths[0];
 });
 
+let dirWatcher;
+
+ipcMain.on("watch-directory", (event, dirPath) => {
+    if (dirWatcher) {
+        try {
+            dirWatcher.close();
+        } catch (e) {
+            console.error("Failed to close existing watcher:", e);
+        }
+    }
+    
+    const chokidar = require("chokidar");
+    dirWatcher = chokidar.watch(dirPath, {
+        ignored: /(^|[\/\\])\../, // ignore dotfiles
+        persistent: true,
+        ignoreInitial: true
+    });
+    
+    const sendChange = (changeEvent, filepath) => {
+        if (mainWindow) {
+            const relPath = path.relative(dirPath, filepath).replace(/\\/g, "/");
+            mainWindow.webContents.send("directory-changed", {
+                event: changeEvent,
+                path: relPath,
+                absolutePath: filepath
+            });
+        }
+    };
+    
+    dirWatcher
+        .on("add", (filepath) => sendChange("add", filepath))
+        .on("change", (filepath) => sendChange("change", filepath))
+        .on("unlink", (filepath) => sendChange("unlink", filepath));
+        
+    console.log(`Started watching directory: ${dirPath}`);
+});
+
 app.whenReady().then(() => {
     // 1. Launch local backend microservices
     startBackendService("auth-service", "services.auth.main:app", 8001);
@@ -130,15 +201,16 @@ app.whenReady().then(() => {
 
     // 3. Create native app UI window
     createWindow();
+    createLauncherWindow();
 
-    // 4. Register system-wide global shortcut to toggle app visibility
+    // 4. Register system-wide global shortcut to toggle launcher visibility
     globalShortcut.register("CommandOrControl+Shift+Space", () => {
-        if (mainWindow) {
-            if (mainWindow.isVisible()) {
-                mainWindow.hide();
+        if (launcherWindow) {
+            if (launcherWindow.isVisible()) {
+                launcherWindow.hide();
             } else {
-                mainWindow.show();
-                mainWindow.focus();
+                launcherWindow.show();
+                launcherWindow.focus();
             }
         }
     });
@@ -146,6 +218,7 @@ app.whenReady().then(() => {
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
+            createLauncherWindow();
         }
     });
 });
