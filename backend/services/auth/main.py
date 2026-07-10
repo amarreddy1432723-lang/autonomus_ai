@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -55,6 +56,16 @@ app = FastAPI(title="my-ai Auth Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "auth-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
+
+@app.get("/")
+def service_root():
+    return {
+        "service": "auth-service",
+        "status": "running",
+        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
+        "docs": "/docs",
+    }
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 

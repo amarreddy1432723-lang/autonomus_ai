@@ -1,4 +1,5 @@
 import jwt
+import os
 from typing import List
 from uuid import UUID
 from datetime import datetime
@@ -41,6 +42,16 @@ app = FastAPI(title="my-ai Goals Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "goals-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
+
+@app.get("/")
+def service_root():
+    return {
+        "service": "goals-service",
+        "status": "running",
+        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
+        "docs": "/docs",
+    }
 
 def get_current_user_id(
     authorization: str | None = Header(None), 

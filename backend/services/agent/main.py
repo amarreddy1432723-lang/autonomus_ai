@@ -62,6 +62,16 @@ install_api_foundation(app, "agent-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
+@app.get("/")
+def service_root():
+    return {
+        "service": "agent-service",
+        "status": "running",
+        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
+        "docs": "/docs",
+    }
+
 def get_current_user_id(
     authorization: str | None = Header(None),
     x_user_id: str | None = Header(None, alias="x-user-id"),

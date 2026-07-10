@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const net = require("net");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
 
@@ -8,7 +9,7 @@ let mainWindow;
 let launcherWindow;
 let backendProcesses = [];
 let frontendProcess = null;
-const FRONTEND_ORIGIN = process.env.NEXUS_FRONTEND_URL || "http://localhost:3000";
+let frontendOrigin = process.env.NEXUS_FRONTEND_URL || "http://localhost:3000";
 const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/workspace";
 
 const gotLock = app.requestSingleInstanceLock();
@@ -27,7 +28,7 @@ if (!gotLock) {
 async function waitForFrontend(attempts = 90) {
     for (let i = 0; i < attempts; i += 1) {
         try {
-            const response = await fetch(FRONTEND_ORIGIN, { method: "HEAD" });
+            const response = await fetch(frontendOrigin, { method: "HEAD" });
             if (response.ok || response.status < 500) return;
         } catch {
             // The dev server is still booting.
@@ -55,11 +56,43 @@ async function serviceResponds(port) {
     return urlResponds(`http://127.0.0.1:${port}/docs`) || urlResponds(`http://127.0.0.1:${port}/`);
 }
 
+function isPortFree(port) {
+    return new Promise((resolve) => {
+        const server = net.createServer();
+        server.once("error", () => resolve(false));
+        server.once("listening", () => {
+            server.close(() => resolve(true));
+        });
+        server.listen(port, "127.0.0.1");
+    });
+}
+
+async function resolveFrontendOrigin() {
+    if (process.env.NEXUS_FRONTEND_URL) {
+        frontendOrigin = process.env.NEXUS_FRONTEND_URL;
+        return { origin: frontendOrigin, port: new URL(frontendOrigin).port || "3000", reuse: await urlResponds(frontendOrigin) };
+    }
+
+    for (let port = 3000; port <= 3010; port += 1) {
+        const origin = `http://localhost:${port}`;
+        if (await urlResponds(origin)) {
+            frontendOrigin = origin;
+            return { origin, port: String(port), reuse: true };
+        }
+        if (await isPortFree(port)) {
+            frontendOrigin = origin;
+            return { origin, port: String(port), reuse: false };
+        }
+    }
+
+    throw new Error("No available frontend port found between 3000 and 3010.");
+}
+
 async function loadFrontendRoute(windowRef, route) {
     await waitForFrontend();
     if (!windowRef || windowRef.isDestroyed()) return;
     const safeRoute = typeof route === "string" && route.startsWith("/") ? route : DEFAULT_ROUTE;
-    windowRef.loadURL(`${FRONTEND_ORIGIN}${safeRoute}`);
+    windowRef.loadURL(`${frontendOrigin}${safeRoute}`);
 }
 
 function findRepoRoot() {
@@ -142,8 +175,9 @@ async function startBackendService(serviceName, entryPoint, port) {
 }
 
 async function startFrontendService() {
-    if (await urlResponds(FRONTEND_ORIGIN)) {
-        console.log(`Reusing existing Next.js frontend at ${FRONTEND_ORIGIN}`);
+    const resolved = await resolveFrontendOrigin();
+    if (resolved.reuse) {
+        console.log(`Reusing existing Next.js frontend at ${resolved.origin}`);
         return;
     }
 
@@ -161,7 +195,7 @@ async function startFrontendService() {
             NEXT_PUBLIC_GOALS_URL: process.env.NEXT_PUBLIC_GOALS_URL || "http://localhost:8002",
             NEXT_PUBLIC_AGENT_URL: process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:8003",
             NEXT_PUBLIC_REQUIRE_AUTH: process.env.NEXT_PUBLIC_REQUIRE_AUTH || "false",
-            PORT: process.env.NEXUS_FRONTEND_PORT || "3000",
+            PORT: resolved.port,
             BROWSER: "none"
         },
         shell: false
@@ -179,7 +213,7 @@ async function startFrontendService() {
         console.error(`[Frontend] stderr: ${data}`);
     });
 
-    console.log("Started Next.js frontend developer server.");
+    console.log(`Started Next.js frontend developer server at ${resolved.origin}.`);
 }
 
 function createLauncherWindow() {
