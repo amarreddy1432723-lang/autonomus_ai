@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from .tool_registry import select_tools
+
 
 def classify_workspace_modes(prompt: str, selected_mode: str = "auto") -> list[str]:
     text = f"{selected_mode} {prompt}".lower()
@@ -37,6 +39,14 @@ def sse(event: dict) -> str:
 def planned_activity(prompt: str, selected_mode: str = "auto") -> list[dict]:
     modes = classify_workspace_modes(prompt, selected_mode)
     events = [activity_event("start", "NEXUS Code orchestrator received prompt", prompt[:180])]
+    selection = select_tools(prompt, selected_mode, max_tools=8, include_high_risk=True)
+    tool_names = [tool["name"] for tool in selection.get("tools") or []]
+    permission = selection.get("permission_summary") or {}
+    events.append(activity_event(
+        "read",
+        "Tool policy selected",
+        f"{', '.join(tool_names) or 'No tools'} · review required: {'yes' if permission.get('requires_user_review') else 'no'}",
+    ))
     for mode in modes:
         if mode == "research":
             events.append(activity_event("research", "Research agent queued", "Fetching relevant context only."))

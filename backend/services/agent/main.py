@@ -267,6 +267,16 @@ class WorkspaceActivityRequest(BaseModel):
     prompt: str = ""
     mode: str = "auto"
 
+class ToolSelectionRequest(BaseModel):
+    prompt: str = ""
+    mode: str = "auto"
+    max_tools: int = Field(default=8, ge=1, le=20)
+    include_high_risk: bool = True
+
+class ToolValidationRequest(BaseModel):
+    tool_name: str
+    approved: bool = False
+
 class NexusResearchRequest(BaseModel):
     query: str
     depth: str = "standard"
@@ -1259,6 +1269,36 @@ def post_model_registry_health_check(user_id: UUID = Depends(get_current_user_id
     from .model_registry import health_check_registry
 
     return health_check_registry()
+
+@app.get("/api/v1/agent/tools")
+def get_agent_tools(
+    category: Optional[str] = Query(None),
+    include_disabled: bool = Query(False),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    from .tool_registry import list_tools
+
+    return {
+        "tools": list_tools(category=category, include_disabled=include_disabled),
+        "architecture": "supervisor_orchestrator_with_selected_tools",
+    }
+
+@app.post("/api/v1/agent/tools/select")
+def post_agent_tool_selection(request: ToolSelectionRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .tool_registry import select_tools
+
+    return select_tools(
+        prompt=request.prompt,
+        selected_mode=request.mode,
+        max_tools=request.max_tools,
+        include_high_risk=request.include_high_risk,
+    )
+
+@app.post("/api/v1/agent/tools/validate")
+def post_agent_tool_validation(request: ToolValidationRequest, user_id: UUID = Depends(get_current_user_id)):
+    from .tool_registry import validate_tool_request
+
+    return validate_tool_request(request.tool_name, approved=request.approved)
 
 @app.get("/api/v1/intelligence/personalization")
 def get_personalization(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
