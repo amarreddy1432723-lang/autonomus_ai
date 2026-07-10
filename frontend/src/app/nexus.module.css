@@ -618,6 +618,83 @@
   font-weight: 700;
 }
 
+.capabilityGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.capabilityCard {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+.capabilityCard p {
+  margin: 8px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.capabilityHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.capabilityHead span {
+  color: var(--color-accent-primary);
+  font-size: var(--text-xs);
+  font-weight: 900;
+}
+
+.paOsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.paMiniForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.paMiniForm input {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.paMiniForm button,
+.tinyButton {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.tinyButton {
+  margin-top: 8px;
+  font-size: var(--text-xs);
+  padding: 6px 8px;
+}
+
 @keyframes livePulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.28);
@@ -693,6 +770,14 @@
 
   .paQuickGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .paOsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .capabilityGrid {
+    grid-template-columns: 1fr;
   }
 
   .phaseCard {

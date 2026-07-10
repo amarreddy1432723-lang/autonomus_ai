@@ -39,6 +39,17 @@ type PAStatus = {
   locked?: boolean;
 };
 
+type CompetitivePosition = {
+  summary: string;
+  capabilities: Array<{
+    area: string;
+    status: string;
+    score: number;
+    next: string;
+  }>;
+  strategic_gaps: string[];
+};
+
 const fallbackStatus: PAStatus = {
   state: 'active',
   status_label: 'Active',
@@ -54,6 +65,7 @@ const fallbackStatus: PAStatus = {
 
 export default function HubPage() {
   const [status, setStatus] = useState<PAStatus>(fallbackStatus);
+  const [competitive, setCompetitive] = useState<CompetitivePosition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -71,6 +83,9 @@ export default function HubPage() {
 
   useEffect(() => {
     loadStatus();
+    apiRequest('/api/v1/competitive-position')
+      .then((data) => setCompetitive(data.competitive_position))
+      .catch(() => setCompetitive(null));
   }, []);
 
   const setPAState = async (state: PAStatus['state']) => {
@@ -189,6 +204,36 @@ export default function HubPage() {
             <span>{status.unread_alerts} overdue</span>
           </div>
         </section>
+
+        {competitive && (
+          <section className={styles.commandPanel}>
+            <div className={styles.commandHeader}>
+              <div>
+                <div className={styles.eyebrow}>Competitive Position</div>
+                <h2 className={styles.compactTitle}>Where NEXUS stands now</h2>
+              </div>
+              <Link className={styles.secondaryButton} href="/settings">View system settings</Link>
+            </div>
+            <p className={styles.meta}>{competitive.summary}</p>
+            <div className={styles.capabilityGrid}>
+              {competitive.capabilities.slice(0, 4).map((item) => (
+                <div className={styles.capabilityCard} key={item.area}>
+                  <div className={styles.capabilityHead}>
+                    <strong>{item.area}</strong>
+                    <span>{item.score}/10</span>
+                  </div>
+                  <span className={styles.meta}>{item.status.replaceAll('_', ' ')}</span>
+                  <p>{item.next}</p>
+                </div>
+              ))}
+            </div>
+            <div className={styles.briefStats}>
+              {competitive.strategic_gaps.slice(0, 3).map((gap) => (
+                <span key={gap}>{gap}</span>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className={styles.actionBar}>
           <Link className={styles.secondaryButton} href="/settings"><Settings size={16} /> Settings</Link>

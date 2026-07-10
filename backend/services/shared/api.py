@@ -16,6 +16,7 @@ from services.shared.production import production_readiness
 from services.shared.security import SecurityHeadersMiddleware
 from services.shared.stack import get_stack_manifest
 from services.shared.roadmap import get_roadmap_manifest
+from services.shared.competitive import get_competitive_position_manifest
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -116,6 +117,15 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "roadmap": manifest,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    @app.get("/api/v1/competitive-position")
+    def competitive_position():
+        manifest = get_competitive_position_manifest()
+        return {
+            "service": service_name,
+            "competitive_position": manifest,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
 

@@ -29,6 +29,7 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/models') ||
     path.startsWith('/api/v1/files') ||
     path.startsWith('/api/v1/github') ||
+    path.startsWith('/api/v1/competitive-position') ||
     path.startsWith('/api/v1/usage') ||
     path.startsWith('/api/v1/billing') ||
     path.startsWith('/api/v1/pa') ||
@@ -116,7 +117,12 @@ export async function apiRequest(path: string, options: RequestInit = {}): Promi
     } catch {
       err = { detail: response.statusText };
     }
-    throw new Error(err.detail || 'API request failed');
+    const detail = err?.detail;
+    const message =
+      typeof detail === 'string'
+        ? detail
+        : detail?.message || err?.message || err?.error || 'API request failed';
+    throw new Error(message);
   }
   
   // Return empty object on 204 or empty response

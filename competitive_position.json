@@ -1,0 +1,109 @@
+{
+  "last_updated": "2026-07-10",
+  "name": "NEXUS AI OS competitive position",
+  "summary": "NEXUS is positioned as a three-product AI operating system: Code, PA OS, and Interview. The differentiator is product breadth plus privacy and sandbox-first architecture, while the main remaining gap is depth against mature single-purpose developer tools.",
+  "competitors": [
+    {
+      "name": "Cursor",
+      "category": "AI IDE",
+      "strengths": ["VS Code-class editor", "inline autocomplete", "multi-file agent workflows", "developer muscle memory"],
+      "nexus_response": "NEXUS Code focuses on a web-first workspace with sandboxed execution, approval-first diffs, GitHub App flow, PA, and Interview in the same platform."
+    },
+    {
+      "name": "Claude Code / Claude Desktop",
+      "category": "Agentic coding and desktop assistant",
+      "strengths": ["strong codebase reasoning", "terminal-oriented workflows", "high-quality long-context reasoning"],
+      "nexus_response": "NEXUS aims to make agent work visible through jobs, diffs, preview checks, approvals, and product-specific contexts."
+    },
+    {
+      "name": "VS Code with Copilot",
+      "category": "Mainstream developer IDE",
+      "strengths": ["installed base", "editor ecosystem", "inline completions", "GitHub-native workflow"],
+      "nexus_response": "NEXUS must win with higher-level project execution, safer automation, and personal OS features rather than editor ecosystem alone."
+    },
+    {
+      "name": "ChatGPT Desktop / Voice",
+      "category": "General AI assistant",
+      "strengths": ["general conversation", "voice quality", "broad model ecosystem", "user familiarity"],
+      "nexus_response": "NEXUS PA and Interview focus on task ownership, resume-grounded coaching, privacy vault controls, and user-visible context."
+    }
+  ],
+  "capabilities": [
+    {
+      "area": "Product Hub",
+      "status": "implemented",
+      "score": 7,
+      "evidence": ["Hub shows Code, PA, and Interview as separate products", "Product routes are separated"],
+      "next": "Add launch gating and onboarding metrics per product."
+    },
+    {
+      "area": "NEXUS Code workspace",
+      "status": "in_progress",
+      "score": 6,
+      "evidence": ["Workspace shell", "file explorer", "Monaco-oriented editor path", "activity panel", "GitHub App flow", "sandbox command APIs"],
+      "next": "Deepen editor diagnostics, preview browser automation, symbol graph, and long-running job UX."
+    },
+    {
+      "area": "Sandbox execution",
+      "status": "in_progress",
+      "score": 6,
+      "evidence": ["Local sandbox", "Docker/E2B abstraction path", "production fail-closed behavior", "command policy checks"],
+      "next": "Run all preview/build/test workloads inside a production sandbox with persistent workspace artifacts."
+    },
+    {
+      "area": "Patch review",
+      "status": "in_progress",
+      "score": 6,
+      "evidence": ["Patch preview and approval flow", "rollback metadata", "applied file tracking for GitHub"],
+      "next": "Add per-hunk review UI, side-by-side diff viewer, and rollback browser."
+    },
+    {
+      "area": "Zero-knowledge privacy vault",
+      "status": "implemented",
+      "score": 7,
+      "evidence": ["Client vault key derivation", "vault setup/unlock UI", "session-only vault key storage"],
+      "next": "Expand encrypted fields beyond vault-ready flows and add recovery/rotation UX."
+    },
+    {
+      "area": "NEXUS PA OS",
+      "status": "in_progress",
+      "score": 7,
+      "evidence": ["Today endpoint", "tasks", "reminders", "automations", "notifications", "pause/resume", "voice input"],
+      "next": "Connect calendar/email providers, browser notifications, quiet hours, and durable automation worker."
+    },
+    {
+      "area": "NEXUS Interview",
+      "status": "implemented",
+      "score": 7,
+      "evidence": ["Resume-aware setup", "live transcript", "answer coach", "company prep", "automatic answer generation"],
+      "next": "Add scored interview drills, richer company intelligence, and latency instrumentation."
+    },
+    {
+      "area": "Billing/auth/admin",
+      "status": "in_progress",
+      "score": 5,
+      "evidence": ["Clerk path", "usage events", "plan catalog", "admin endpoint shell", "billing portal/webhook placeholders"],
+      "next": "Wire real Stripe checkout/portal sessions, webhook signature verification, and org/team controls."
+    }
+  ],
+  "latency_targets": {
+    "pa_voice_roundtrip_ms": 800,
+    "interview_first_token_seconds": "0.8-3.0",
+    "code_job_first_log_seconds": "under 1.0",
+    "note": "Sub-second full LLM answers are aspirational; NEXUS should optimize first visible signal, streaming, and cached context."
+  },
+  "strategic_gaps": [
+    "Cursor-level inline completion and diagnostics",
+    "Production browser preview verification with screenshots and console/network evidence",
+    "Durable long-running background jobs across deploys",
+    "GitHub App install-to-PR flow hardened with real permissions and checks",
+    "Calendar/email integrations for PA OS",
+    "Strict billing enforcement and admin controls"
+  ],
+  "positioning": [
+    "Do not claim NEXUS is a better Cursor today.",
+    "Position NEXUS as a web-first AI OS with Code, PA, and Interview.",
+    "Be transparent about implemented versus target capabilities.",
+    "Win by combining safe automation, personal context, and product-specific workflows."
+  ]
+}

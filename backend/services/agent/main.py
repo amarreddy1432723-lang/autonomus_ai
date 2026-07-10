@@ -316,6 +316,35 @@ class PAMeetingPrepRequest(BaseModel):
 class PADelegateRequest(BaseModel):
     instruction: str
 
+class PACommandRequest(BaseModel):
+    command: str
+
+class PATaskRequest(BaseModel):
+    title: str
+    description: str = ""
+    due_at: Optional[str] = None
+    priority_score: float = 0.5
+
+class PATaskUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    due_at: Optional[str] = None
+    priority_score: Optional[float] = None
+
+class PAScheduleItemRequest(BaseModel):
+    title: str
+    next_run_at: Optional[str] = None
+    trigger: str = "time"
+    permission: str = "confirm"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+class PAScheduleItemUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    next_run_at: Optional[str] = None
+    status: Optional[str] = None
+    permission: Optional[str] = None
+
 def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
     if not file_ids:
         return ""
@@ -789,6 +818,150 @@ def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Dep
         raise HTTPException(status_code=400, detail="Unsupported billing cycle")
     return create_checkout_session(request.plan, request.billing_cycle)
 
+@app.post("/api/v1/billing/portal")
+def create_billing_portal(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import billing_summary
+
+    summary = billing_summary(db, user_id)
+    if not os.getenv("STRIPE_SECRET_KEY"):
+        return {
+            "status": "not_configured",
+            "message": "Stripe Billing Portal is not configured yet.",
+            "billing": summary["plan"],
+        }
+    return {
+        "status": "requires_stripe_sdk",
+        "message": "Stripe key is configured. Wire Stripe Billing Portal SDK to create a hosted portal session.",
+        "customer_id": summary["stripe"].get("customer_id"),
+    }
+
+@app.post("/api/v1/billing/webhook")
+async def post_billing_webhook(request: Request, db: Session = Depends(get_db)):
+    from services.shared.models import AuditLog
+
+    body = await request.body()
+    if not os.getenv("STRIPE_WEBHOOK_SECRET"):
+        return {"status": "not_configured", "message": "Stripe webhook secret is not configured."}
+    try:
+        event = json.loads(body.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail={"code": "invalid_webhook", "message": "Webhook body must be valid JSON."})
+    db.add(
+        AuditLog(
+            user_id=UUID("00000000-0000-0000-0000-000000000000"),
+            event_type="billing.webhook",
+            entity_type="stripe_event",
+            actor_type="system",
+            action="billing.webhook.received",
+            metadata_json={"event_type": event.get("type"), "event_id": event.get("id")},
+        )
+    )
+    db.commit()
+    return {"status": "received", "event_type": event.get("type"), "event_id": event.get("id")}
+
+def _require_admin(user_id: UUID) -> None:
+    raw = os.getenv("NEXUS_ADMIN_USER_IDS", "")
+    allowed = {item.strip() for item in raw.split(",") if item.strip()}
+    if str(user_id) not in allowed:
+        raise HTTPException(status_code=403, detail={"code": "admin_required", "message": "Admin access required."})
+
+@app.get("/api/v1/admin/users")
+def get_admin_users(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import Subscription, User
+
+    _require_admin(user_id)
+    rows = (
+        db.query(User)
+        .order_by(User.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return {
+        "users": [
+            {
+                "id": str(item.id),
+                "email": item.email,
+                "name": item.name,
+                "auth_provider": item.auth_provider,
+                "is_active": item.is_active,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "subscription": {
+                    "plan": (
+                        db.query(Subscription.plan_type, Subscription.status)
+                        .filter(Subscription.user_id == item.id)
+                        .order_by(Subscription.created_at.desc())
+                        .first()
+                        or ("free", "active")
+                    )[0],
+                    "status": (
+                        db.query(Subscription.plan_type, Subscription.status)
+                        .filter(Subscription.user_id == item.id)
+                        .order_by(Subscription.created_at.desc())
+                        .first()
+                        or ("free", "active")
+                    )[1],
+                },
+            }
+            for item in rows
+        ]
+    }
+
+@app.get("/api/v1/admin/usage")
+def get_admin_usage(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from services.shared.models import UsageEvent
+    from .pa_service import admin_usage_summary
+
+    _require_admin(user_id)
+    usage = db.query(func.count(UsageEvent.id), func.coalesce(func.sum(UsageEvent.total_tokens), 0)).one()
+    return {
+        "usage_events": int(usage[0] or 0),
+        "total_tokens": int(usage[1] or 0),
+        "pa": admin_usage_summary(db),
+    }
+
+@app.get("/api/v1/admin/jobs")
+def get_admin_jobs(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AgentJob
+
+    _require_admin(user_id)
+    rows = db.query(AgentJob).order_by(AgentJob.created_at.desc()).limit(100).all()
+    return {
+        "jobs": [
+            {
+                "id": str(item.id),
+                "user_id": str(item.user_id),
+                "mode": item.mode,
+                "status": item.status,
+                "approval_state": item.approval_state,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+            for item in rows
+        ]
+    }
+
+@app.get("/api/v1/admin/audit-logs")
+def get_admin_audit_logs(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AuditLog
+
+    _require_admin(user_id)
+    rows = db.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(100).all()
+    return {
+        "audit_logs": [
+            {
+                "id": item.id,
+                "user_id": str(item.user_id),
+                "event_type": item.event_type,
+                "entity_type": item.entity_type,
+                "entity_id": str(item.entity_id) if item.entity_id else None,
+                "action": item.action,
+                "metadata": item.metadata_json or {},
+                "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+            }
+            for item in rows
+        ]
+    }
+
 def _pa_access(db: Session, user_id: UUID) -> dict:
     from .billing import check_entitlement
 
@@ -807,6 +980,19 @@ def _pa_access(db: Session, user_id: UUID) -> dict:
         "upgrade_target": "pro",
         "reason": "paid_plan" if plan in {"pro", "enterprise"} else "pa_requires_pro",
     }
+
+def _require_pa_access(db: Session, user_id: UUID) -> dict:
+    access = _pa_access(db, user_id)
+    if not access["allowed"]:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "upgrade_required",
+                "message": "NEXUS PA requires Pro access.",
+                "access": access,
+            },
+        )
+    return access
 
 @app.get("/api/v1/pa/access")
 def get_pa_access(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -903,6 +1089,148 @@ def get_pa_insights(user_id: UUID = Depends(get_current_user_id), db: Session = 
     if not access["allowed"]:
         return {"access": access, "locked": True}
     return {"access": access, **insights(db, user_id)}
+
+@app.get("/api/v1/pa/today")
+def get_pa_today(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import pa_today
+
+    access = _require_pa_access(db, user_id)
+    return {"access": access, **pa_today(db, user_id)}
+
+@app.post("/api/v1/pa/command")
+def post_pa_command(request: PACommandRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import handle_command
+    from .usage import record_usage
+
+    access = _require_pa_access(db, user_id)
+    result = handle_command(db, user_id, request.command)
+    record_usage(db, user_id, "/api/v1/pa/command", None, "autonomus-pa", None, request.command, json.dumps(result))
+    return {"access": access, **result}
+
+@app.get("/api/v1/pa/tasks")
+def get_pa_tasks(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import list_tasks
+
+    _require_pa_access(db, user_id)
+    return {"tasks": list_tasks(db, user_id)}
+
+@app.post("/api/v1/pa/tasks", status_code=201)
+def post_pa_task(request: PATaskRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import create_task
+
+    _require_pa_access(db, user_id)
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail={"code": "invalid_request", "message": "Task title is required."})
+    return create_task(db, user_id, request.title, request.description, request.due_at, request.priority_score)
+
+@app.patch("/api/v1/pa/tasks/{task_id}")
+def patch_pa_task(task_id: UUID, request: PATaskUpdateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import update_task
+
+    _require_pa_access(db, user_id)
+    try:
+        return update_task(db, user_id, task_id, request.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.delete("/api/v1/pa/tasks/{task_id}")
+def delete_pa_task(task_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import delete_task
+
+    _require_pa_access(db, user_id)
+    try:
+        return delete_task(db, user_id, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.get("/api/v1/pa/reminders")
+def get_pa_reminders(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import list_schedules
+
+    _require_pa_access(db, user_id)
+    return {"reminders": list_schedules(db, user_id, "reminder")}
+
+@app.post("/api/v1/pa/reminders", status_code=201)
+def post_pa_reminder(request: PAScheduleItemRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import create_schedule
+
+    _require_pa_access(db, user_id)
+    return create_schedule(db, user_id, title=request.title, pa_type="reminder", next_run_at=request.next_run_at, trigger=request.trigger, permission=request.permission, payload=request.payload)
+
+@app.patch("/api/v1/pa/reminders/{reminder_id}")
+def patch_pa_reminder(reminder_id: UUID, request: PAScheduleItemUpdateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import update_schedule
+
+    _require_pa_access(db, user_id)
+    try:
+        return update_schedule(db, user_id, reminder_id, request.model_dump(exclude_unset=True), "reminder")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.delete("/api/v1/pa/reminders/{reminder_id}")
+def delete_pa_reminder(reminder_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import delete_schedule
+
+    _require_pa_access(db, user_id)
+    try:
+        return delete_schedule(db, user_id, reminder_id, "reminder")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.get("/api/v1/pa/automations")
+def get_pa_automations(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import list_schedules
+
+    _require_pa_access(db, user_id)
+    return {"automations": list_schedules(db, user_id, "automation")}
+
+@app.post("/api/v1/pa/automations", status_code=201)
+def post_pa_automation(request: PAScheduleItemRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import create_schedule
+
+    _require_pa_access(db, user_id)
+    return create_schedule(db, user_id, title=request.title, pa_type="automation", next_run_at=request.next_run_at, trigger=request.trigger, permission=request.permission, payload=request.payload)
+
+@app.patch("/api/v1/pa/automations/{automation_id}")
+def patch_pa_automation(automation_id: UUID, request: PAScheduleItemUpdateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import update_schedule
+
+    _require_pa_access(db, user_id)
+    try:
+        return update_schedule(db, user_id, automation_id, request.model_dump(exclude_unset=True), "automation")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.get("/api/v1/pa/notifications")
+def get_pa_notifications(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import list_notifications
+
+    _require_pa_access(db, user_id)
+    return {"notifications": list_notifications(db, user_id)}
+
+@app.post("/api/v1/pa/notifications/{notification_id}/read")
+def post_pa_notification_read(notification_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import mark_notification_read
+
+    _require_pa_access(db, user_id)
+    try:
+        return mark_notification_read(db, user_id, notification_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)})
+
+@app.post("/api/v1/pa/pause")
+def post_pa_pause(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import pause_pa
+
+    _require_pa_access(db, user_id)
+    return pause_pa(db, user_id)
+
+@app.post("/api/v1/pa/resume")
+def post_pa_resume(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import resume_pa
+
+    _require_pa_access(db, user_id)
+    return resume_pa(db, user_id)
 
 @app.get("/api/v1/pa/life-graph")
 def get_pa_life_graph(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
