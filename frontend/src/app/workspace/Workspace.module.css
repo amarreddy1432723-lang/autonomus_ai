@@ -1405,6 +1405,53 @@
   white-space: pre-wrap;
 }
 
+.jobProgress {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #252542;
+  background: #11111d;
+  border-radius: 7px;
+  padding: 8px;
+  margin-top: 8px;
+}
+
+.jobProgress div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #d8d8ee;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.jobProgress div:first-child strong {
+  color: #b9adff;
+  font-size: 10px;
+}
+
+.jobProgressTrack {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #090910;
+}
+
+.jobProgressTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #6c63ff;
+}
+
+.jobProgress em {
+  color: #8f8f9d;
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .jobLogLine {
   display: grid;
   gap: 3px;

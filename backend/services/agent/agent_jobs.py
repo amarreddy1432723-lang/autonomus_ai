@@ -21,6 +21,7 @@ def _log(kind: str, message: str, detail: str | None = None) -> dict:
 
 
 def serialize_job(job: AgentJob) -> dict:
+    metadata = job.metadata_json or {}
     return {
         "id": str(job.id),
         "code_session_id": str(job.code_session_id) if job.code_session_id else None,
@@ -32,6 +33,11 @@ def serialize_job(job: AgentJob) -> dict:
         "files_touched": job.files_touched or [],
         "commands_run": job.commands_run or [],
         "result": job.result or {},
+        "metadata": metadata,
+        "progress": metadata.get("progress") or {},
+        "heartbeat_at": metadata.get("heartbeat_at"),
+        "retry_count": int(metadata.get("retry_count") or 0),
+        "worker_id": metadata.get("worker_id"),
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -63,6 +69,32 @@ def create_agent_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+def update_job_metadata(db: Session, job: AgentJob | None, updates: dict) -> None:
+    if not job:
+        return
+    metadata = dict(job.metadata_json or {})
+    metadata.update(updates)
+    job.metadata_json = metadata
+    db.commit()
+
+
+def heartbeat_job(db: Session, job: AgentJob | None, stage: str, detail: str | None = None, percent: int | None = None) -> None:
+    if not job:
+        return
+    metadata = dict(job.metadata_json or {})
+    progress = dict(metadata.get("progress") or {})
+    progress["stage"] = stage
+    progress["updated_at"] = _now().isoformat()
+    if detail:
+        progress["detail"] = detail
+    if percent is not None:
+        progress["percent"] = max(0, min(100, int(percent)))
+    metadata["progress"] = progress
+    metadata["heartbeat_at"] = _now().isoformat()
+    job.metadata_json = metadata
+    db.commit()
 
 
 def get_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
@@ -117,17 +149,27 @@ def cancel_agent_job(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
 
 
 def reset_background_job_for_retry(db: Session, user_id: UUID, job_id: UUID) -> AgentJob:
+    from .config import settings
+
     job = get_agent_job(db, user_id, job_id)
     if not str(job.mode or "").startswith("background_") or not job.code_session_id:
         raise HTTPException(status_code=400, detail="Only background Code jobs can be retried.")
     if job.status in {"running", "queued"}:
         raise HTTPException(status_code=409, detail="Job is already running.")
+    metadata = dict(job.metadata_json or {})
+    retry_count = int(metadata.get("retry_count") or 0)
+    if retry_count >= int(settings.AGENT_JOB_MAX_RETRIES):
+        raise HTTPException(status_code=409, detail="Retry limit reached for this job.")
+    metadata["retry_count"] = retry_count + 1
+    metadata["progress"] = {"stage": "queued", "detail": "Waiting for worker retry.", "percent": 0, "updated_at": _now().isoformat()}
+    metadata["heartbeat_at"] = None
     job.status = "queued"
     job.started_at = None
     job.completed_at = None
     job.result = {}
     job.files_touched = []
     job.commands_run = []
+    job.metadata_json = metadata
     logs = list(job.logs or [])
     logs.append(_log("start", "Job retried", (job.prompt or "")[:220]))
     job.logs = logs[-300:]
@@ -166,5 +208,13 @@ def complete_job(
         job.commands_run = commands_run
     if approval_state is not None:
         job.approval_state = approval_state
+    metadata = dict(job.metadata_json or {})
+    progress = dict(metadata.get("progress") or {})
+    progress["stage"] = status
+    progress["percent"] = 100 if status == "completed" else progress.get("percent", 0)
+    progress["updated_at"] = _now().isoformat()
+    metadata["progress"] = progress
+    metadata["heartbeat_at"] = _now().isoformat()
+    job.metadata_json = metadata
     append_job_log(db, job, "done" if status == "completed" else "error", f"Job {status}")
     db.commit()

@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     SANDBOX_PROVIDER: str = os.getenv("SANDBOX_PROVIDER", "local")
     SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim")
     E2B_API_KEY: Optional[str] = os.getenv("E2B_API_KEY")
+    AGENT_WORKER_ENABLED: bool = os.getenv("AGENT_WORKER_ENABLED", "true").lower() == "true"
+    AGENT_WORKER_POLL_SECONDS: float = float(os.getenv("AGENT_WORKER_POLL_SECONDS", "1.0"))
+    AGENT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_JOB_TIMEOUT_SECONDS", "900"))
+    AGENT_JOB_STALE_SECONDS: int = int(os.getenv("AGENT_JOB_STALE_SECONDS", "1800"))
+    AGENT_JOB_MAX_RETRIES: int = int(os.getenv("AGENT_JOB_MAX_RETRIES", "2"))
 
     class Config:
         env_file = ".env"

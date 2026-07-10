@@ -1,4 +1,8 @@
-// Preload file to bridge Electron APIs safely if needed in the future
-window.addEventListener("DOMContentLoaded", () => {
-  console.log("NEXUS OS Desktop Shell Initialized.");
+const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("electron", {
+    minimize: () => ipcRenderer.send("window-minimize"),
+    maximize: () => ipcRenderer.send("window-maximize"),
+    close: () => ipcRenderer.send("window-close"),
+    selectDirectory: () => ipcRenderer.invoke("dialog-select-directory"),
 });

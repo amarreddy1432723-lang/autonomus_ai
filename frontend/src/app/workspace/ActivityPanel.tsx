@@ -22,6 +22,11 @@ export type AgentJob = {
   files_touched?: Array<{ filename?: string; file_id?: string }>;
   commands_run?: Array<{ command?: string; status?: string; return_code?: number | null } | string>;
   result?: Record<string, any>;
+  metadata?: Record<string, any>;
+  progress?: { stage?: string; detail?: string; percent?: number; updated_at?: string };
+  heartbeat_at?: string | null;
+  retry_count?: number;
+  worker_id?: string | null;
   created_at?: string;
   started_at?: string;
   completed_at?: string;
@@ -530,9 +535,25 @@ export default function ActivityPanel({
                   <strong className={statusClass}>{job.status}</strong>
                 </summary>
                 {job.prompt && <p>{job.prompt}</p>}
+                {job.progress && (
+                  <div className={styles.jobProgress}>
+                    <div>
+                      <span>{job.progress.stage || job.status}</span>
+                      <strong>{typeof job.progress.percent === 'number' ? `${job.progress.percent}%` : 'active'}</strong>
+                    </div>
+                    <div className={styles.jobProgressTrack}>
+                      <span style={{ width: `${Math.max(0, Math.min(100, Number(job.progress.percent || 0)))}%` }} />
+                    </div>
+                    {job.progress.detail && <em>{job.progress.detail}</em>}
+                  </div>
+                )}
                 <div className={styles.jobMetaLine}>
                   Started: {job.started_at ? new Date(job.started_at).toLocaleTimeString() : 'not started'}
                   {job.completed_at ? ` - Finished: ${new Date(job.completed_at).toLocaleTimeString()}` : ''}
+                </div>
+                <div className={styles.jobMetaLine}>
+                  Worker: {job.worker_id || 'unassigned'} {job.retry_count ? `- Retry ${job.retry_count}` : ''}
+                  {job.heartbeat_at ? ` - Heartbeat ${new Date(job.heartbeat_at).toLocaleTimeString()}` : ''}
                 </div>
                 {(job.logs || []).slice(-6).map((log, index) => (
                   <div className={styles.jobLogLine} key={`${job.id}-log-${index}`}>

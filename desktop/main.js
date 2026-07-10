@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut } = require("electron");
 const path = require("path");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
@@ -11,7 +11,6 @@ function startBackendService(serviceName, entryPoint, port) {
     const rootDir = path.resolve(__dirname, "..");
     const backendDir = path.join(rootDir, "backend");
     
-    // Resolve virtual env python/uvicorn based on OS
     let command = "uvicorn";
     let args = [entryPoint, "--host", "127.0.0.1", "--port", port.toString()];
     
@@ -44,7 +43,6 @@ function startFrontendService() {
     const rootDir = path.resolve(__dirname, "..");
     const frontendDir = path.join(rootDir, "frontend");
     
-    // Spawn frontend start/dev
     const command = "npm";
     const args = ["run", "dev"];
     
@@ -69,6 +67,8 @@ function createWindow() {
         width: 1366,
         height: 768,
         title: "NEXUS OS",
+        frame: false, // Frameless design for custom titles
+        transparent: false,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -79,7 +79,6 @@ function createWindow() {
 
     mainWindow.setMenuBarVisibility(false);
 
-    // Wait a brief moment for local Next.js server to spin up
     setTimeout(() => {
         mainWindow.loadURL("http://localhost:3000/hub");
     }, 4500);
@@ -88,6 +87,37 @@ function createWindow() {
         mainWindow = null;
     });
 }
+
+// Window control IPC handlers
+ipcMain.on("window-minimize", () => {
+    if (mainWindow) mainWindow.minimize();
+});
+
+ipcMain.on("window-maximize", () => {
+    if (mainWindow) {
+        if (mainWindow.isMaximized()) {
+            mainWindow.unmaximize();
+        } else {
+            mainWindow.maximize();
+        }
+    }
+});
+
+ipcMain.on("window-close", () => {
+    if (mainWindow) mainWindow.close();
+});
+
+// Select local directory IPC handler
+ipcMain.handle("dialog-select-directory", async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ["openDirectory"]
+    });
+    if (result.canceled) {
+        return null;
+    }
+    return result.filePaths[0];
+});
 
 app.whenReady().then(() => {
     // 1. Launch local backend microservices
@@ -101,11 +131,28 @@ app.whenReady().then(() => {
     // 3. Create native app UI window
     createWindow();
 
+    // 4. Register system-wide global shortcut to toggle app visibility
+    globalShortcut.register("CommandOrControl+Shift+Space", () => {
+        if (mainWindow) {
+            if (mainWindow.isVisible()) {
+                mainWindow.hide();
+            } else {
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        }
+    });
+
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
         }
     });
+});
+
+app.on("will-quit", () => {
+    // Unregister shortcuts
+    globalShortcut.unregisterAll();
 });
 
 app.on("window-all-closed", () => {
