@@ -468,8 +468,13 @@ export default function WorkspacePage() {
   useEffect(() => {
     loadProjects();
     loadFiles();
-    const savedSessionId = localStorage.getItem('nexus.code.session_id');
+    const params = new URLSearchParams(window.location.search);
+    const querySessionId = params.get('session_id');
+    const savedSessionId = querySessionId || localStorage.getItem('nexus.code.session_id');
     if (savedSessionId) {
+      if (querySessionId) {
+        localStorage.setItem('nexus.code.session_id', querySessionId);
+      }
       hydrateSession(savedSessionId);
     }
     const raw = sessionStorage.getItem('design_to_workspace');

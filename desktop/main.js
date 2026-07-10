@@ -95,6 +95,33 @@ async function loadFrontendRoute(windowRef, route) {
     windowRef.loadURL(`${frontendOrigin}${safeRoute}`);
 }
 
+async function resolveInitialRoute() {
+    const args = process.argv.slice(1);
+    const folderArg = args.find(arg => !arg.startsWith('-') && fs.existsSync(arg) && fs.statSync(arg).isDirectory());
+    
+    if (folderArg) {
+        console.log(`CLI Folder argument detected: ${folderArg}`);
+        try {
+            const response = await fetch("http://127.0.0.1:8003/api/v1/code/sessions/import-local", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-user-id": "00000000-0000-0000-0000-000000000000"
+                },
+                body: JSON.stringify({ local_path: folderArg })
+            });
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`CLI Import session created: ${data.id}`);
+                return `/workspace?session_id=${data.id}`;
+            }
+        } catch (e) {
+            console.error("Failed to call local-import API for CLI folder:", e);
+        }
+    }
+    return DEFAULT_ROUTE;
+}
+
 function findRepoRoot() {
     const starts = [
         process.env.NEXUS_REPO_ROOT,
@@ -263,7 +290,9 @@ function createWindow() {
 
     mainWindow.setMenuBarVisibility(false);
 
-    loadFrontendRoute(mainWindow, DEFAULT_ROUTE);
+    resolveInitialRoute().then((route) => {
+        loadFrontendRoute(mainWindow, route);
+    });
 
     mainWindow.on("closed", () => {
         mainWindow = null;

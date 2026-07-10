@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "NEXUS AI Standalone Desktop OS Workspace",
   "main": "main.js",
+  "bin": {
+    "nexus": "./cli.js"
+  },
   "scripts": {
     "start": "electron .",
     "package": "electron-packager . \"NEXUS OS\" --platform=win32 --arch=x64 --out=dist --overwrite",
