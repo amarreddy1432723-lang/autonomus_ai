@@ -83,7 +83,7 @@ export default function ConversationPanel({
         </div>
         <div className={styles.prolongedComposer}>
           <button className={styles.composerAttachBtn} type="button" onClick={onAttachClick} disabled={busy} title="Attach files">
-            <Paperclip size={18} />
+            <Paperclip size={14} />
           </button>
           <textarea
             className={styles.prolongedInput}
@@ -100,13 +100,13 @@ export default function ConversationPanel({
           />
           <div className={styles.composerControlsRight}>
             <button className={styles.composerMicBtn} type="button" title="Voice Assist">
-              <Mic size={18} />
+              <Mic size={14} />
             </button>
             <button className={styles.composerBgBtn} type="button" onClick={onSubmitBackground} disabled={busy || !prompt.trim()} title="Execute in Background">
-              <Layers size={16} />
+              <Layers size={13} />
             </button>
             <button className={styles.composerSendBtn} type="button" onClick={onSubmit} disabled={busy || !prompt.trim()} title="Send message">
-              <ArrowUp size={18} />
+              <ArrowUp size={14} />
             </button>
           </div>
         </div>

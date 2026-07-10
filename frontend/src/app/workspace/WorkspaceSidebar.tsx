@@ -58,29 +58,29 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
       <div className={styles.sidebarActions}>
         {isElectron ? (
           <button type="button" onClick={openLocalFolder} disabled={busy}>
-            <FolderPlus size={16} />
+            <FolderPlus size={13} />
             Open Local Folder
           </button>
         ) : (
           <button type="button" onClick={onCreateProject} disabled={busy}>
-            <FolderPlus size={16} />
+            <FolderPlus size={13} />
             Create Project
           </button>
         )}
         <button type="button" onClick={onNewChat} disabled={busy}>
-          <MessageSquarePlus size={16} />
+          <MessageSquarePlus size={13} />
           New Chat
         </button>
         <button type="button" onClick={onSearch}>
-          <Search size={16} />
+          <Search size={13} />
           Search
         </button>
         <button type="button" onClick={onToggleFiles} disabled={busy}>
-          <Folder size={16} />
+          <Folder size={13} />
           Files Explorer
         </button>
         <button type="button" onClick={onToggleEditor}>
-          <Code2 size={16} />
+          <Code2 size={13} />
           {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
       </div>
@@ -89,7 +89,7 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         <div className={styles.sidebarSectionLabel}>Recent</div>
         {items.slice(0, 8).map((item) => (
           <button className={styles.recentItem} key={item.id} type="button" onClick={() => onOpenRecent(item)} disabled={item.id.startsWith('empty-')}>
-            <Code2 size={14} />
+            <Code2 size={13} />
             <span>
               <strong>{item.label}</strong>
               {item.detail && <em>{item.detail}</em>}
@@ -100,7 +100,7 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
 
       <div className={styles.sidebarUtilities}>
         <Link className={styles.sidebarSettings} href="/settings">
-          <Settings size={16} />
+          <Settings size={13} />
           Settings
         </Link>
       </div>
