@@ -33,6 +33,95 @@ const modes: { id: WorkspaceMode; label: string }[] = [
   { id: 'research', label: 'Research' },
 ];
 
+function compactText(value: string, max = 180) {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 1).trim()}...`;
+}
+
+function lineCount(value: string) {
+  return value.split(/\r?\n/).filter((line) => line.trim()).length;
+}
+
+function wordCount(value: string) {
+  return value.trim() ? value.trim().split(/\s+/).length : 0;
+}
+
+function extractFileMentions(value: string) {
+  const matches = value.match(/(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z0-9]+|[\w.-]+\.(?:tsx|ts|jsx|js|py|css|html|json|md|yml|yaml|toml|env|txt)/g) || [];
+  return Array.from(new Set(matches)).slice(0, 5);
+}
+
+function inferTaskType(value: string) {
+  const text = value.toLowerCase();
+  if (/(fix|bug|error|broken|not working|issue)/.test(text)) return 'Fix';
+  if (/(design|ui|ux|layout|screen|component|style)/.test(text)) return 'Design';
+  if (/(deploy|railway|vercel|production|release)/.test(text)) return 'Deploy';
+  if (/(test|lint|typecheck|build|compile)/.test(text)) return 'Check';
+  if (/(research|compare|latest|find|search)/.test(text)) return 'Research';
+  return 'Build';
+}
+
+function parseAssistantContent(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  try {
+    const payload = JSON.parse(trimmed);
+    if (!payload || typeof payload !== 'object') return null;
+    return {
+      status: typeof payload.status === 'string' ? payload.status : 'updated',
+      outputType: typeof payload.output_type === 'string' ? payload.output_type : 'response',
+      content: typeof payload.content === 'string' ? payload.content.trim() : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function MessageBody({ message }: { message: WorkspaceMessage }) {
+  const files = extractFileMentions(message.content);
+  const parsed = message.role === 'assistant' ? parseAssistantContent(message.content) : null;
+  const taskType = inferTaskType(message.content);
+  const content = parsed ? parsed.content : message.content;
+  const isLong = content.length > 260 || lineCount(content) > 5;
+  const primary = parsed && !parsed.content
+    ? 'NEXUS returned a structured draft without visible content. Check Activity for the generated plan, files, and job state.'
+    : content;
+
+  return (
+    <div className={styles.messageContent}>
+      <div className={styles.messageHeaderRow}>
+        <strong>{message.role === 'user' ? 'You' : 'NEXUS Code'}</strong>
+        <span>
+          {message.role === 'user' ? `${taskType} request` : parsed ? `${parsed.status} · ${parsed.outputType}` : 'Agent response'}
+        </span>
+      </div>
+      {message.role === 'user' && (
+        <div className={styles.messageDecisionRow}>
+          <span>{taskType}</span>
+          <span>{wordCount(message.content)} words</span>
+          <span>{lineCount(message.content)} lines</span>
+          {files.length > 0 && <span>{files.length} file refs</span>}
+        </div>
+      )}
+      <div className={isLong ? styles.messagePreview : styles.messageText}>
+        {isLong ? compactText(primary, 260) : primary}
+      </div>
+      {isLong && (
+        <details className={styles.messageDetails}>
+          <summary>{message.role === 'user' ? 'Show full prompt' : 'Show full response'}</summary>
+          <pre>{primary}</pre>
+        </details>
+      )}
+      {files.length > 0 && (
+        <div className={styles.messageFiles}>
+          {files.map((file) => <span key={file}>{file}</span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ConversationPanel({
   mode,
   messages,
@@ -76,7 +165,7 @@ export default function ConversationPanel({
               key={message.id}
             >
               <span className={styles.messageAvatar}>{message.role === 'user' ? 'U' : 'N'}</span>
-              <div className={styles.messageContent}>{message.content}</div>
+              <MessageBody message={message} />
             </article>
           ))
         )}
