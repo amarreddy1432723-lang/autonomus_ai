@@ -36,6 +36,25 @@ async function waitForFrontend(attempts = 90) {
     }
 }
 
+async function urlResponds(url, attempts = 1) {
+    for (let i = 0; i < attempts; i += 1) {
+        try {
+            const response = await fetch(url, { method: "HEAD" });
+            if (response.ok || response.status < 500) return true;
+        } catch {
+            // Port is not ready yet.
+        }
+        if (i < attempts - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+    }
+    return false;
+}
+
+async function serviceResponds(port) {
+    return urlResponds(`http://127.0.0.1:${port}/docs`) || urlResponds(`http://127.0.0.1:${port}/`);
+}
+
 async function loadFrontendRoute(windowRef, route) {
     await waitForFrontend();
     if (!windowRef || windowRef.isDestroyed()) return;
@@ -77,7 +96,12 @@ function getBackendEnv(port) {
     };
 }
 
-function startBackendService(serviceName, entryPoint, port) {
+async function startBackendService(serviceName, entryPoint, port) {
+    if (await serviceResponds(port)) {
+        console.log(`Reusing existing backend service: ${serviceName} on port ${port}`);
+        return;
+    }
+
     const rootDir = findRepoRoot();
     const backendDir = path.join(rootDir, "backend");
     
@@ -117,7 +141,12 @@ function startBackendService(serviceName, entryPoint, port) {
     console.log(`Started backend service: ${serviceName} on port ${port}`);
 }
 
-function startFrontendService() {
+async function startFrontendService() {
+    if (await urlResponds(FRONTEND_ORIGIN)) {
+        console.log(`Reusing existing Next.js frontend at ${FRONTEND_ORIGIN}`);
+        return;
+    }
+
     const rootDir = findRepoRoot();
     const frontendDir = path.join(rootDir, "frontend");
     
@@ -289,14 +318,14 @@ ipcMain.on("watch-directory", (event, dirPath) => {
     console.log(`Started watching directory: ${dirPath}`);
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     // 1. Launch local backend microservices
-    startBackendService("auth-service", "services.auth.main:app", 8001);
-    startBackendService("goals-service", "services.goals.main:app", 8002);
-    startBackendService("agent-service", "services.agent.main:app", 8003);
+    await startBackendService("auth-service", "services.auth.main:app", 8001);
+    await startBackendService("goals-service", "services.goals.main:app", 8002);
+    await startBackendService("agent-service", "services.agent.main:app", 8003);
 
     // 2. Launch Next.js frontend
-    startFrontendService();
+    await startFrontendService();
 
     // 3. Create native app UI window
     createWindow();
