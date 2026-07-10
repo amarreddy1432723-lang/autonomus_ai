@@ -2,6 +2,7 @@
 
 import { Bot, ChevronDown, Code2, Layers, Mic, Paperclip, Plus, X, ArrowUp } from 'lucide-react';
 import styles from './Workspace.module.css';
+import type { WorkspaceSuggestion } from './workspaceSuggestions';
 
 export type WorkspaceMode = 'auto' | 'code' | 'plan' | 'design' | 'deploy' | 'research';
 
@@ -17,8 +18,10 @@ type Props = {
   prompt: string;
   busy: boolean;
   selectedFileCount: number;
+  suggestions: WorkspaceSuggestion[];
   onModeChange: (mode: WorkspaceMode) => void;
   onPromptChange: (value: string) => void;
+  onTypeSuggestion: (suggestion: WorkspaceSuggestion) => void;
   onSubmit: () => void;
   onSubmitBackground: () => void;
   onAttachClick: () => void;
@@ -128,8 +131,10 @@ export default function ConversationPanel({
   prompt,
   busy,
   selectedFileCount,
+  suggestions,
   onModeChange,
   onPromptChange,
+  onTypeSuggestion,
   onSubmit,
   onSubmitBackground,
   onAttachClick,
@@ -171,6 +176,27 @@ export default function ConversationPanel({
         )}
       </div>
       <div className={styles.composer}>
+        {prompt.trim().length > 0 && suggestions.length > 0 && (
+          <div className={styles.nextMoveStrip}>
+            <div className={styles.nextMoveHeader}>
+              <span>NEXUS suggests</span>
+              <em>Pick a direction before execution</em>
+            </div>
+            <div className={styles.nextMoveGrid}>
+              {suggestions.map((suggestion) => (
+                <article className={styles.nextMoveCard} key={suggestion.id}>
+                  <div>
+                    <strong>{suggestion.title}</strong>
+                    <span>{suggestion.summary}</span>
+                  </div>
+                  <button type="button" onClick={() => onTypeSuggestion(suggestion)} disabled={busy}>
+                    Type
+                  </button>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
         <div className={styles.prolongedComposer}>
           <textarea
             className={styles.prolongedInput}

@@ -367,11 +367,13 @@
 }
 
 .activity,
-.appsPanel {
+.appsPanel,
+.taskPanel {
   border-left: 1px solid #24262b;
 }
 
-.appsPanel {
+.appsPanel,
+.taskPanel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -861,6 +863,159 @@
   margin-top: 4px;
 }
 
+.taskList {
+  height: calc(100vh - 44px - 44px);
+  overflow: auto;
+  padding: 10px;
+}
+
+.taskIntro,
+.taskEmpty {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  background: rgba(139, 92, 246, 0.07);
+  border-radius: 12px;
+  padding: 11px;
+  margin-bottom: 10px;
+}
+
+.taskIntro strong,
+.taskEmpty strong {
+  color: #f2f2f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.taskIntro span,
+.taskEmpty span {
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskCard,
+.taskCardActive {
+  display: grid;
+  gap: 9px;
+  border: 1px solid #24262b;
+  background: #15161a;
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.taskCardActive {
+  border-color: rgba(139, 92, 246, 0.42);
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.taskCardHeader {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.taskCardHeader > span {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #30333a;
+  background: #111215;
+  color: #c4b5fd;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.taskCardHeader div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.taskCardHeader strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f2f2f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.taskCardHeader em {
+  color: #a0a4ab;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.taskCard p,
+.taskCardActive p {
+  margin: 0;
+  color: #c5c8cf;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskMetaLine {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskMetaLine svg {
+  margin-top: 2px;
+  color: #c4b5fd;
+}
+
+.taskImpact {
+  border-top: 1px solid #24262b;
+  padding-top: 8px;
+  color: #8b8f98;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskCard button,
+.taskCardActive button {
+  width: 100%;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #30333a;
+  background: #111215;
+  color: #f2f2f2;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.taskCard button:hover:not(:disabled),
+.taskCardActive button:hover:not(:disabled) {
+  border-color: rgba(139, 92, 246, 0.42);
+}
+
+.taskCard button:disabled,
+.taskCardActive button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .fileItem,
 .activityItem,
 .message {
@@ -1078,6 +1233,99 @@
   border-top: 1px solid #24262b;
   padding: 14px 16px 16px;
   background: #101113;
+}
+
+.nextMoveStrip {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.nextMoveHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #a0a4ab;
+  font-size: 11px;
+}
+
+.nextMoveHeader span {
+  color: #f2f2f2;
+  font-weight: 750;
+}
+
+.nextMoveHeader em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #71717a;
+  font-style: normal;
+}
+
+.nextMoveGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.nextMoveCard {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #24262b;
+  background: #15161a;
+  border-radius: 12px;
+  padding: 9px;
+}
+
+.nextMoveCard div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.nextMoveCard strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f2f2f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.nextMoveCard span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.nextMoveCard button {
+  min-height: 28px;
+  border: 1px solid #30333a;
+  background: #111215;
+  color: #c4b5fd;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.nextMoveCard button:hover:not(:disabled) {
+  border-color: rgba(139, 92, 246, 0.42);
+  color: #f2f2f2;
+}
+
+.nextMoveCard button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .modeRow {

@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, AppWindow, ChevronLeft, ChevronRight, Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
+import { Activity, AppWindow, ChevronLeft, ChevronRight, Circle, ListChecks, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -10,7 +10,9 @@ import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
 import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
+import WorkspaceTaskPanel from './WorkspaceTaskPanel';
 import styles from './Workspace.module.css';
+import { buildWorkspaceSuggestions, WorkspaceSuggestion } from './workspaceSuggestions';
 
 const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
 
@@ -99,7 +101,8 @@ export default function WorkspacePage() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelView, setRightPanelView] = useState<'activity' | 'apps'>('activity');
+  const [rightPanelView, setRightPanelView] = useState<'activity' | 'apps' | 'tasks'>('activity');
+  const [typedSuggestionId, setTypedSuggestionId] = useState('');
   const [autoCompile, setAutoCompile] = useState(true);
   const [autoRunCommands, setAutoRunCommands] = useState(true);
   const [sandboxType, setSandboxType] = useState('local');
@@ -116,6 +119,11 @@ export default function WorkspacePage() {
   const activeProject = useMemo(
     () => projects.find((project) => project.id === projectId) || null,
     [projectId, projects]
+  );
+
+  const suggestions = useMemo(
+    () => buildWorkspaceSuggestions(prompt, mode, selectedFileIds.length),
+    [mode, prompt, selectedFileIds.length]
   );
 
   const openFile = useMemo(
@@ -302,7 +310,21 @@ export default function WorkspacePage() {
   const newChat = () => {
     setMessages([]);
     setPrompt('');
+    setTypedSuggestionId('');
     addEvent({ kind: 'start', message: 'New chat started', detail: 'Current project files remain in context.' });
+  };
+
+  const updatePrompt = (value: string) => {
+    setPrompt(value);
+    setTypedSuggestionId('');
+  };
+
+  const typeSuggestion = (suggestion: WorkspaceSuggestion) => {
+    setPrompt(suggestion.prompt);
+    setMode(suggestion.mode);
+    setTypedSuggestionId(suggestion.id);
+    setRightPanelView('tasks');
+    setRightPanelOpen(true);
   };
 
   const loadFiles = async () => {
@@ -1572,8 +1594,10 @@ export default function WorkspacePage() {
           prompt={prompt}
           busy={busy}
           selectedFileCount={selectedFileIds.length}
+          suggestions={suggestions}
           onModeChange={setMode}
-          onPromptChange={setPrompt}
+          onPromptChange={updatePrompt}
+          onTypeSuggestion={typeSuggestion}
           onSubmit={runWorkspace}
           onSubmitBackground={runWorkspaceBackground}
           onAttachClick={() => fileInputRef.current?.click()}
@@ -1648,6 +1672,14 @@ export default function WorkspacePage() {
             onRunChecks={runChecks}
           />
         )}
+        {rightPanelOpen && rightPanelView === 'tasks' && (
+          <WorkspaceTaskPanel
+            suggestions={suggestions}
+            activeSuggestionId={typedSuggestionId}
+            onTypeSuggestion={typeSuggestion}
+            busy={busy}
+          />
+        )}
         <div className={styles.rightRail}>
           <button
             className={rightPanelOpen && rightPanelView === 'activity' ? styles.rightRailButtonActive : styles.rightRailButton}
@@ -1670,6 +1702,17 @@ export default function WorkspacePage() {
             }}
           >
             <AppWindow size={14} />
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'tasks' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Suggested Tasks"
+            onClick={() => {
+              setRightPanelView('tasks');
+              setRightPanelOpen(true);
+            }}
+          >
+            <ListChecks size={14} />
           </button>
           <button
             className={styles.rightRailButton}
