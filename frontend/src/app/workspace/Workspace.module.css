@@ -2627,6 +2627,8 @@
   }
 
   .activity,
+  .appsPanel,
+  .taskPanel,
   .editor {
     display: none;
   }
