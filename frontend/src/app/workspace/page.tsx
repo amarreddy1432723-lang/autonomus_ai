@@ -4,7 +4,7 @@ import { MoreHorizontal, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
+import ActivityPanel, { ActivityEvent, AgentJob, GitHubRepository, GitHubStatus, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, RuntimeStatus, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -73,6 +73,7 @@ export default function WorkspacePage() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [jobs, setJobs] = useState<AgentJob[]>([]);
   const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [analysis, setAnalysis] = useState<WorkspaceAnalysis | null>(null);
   const [rollbackSnapshots, setRollbackSnapshots] = useState<RollbackSnapshot[]>([]);
   const [mode, setMode] = useState<WorkspaceMode>('auto');
@@ -85,6 +86,10 @@ export default function WorkspacePage() {
   const [previewLogs, setPreviewLogs] = useState<PreviewLogs | null>(null);
   const [previewChecks, setPreviewChecks] = useState<PreviewCheck[]>([]);
   const [repoUrl, setRepoUrl] = useState('');
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [githubRepositories, setGithubRepositories] = useState<GitHubRepository[]>([]);
+  const [selectedGithubRepo, setSelectedGithubRepo] = useState('');
+  const [githubBranchName, setGithubBranchName] = useState('');
   const [openTabs, setOpenTabs] = useState<OpenWorkspaceFile[]>([]);
   const [activeFileId, setActiveFileId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -170,12 +175,17 @@ export default function WorkspacePage() {
     setEvents([]);
     setJobs([]);
     setCommands([]);
+    setRuntimeStatus(null);
     setAnalysis(null);
     setRollbackSnapshots([]);
     setPatchPreview([]);
     setPatchReady(false);
     setPreviewChecks([]);
     setPreviewLogs(null);
+    setGithubStatus(null);
+    setGithubRepositories([]);
+    setSelectedGithubRepo('');
+    setGithubBranchName('');
     setOpenTabs([]);
     setActiveFileId('');
     setSearchMatches([]);
@@ -312,6 +322,7 @@ export default function WorkspacePage() {
       const jobData = await apiRequest(`/api/v1/code/jobs?code_session_id=${encodeURIComponent(session.id)}`);
       setJobs(jobData);
       await refreshCommands(session.id);
+      await refreshRuntimeStatus(session.id);
       await loadRollbackSnapshots(session.id);
       if (session.patch_preview?.length) {
         session.patch_preview.forEach((item: any) => {
@@ -326,9 +337,13 @@ export default function WorkspacePage() {
       try {
         const git = await apiRequest(`/api/v1/code/sessions/${session.id}/git/status`);
         if (git.git?.repo_url) setRepoUrl(git.git.repo_url);
+        const gitMeta = git.git || {};
+        if (gitMeta.repo_full_name) setSelectedGithubRepo(gitMeta.repo_full_name);
+        if (gitMeta.working_branch) setGithubBranchName(gitMeta.working_branch);
       } catch {
         // Git metadata is optional for early workspaces.
       }
+      await refreshGithubState();
     } catch {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
@@ -336,6 +351,7 @@ export default function WorkspacePage() {
       setAnalysis(null);
       setRollbackSnapshots([]);
       setCommands([]);
+      setRuntimeStatus(null);
     }
   };
 
@@ -391,6 +407,44 @@ export default function WorkspacePage() {
       setCommands(data.commands || []);
     } catch {
       setCommands([]);
+    }
+  };
+
+  const refreshRuntimeStatus = async (idValue = sessionId) => {
+    if (!idValue) {
+      setRuntimeStatus(null);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/runtime/status`);
+      setRuntimeStatus(data);
+    } catch {
+      setRuntimeStatus(null);
+    }
+  };
+
+  const refreshGithubState = async () => {
+    try {
+      const status = await apiRequest('/api/v1/github/status');
+      let repos = status.repositories || [];
+      if (status.connected) {
+        try {
+          const repoResult = await apiRequest('/api/v1/github/repositories');
+          repos = repoResult.repositories || repos;
+        } catch {
+          // Keep cached repositories from status if refresh fails.
+        }
+      }
+      setGithubRepositories(repos);
+      setGithubStatus((current) => ({
+        ...(current || {}),
+        ...status,
+        repositories: repos,
+      }));
+      if (!selectedGithubRepo && repos[0]?.full_name) setSelectedGithubRepo(repos[0].full_name);
+    } catch {
+      setGithubStatus(null);
+      setGithubRepositories([]);
     }
   };
 
@@ -837,7 +891,7 @@ export default function WorkspacePage() {
     try {
       const sid = await ensureSession();
       addEvent({ kind: 'deploy', message: `Running ${command}`, detail: 'Executing in an isolated temporary workspace from selected files.' });
-      const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-command`, {
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/runtime/command`, {
         method: 'POST',
         body: JSON.stringify({ command, timeout_seconds: 60 }),
       });
@@ -848,6 +902,7 @@ export default function WorkspacePage() {
         detail: result.output,
       });
       await hydrateSession(sid);
+      await refreshRuntimeStatus(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Command failed', detail: error instanceof Error ? error.message : 'Could not run command.' });
     } finally {
@@ -869,6 +924,7 @@ export default function WorkspacePage() {
         detail: `${result.passed || 0}/${result.total || 0} check(s) passed.`,
       });
       await hydrateSession(sid);
+      await refreshRuntimeStatus(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Workspace checks failed', detail: error instanceof Error ? error.message : 'Could not run workspace checks.' });
     } finally {
@@ -889,8 +945,36 @@ export default function WorkspacePage() {
         detail: `${result.files_written?.length || 0} file(s) written. Runtime is ready for safe commands.`,
       });
       await hydrateSession(sid);
+      await refreshRuntimeStatus(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Runtime sync failed', detail: error instanceof Error ? error.message : 'Could not sync runtime workspace.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const installRuntime = async () => {
+    if (busy) return;
+    const approved = window.confirm('Install dependencies inside the isolated runtime? This can download packages and may take a few minutes.');
+    if (!approved) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'deploy', message: 'Installing dependencies', detail: 'Running an approved install command inside the runtime sandbox.' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/runtime/install`, {
+        method: 'POST',
+        body: JSON.stringify({ approved: true, timeout_seconds: 300 }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      addEvent({
+        kind: result.status === 'passed' ? 'done' : 'error',
+        message: `Install ${result.status}`,
+        detail: result.output_excerpt || result.output || '',
+      });
+      await hydrateSession(sid);
+      await refreshRuntimeStatus(sid);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Install failed', detail: error instanceof Error ? error.message : 'Could not install dependencies.' });
     } finally {
       setBusy(false);
     }
@@ -1057,7 +1141,53 @@ export default function WorkspacePage() {
     }
   };
 
+  const connectGithubApp = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest('/api/v1/github/install-url');
+      if (result.install_url) {
+        window.open(result.install_url, '_blank', 'noopener,noreferrer');
+      }
+      addEvent({ kind: 'deploy', message: 'GitHub install opened', detail: 'Finish installation in GitHub, then refresh GitHub here.' });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'GitHub connect failed', detail: error instanceof Error ? error.message : 'Could not open GitHub install flow.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importGithubAppRepo = async () => {
+    const repository = selectedGithubRepo.trim();
+    if (!repository || busy) return;
+    setBusy(true);
+    try {
+      const sid = await ensureSession();
+      addEvent({ kind: 'read', message: 'Importing GitHub repository', detail: repository });
+      const result = await apiRequest(`/api/v1/code/sessions/${sid}/github/import`, {
+        method: 'POST',
+        body: JSON.stringify({ repository }),
+      });
+      (result.imported || []).forEach((item: any) => {
+        setSelected((current) => ({ ...current, [item.id]: true }));
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      if (result.git?.repo_url) setRepoUrl(result.git.repo_url);
+      addEvent({ kind: 'done', message: 'GitHub repository imported', detail: `${result.imported?.length || 0} files imported, ${result.skipped || 0} skipped.` });
+      await loadFiles();
+      await hydrateSession(sid);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const importRepo = async () => {
+    if (selectedGithubRepo) {
+      await importGithubAppRepo();
+      return;
+    }
     const url = repoUrl.trim();
     if (!url || busy) return;
     setBusy(true);
@@ -1077,6 +1207,26 @@ export default function WorkspacePage() {
       await hydrateSession(sid);
     } catch (error) {
       addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createGithubBranch = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/branch`, {
+        method: 'POST',
+        body: JSON.stringify({ branch_name: githubBranchName || undefined }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setGithubBranchName(result.branch_name || githubBranchName);
+      setGithubStatus((current) => ({ ...(current || {}), working_branch: result.branch_name, selected_repo: result.repo_full_name }));
+      addEvent({ kind: 'done', message: 'GitHub branch ready', detail: `${result.branch_name} from ${result.base_branch}` });
+      await hydrateSession(sessionId);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Create branch failed', detail: error instanceof Error ? error.message : 'Could not create branch.' });
     } finally {
       setBusy(false);
     }
@@ -1120,6 +1270,64 @@ export default function WorkspacePage() {
       await hydrateSession(sessionId);
     } catch (error) {
       addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitGithubChanges = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/commit`, {
+        method: 'POST',
+        body: JSON.stringify({ message: 'NEXUS Code workspace changes' }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.branch_name, latest_commit_sha: result.commit_sha }));
+      addEvent({ kind: 'done', message: 'GitHub commit created', detail: `${result.committed?.length || 0} file(s) committed to ${result.branch_name}.` });
+      await hydrateSession(sessionId);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Commit failed', detail: error instanceof Error ? error.message : 'Could not commit approved changes.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openGithubAppPr = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/pr`, {
+        method: 'POST',
+        body: JSON.stringify({ title: 'NEXUS Code workspace changes' }),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.head_branch, pull_request_url: result.pull_request_url }));
+      addEvent({ kind: 'done', message: 'GitHub pull request opened', detail: result.pull_request_url || '' });
+      await hydrateSession(sessionId);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkGithubPrStatus = async () => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/pr-status`);
+      setGithubStatus((current) => ({
+        ...(current || {}),
+        selected_repo: result.repo_full_name,
+        latest_commit_sha: result.latest_commit_sha,
+        pull_request_url: result.pull_request?.pull_request_url,
+        checks: result.checks || [],
+      }));
+      addEvent({ kind: 'done', message: 'GitHub PR status refreshed', detail: `${result.checks?.length || 0} check run(s).` });
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'PR status failed', detail: error instanceof Error ? error.message : 'Could not load PR status.' });
     } finally {
       setBusy(false);
     }
@@ -1257,6 +1465,10 @@ export default function WorkspacePage() {
           jobs={jobs}
           patchPreview={patchPreview}
           commands={commands}
+          runtimeStatus={runtimeStatus}
+          githubStatus={githubStatus}
+          githubRepositories={githubRepositories}
+          selectedGithubRepo={selectedGithubRepo}
           analysis={analysis}
           rollbackSnapshots={rollbackSnapshots}
           hasPatch={patchReady}
@@ -1269,7 +1481,8 @@ export default function WorkspacePage() {
           canFixPreview={Boolean(sessionId) && !busy}
           canStartPreview={selectedFileIds.length > 0 && !busy}
           repoUrl={repoUrl}
-          canUseGit={Boolean(repoUrl.trim()) && !busy}
+          githubBranchName={githubBranchName}
+          canUseGit={Boolean(sessionId) && !busy}
           onApply={applyChanges}
           onReject={rejectChanges}
           onApplyFile={applyFileChange}
@@ -1279,6 +1492,7 @@ export default function WorkspacePage() {
           onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
           onRunCommand={runCommand}
           onRunChecks={runChecks}
+          onInstallRuntime={installRuntime}
           onRefreshJobs={refreshCurrentJobs}
           onCancelJob={cancelJob}
           onRetryJob={retryJob}
@@ -1291,10 +1505,17 @@ export default function WorkspacePage() {
           onStopPreview={stopLivePreview}
           onLoadPreviewLogs={loadPreviewLogs}
           onRepoUrlChange={setRepoUrl}
+          onGithubRepoChange={setSelectedGithubRepo}
+          onGithubBranchNameChange={setGithubBranchName}
+          onConnectGithubApp={connectGithubApp}
+          onRefreshGithub={refreshGithubState}
+          onCreateGithubBranch={createGithubBranch}
+          onCommitGithubChanges={commitGithubChanges}
+          onCheckGithubPrStatus={checkGithubPrStatus}
           onConnectRepo={connectRepo}
           onImportRepo={importRepo}
           onPreparePr={preparePr}
-          onOpenPr={openPr}
+          onOpenPr={openGithubAppPr}
         />
       </div>
       {filesOpen && (

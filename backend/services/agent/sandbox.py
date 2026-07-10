@@ -6,6 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from datetime import datetime, UTC
 
 logger = logging.getLogger("nexus-sandbox")
 
@@ -19,12 +20,17 @@ def _command_result(
     timeout: int,
     workspace_root: Path,
 ) -> Dict[str, Any]:
+    completed_at = datetime_now_iso()
     return {
         "provider": provider,
         "status": status,
         "return_code": return_code,
         "output": (output or "(no output)")[-20000:],
-        "ran_at": datetime_now_iso(),
+        "output_excerpt": (output or "(no output)")[-4000:],
+        "artifacts": [],
+        "started_at": datetime_from_monotonic(started),
+        "completed_at": completed_at,
+        "ran_at": completed_at,
         "duration_ms": int((time.monotonic() - started) * 1000),
         "timeout_seconds": timeout,
         "workspace_root": str(workspace_root),
@@ -305,8 +311,27 @@ class E2BSandbox(CodeSandbox):
 
 
 def datetime_now_iso() -> str:
-    from datetime import datetime, UTC
     return datetime.now(UTC).isoformat() + "Z"
+
+
+def datetime_from_monotonic(started: float) -> str:
+    elapsed = time.monotonic() - started
+    return datetime.fromtimestamp(time.time() - elapsed, UTC).isoformat() + "Z"
+
+
+def _is_production(settings) -> bool:
+    env = str(getattr(settings, "APP_ENV", os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")))).lower()
+    return env in {"prod", "production"}
+
+
+def _local_allowed(settings) -> bool:
+    provider = str(getattr(settings, "SANDBOX_PROVIDER", "local")).lower()
+    explicit = bool(getattr(settings, "ALLOW_LOCAL_SANDBOX", False))
+    return provider == "local" and (explicit or not _is_production(settings))
+
+
+def _provider_error(provider: str, reason: str) -> RuntimeError:
+    return RuntimeError(f"Sandbox provider '{provider}' is unavailable: {reason}")
 
 
 def get_sandbox(session_id: str, workspace_root: Path, settings) -> CodeSandbox:
@@ -319,7 +344,9 @@ def get_sandbox(session_id: str, workspace_root: Path, settings) -> CodeSandbox:
                 return DockerSandbox(session_id, workspace_root, image=image)
         except Exception:
             pass
-        logger.warning("Docker daemon not running/accessible. Falling back to local subprocess sandbox.")
+        if _is_production(settings):
+            raise _provider_error("docker", "Docker daemon is not running and local fallback is disabled in production.")
+        logger.warning("Docker daemon not running/accessible.")
 
     elif provider == "e2b":
         api_key = getattr(settings, "E2B_API_KEY", None)
@@ -327,8 +354,14 @@ def get_sandbox(session_id: str, workspace_root: Path, settings) -> CodeSandbox:
             try:
                 return E2BSandbox(session_id, workspace_root, api_key=api_key)
             except Exception as e:
-                logger.error(f"Failed to initialize E2B Sandbox: {e}. Falling back to local.")
+                logger.error(f"Failed to initialize E2B Sandbox: {e}.")
+                if _is_production(settings):
+                    raise _provider_error("e2b", str(e))
         else:
-            logger.warning("E2B_API_KEY missing. Falling back to local subprocess sandbox.")
+            logger.warning("E2B_API_KEY missing.")
+            if _is_production(settings):
+                raise _provider_error("e2b", "E2B_API_KEY is required in production.")
 
-    return LocalSandbox(session_id, workspace_root)
+    if _local_allowed(settings):
+        return LocalSandbox(session_id, workspace_root)
+    raise _provider_error(provider, "local subprocess execution is disabled. Set ALLOW_LOCAL_SANDBOX=true only for development.")

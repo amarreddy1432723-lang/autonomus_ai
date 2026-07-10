@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
 from services.shared.models import AuditLog, CodeProject, CodeSession, FileReference
-from .agent_jobs import append_job_log, complete_job
+from .agent_jobs import append_job_log, complete_job, heartbeat_job
 from .config import settings
 from .file_service import get_file_text, put_object, storage_provider
 from .llm_router import get_chat_llm
@@ -44,6 +44,12 @@ ALLOWED_COMMAND_PREFIXES = (
 SAFE_SCRIPT_NAMES = {"build", "test", "lint", "typecheck", "check", "validate"}
 BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
 BLOCKED_COMMAND_MARKERS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "\n", "\r")
+INSTALL_COMMAND_PREFIXES = (
+    ("npm", "install"),
+    ("npm", "ci"),
+    ("pnpm", "install"),
+    ("yarn", "install"),
+)
 PREVIEW_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
@@ -365,6 +371,29 @@ def get_session_sandbox(session: CodeSession):
     return get_sandbox(str(session.id), root, settings)
 
 
+def _runtime_metadata_update(db: Session, session: CodeSession, **updates) -> dict:
+    metadata = _metadata(session)
+    runtime = dict(metadata.get("workspace_runtime") or {})
+    runtime.update(updates)
+    runtime["updated_at"] = _now()
+    metadata["workspace_runtime"] = runtime
+    _set_metadata(session, metadata)
+    db.commit()
+    return runtime
+
+
+def _sandbox_provider_status() -> dict:
+    provider = settings.SANDBOX_PROVIDER.lower()
+    production = str(settings.APP_ENV).lower() in {"prod", "production"}
+    return {
+        "provider": provider,
+        "production": production,
+        "local_allowed": bool(settings.ALLOW_LOCAL_SANDBOX) or not production,
+        "e2b_configured": bool(settings.E2B_API_KEY),
+        "docker_image": settings.SANDBOX_DOCKER_IMAGE,
+    }
+
+
 def _remove_managed_paths(root: Path, paths: list[str]) -> None:
     for path in paths:
         if not path:
@@ -380,6 +409,7 @@ def _remove_managed_paths(root: Path, paths: list[str]) -> None:
 
 def sync_workspace_runtime(db: Session, user_id: UUID, session: CodeSession) -> dict:
     root = _workspace_runtime_root(session)
+    _runtime_metadata_update(db, session, status="syncing", provider=settings.SANDBOX_PROVIDER.lower(), root=str(root), last_heartbeat_at=_now())
     metadata = _metadata(session)
     previous_paths = [str(path) for path in metadata.get("workspace_managed_paths") or []]
     _remove_managed_paths(root, previous_paths)
@@ -397,10 +427,14 @@ def sync_workspace_runtime(db: Session, user_id: UUID, session: CodeSession) -> 
         written.append(filename)
 
     metadata["workspace_runtime"] = {
+        **(metadata.get("workspace_runtime") or {}),
         "root": str(root),
+        "provider": settings.SANDBOX_PROVIDER.lower(),
+        "status": "synced",
         "last_synced_at": _now(),
         "files_written": len(written),
         "files_skipped": len(skipped),
+        "last_heartbeat_at": _now(),
     }
     metadata["workspace_managed_paths"] = written
     _set_metadata(session, metadata)
@@ -411,6 +445,8 @@ def sync_workspace_runtime(db: Session, user_id: UUID, session: CodeSession) -> 
         "files_written": written,
         "files_skipped": skipped,
         "last_synced_at": metadata["workspace_runtime"]["last_synced_at"],
+        "status": metadata["workspace_runtime"]["status"],
+        "provider": metadata["workspace_runtime"]["provider"],
     }
 
 
@@ -421,9 +457,16 @@ def workspace_runtime_status(db: Session, user_id: UUID, session: CodeSession) -
     command_data = discover_workspace_commands(db, user_id, session)
     command_log = list(metadata.get("command_log") or [])
     return {
+        **_sandbox_provider_status(),
         "provider": settings.SANDBOX_PROVIDER.lower(),
+        "status": runtime.get("status") or "not_synced",
         "root": str(root),
         "root_exists": root.exists(),
+        "started_at": runtime.get("started_at"),
+        "stopped_at": runtime.get("stopped_at"),
+        "last_heartbeat_at": runtime.get("last_heartbeat_at"),
+        "cleanup_status": runtime.get("cleanup_status"),
+        "install_state": runtime.get("install_state") or "not_installed",
         "last_synced_at": runtime.get("last_synced_at"),
         "files_written": runtime.get("files_written") or 0,
         "files_skipped": runtime.get("files_skipped") or 0,
@@ -968,6 +1011,45 @@ def _command_policy(command: str, parts: list[str], commands: list[dict] | None 
     return {"allowed": False, "reason": "Command is outside the workspace allowlist.", "allowed_commands": allowed_commands}
 
 
+def _install_policy(command: str, approved: bool) -> dict:
+    parts = _command_parts(command)
+    lowered = [part.lower() for part in parts]
+    allowed_commands = [" ".join(prefix) for prefix in INSTALL_COMMAND_PREFIXES]
+    if not lowered:
+        return {"allowed": False, "requires_approval": True, "reason": "Empty install command.", "allowed_commands": allowed_commands}
+    if any(marker in command for marker in BLOCKED_COMMAND_MARKERS):
+        return {"allowed": False, "requires_approval": True, "reason": "Shell control operators are blocked for install commands.", "allowed_commands": allowed_commands}
+    blocked = [token for token in lowered if token in BLOCKED_TOKENS]
+    if blocked:
+        return {"allowed": False, "requires_approval": True, "reason": f"Blocked token: {blocked[0]}", "allowed_commands": allowed_commands}
+    if not any(tuple(lowered[: len(prefix)]) == prefix for prefix in INSTALL_COMMAND_PREFIXES):
+        return {"allowed": False, "requires_approval": True, "reason": "Only package-manager install commands are allowed.", "allowed_commands": allowed_commands}
+    if not approved:
+        return {"allowed": False, "requires_approval": True, "reason": "Dependency install requires explicit approval.", "allowed_commands": allowed_commands}
+    return {"allowed": True, "requires_approval": True, "reason": "Approved package install command.", "allowed_commands": allowed_commands}
+
+
+def _standard_command_result(command: str, raw: dict, policy: dict, workspace_root: Path) -> dict:
+    output = str(raw.get("output") or "(no output)")
+    max_chars = max(1000, int(settings.SANDBOX_COMMAND_MAX_OUTPUT_CHARS))
+    return {
+        "command": command,
+        "status": raw.get("status") or "failed",
+        "return_code": raw.get("return_code"),
+        "provider": raw.get("provider") or settings.SANDBOX_PROVIDER.lower(),
+        "duration_ms": raw.get("duration_ms"),
+        "timeout_seconds": raw.get("timeout_seconds"),
+        "output": output[-max_chars:],
+        "output_excerpt": str(raw.get("output_excerpt") or output[-4000:]),
+        "artifacts": raw.get("artifacts") or [],
+        "started_at": raw.get("started_at"),
+        "completed_at": raw.get("completed_at") or raw.get("ran_at") or _now(),
+        "ran_at": raw.get("ran_at") or raw.get("completed_at") or _now(),
+        "policy": policy,
+        "workspace_root": str(workspace_root),
+    }
+
+
 def _command_allowed(parts: list[str], commands: list[dict] | None = None) -> bool:
     return bool(_command_policy(" ".join(parts), parts, commands).get("allowed"))
 
@@ -990,6 +1072,8 @@ def run_workspace_command(
 
     runtime = sync_workspace_runtime(db, user_id, session)
     workspace_root = Path(runtime["root"])
+    _runtime_metadata_update(db, session, status="running", provider=settings.SANDBOX_PROVIDER.lower(), active_command=command, last_heartbeat_at=_now())
+    heartbeat_job(db, job, "running", command, 45)
     append_activity(db, session, "deploy", f"Running command: {command}", f"Using persistent runtime workspace with {len(runtime['files_written'])} synced file(s).")
     append_job_log(db, job, "deploy", f"Running command: {command}", f"Runtime workspace: {workspace_root}")
 
@@ -997,10 +1081,9 @@ def run_workspace_command(
         sandbox = get_session_sandbox(session)
         result_data = sandbox.run_command(command, timeout=max(5, min(timeout_seconds, 120)))
 
-        status = result_data["status"]
-        output = result_data["output"]
-        return_code = result_data["return_code"]
-        ran_at = result_data["ran_at"]
+        result = _standard_command_result(command, result_data, policy, workspace_root)
+        status = result["status"]
+        output = result["output"]
 
         clipped = output[-12000:] if output else "(no output)"
         event_kind = "done" if status == "passed" else "error"
@@ -1008,20 +1091,16 @@ def run_workspace_command(
 
         metadata = _metadata(session)
         command_log = list(metadata.get("command_log") or [])
-        result = {
-            "command": command,
-            "status": status,
-            "return_code": return_code,
-            "output": clipped,
-            "provider": result_data.get("provider"),
-            "duration_ms": result_data.get("duration_ms"),
-            "timeout_seconds": result_data.get("timeout_seconds"),
-            "policy": policy,
-            "workspace_root": str(workspace_root),
-            "ran_at": ran_at,
-        }
         command_log.append(result)
         metadata["command_log"] = command_log[-50:]
+        runtime_meta = dict(metadata.get("workspace_runtime") or {})
+        runtime_meta.update({
+            "status": "completed" if status == "passed" else status,
+            "provider": result["provider"],
+            "last_command": result,
+            "last_heartbeat_at": _now(),
+        })
+        metadata["workspace_runtime"] = runtime_meta
         _set_metadata(session, metadata)
         db.commit()
         complete_job(db, job, "completed" if status == "passed" else "failed", result, commands_run=[result])
@@ -1035,8 +1114,58 @@ def run_workspace_command(
         clipped = output[-12000:] if output else "Command timed out before producing output."
         append_activity(db, session, "error", f"Command timed out: {command}", clipped)
         result = {"command": command, "status": "timeout", "return_code": None, "output": clipped, "workspace_root": str(workspace_root), "ran_at": _now()}
+        _runtime_metadata_update(db, session, status="timeout", last_command=result, last_heartbeat_at=_now())
         complete_job(db, job, "timeout", result, commands_run=[result])
         return result
+
+
+def install_workspace_dependencies(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    command: str | None = None,
+    approved: bool = False,
+    timeout_seconds: int | None = None,
+    job=None,
+) -> dict:
+    files = code_files(db, user_id, session)
+    package_manager = _package_manager_for_files(files)
+    install_command = (command or ("npm ci" if any(Path(item.filename).name == "package-lock.json" for item in files) else f"{package_manager} install")).strip()
+    policy = _install_policy(install_command, approved)
+    if not policy.get("allowed"):
+        append_activity(db, session, "error", "Install blocked", policy.get("reason") or "Install requires approval.")
+        complete_job(db, job, "blocked", {"error": "Install is not allowed", "policy": policy}, commands_run=[install_command])
+        raise HTTPException(status_code=403 if policy.get("requires_approval") else 400, detail={"message": policy.get("reason"), "policy": policy})
+
+    runtime = sync_workspace_runtime(db, user_id, session)
+    workspace_root = Path(runtime["root"])
+    _runtime_metadata_update(db, session, status="installing", install_state="running", provider=settings.SANDBOX_PROVIDER.lower(), active_command=install_command, last_heartbeat_at=_now())
+    heartbeat_job(db, job, "installing", install_command, 35)
+    append_activity(db, session, "deploy", "Installing workspace dependencies", install_command)
+    append_job_log(db, job, "deploy", "Installing workspace dependencies", install_command)
+
+    sandbox = get_session_sandbox(session)
+    raw = sandbox.run_command(install_command, timeout=max(30, min(timeout_seconds or settings.SANDBOX_INSTALL_TIMEOUT_SECONDS, 900)))
+    result = _standard_command_result(install_command, raw, policy, workspace_root)
+    status = result["status"]
+    metadata = _metadata(session)
+    command_log = list(metadata.get("command_log") or [])
+    command_log.append(result)
+    metadata["command_log"] = command_log[-50:]
+    runtime_meta = dict(metadata.get("workspace_runtime") or {})
+    runtime_meta.update({
+        "status": "synced" if status == "passed" else status,
+        "install_state": "installed" if status == "passed" else "failed",
+        "last_install": result,
+        "last_command": result,
+        "last_heartbeat_at": _now(),
+    })
+    metadata["workspace_runtime"] = runtime_meta
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "done" if status == "passed" else "error", f"Install {status}", result["output"])
+    complete_job(db, job, "completed" if status == "passed" else "failed", result, commands_run=[result])
+    return result
 
 
 def run_workspace_checks(
@@ -1073,6 +1202,8 @@ def run_workspace_checks(
 
     runtime = sync_workspace_runtime(db, user_id, session)
     workspace_root = Path(runtime["root"])
+    _runtime_metadata_update(db, session, status="running", provider=settings.SANDBOX_PROVIDER.lower(), active_command="workspace checks", last_heartbeat_at=_now())
+    heartbeat_job(db, job, "running", "Running workspace checks", 35)
     append_activity(db, session, "deploy", "Running workspace checks", ", ".join(commands))
     append_job_log(db, job, "deploy", "Running workspace checks", f"{len(commands)} command(s) in {workspace_root}")
 
@@ -1080,17 +1211,8 @@ def run_workspace_checks(
     sandbox = get_session_sandbox(session)
     for command in commands:
         res = sandbox.run_command(command, timeout=max(10, min(timeout_seconds, 180)))
-        result = {
-            "command": command,
-            "status": res["status"],
-            "return_code": res["return_code"],
-            "output": res["output"][-8000:] if res["output"] else "(no output)",
-            "provider": res.get("provider"),
-            "duration_ms": res.get("duration_ms"),
-            "timeout_seconds": res.get("timeout_seconds"),
-            "workspace_root": str(workspace_root),
-            "ran_at": res["ran_at"],
-        }
+        result = _standard_command_result(command, res, _command_policy(command, _command_parts(command), discovered_commands), workspace_root)
+        result["output"] = result["output"][-8000:] if result["output"] else "(no output)"
         results.append(result)
         append_activity(db, session, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"])
         append_job_log(db, job, "done" if result["status"] == "passed" else "error", f"Check {result['status']}: {command}", result["output"][:1000])
@@ -1110,6 +1232,13 @@ def run_workspace_checks(
     command_log.extend(results)
     metadata["command_log"] = command_log[-50:]
     metadata["last_check_run"] = summary
+    runtime_meta = dict(metadata.get("workspace_runtime") or {})
+    runtime_meta.update({
+        "status": "completed" if summary["status"] == "passed" else "failed",
+        "last_check_run": summary,
+        "last_heartbeat_at": _now(),
+    })
+    metadata["workspace_runtime"] = runtime_meta
     _set_metadata(session, metadata)
     db.commit()
     append_activity(db, session, "done" if summary["status"] == "passed" else "error", f"Workspace checks {summary['status']}", f"{passed}/{len(results)} check(s) passed")
@@ -1236,7 +1365,8 @@ def prepare_pull_request(db: Session, session: CodeSession, title: str | None = 
     branch_name = f"nexus/{slug[:48] or 'workspace-update'}"
     preview = metadata.get("patch_preview") or []
     patch_summary = metadata.get("patch_summary") or "Workspace changes prepared by NEXUS Code."
-    changed_files = [item.get("filename") for item in preview if item.get("filename")]
+    last_applied = metadata.get("last_applied_files") or []
+    changed_files = [item.get("filename") for item in preview if item.get("filename")] or [item.get("filename") for item in last_applied if item.get("filename")]
     recent_checks = metadata.get("preview_checks") or []
     last_check = recent_checks[-1] if recent_checks else None
     body_lines = [
@@ -1933,6 +2063,10 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
         if str(item.get("file_id") or "") not in {entry["file_id"] for entry in changed}
     ] if remaining_replacements else []
     metadata["patch_summary"] = payload.get("summary") or ""
+    metadata["last_applied_files"] = [
+        {"file_id": item["file_id"], "filename": item["filename"], "applied_at": _now()}
+        for item in changed
+    ]
     metadata["rollback_snapshots"] = (metadata.get("rollback_snapshots") or [])[-10:] + [{
         "snapshot_id": uuid.uuid4().hex,
         "applied_at": _now(),

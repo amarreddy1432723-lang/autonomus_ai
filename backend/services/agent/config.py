@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")           # for Groq hosted inference
     SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "mock-serper-key-for-local-dev-only")
     GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN")
+    GITHUB_APP_ID: Optional[str] = os.getenv("GITHUB_APP_ID")
+    GITHUB_APP_PRIVATE_KEY: Optional[str] = os.getenv("GITHUB_APP_PRIVATE_KEY")
+    GITHUB_APP_CLIENT_ID: Optional[str] = os.getenv("GITHUB_APP_CLIENT_ID")
+    GITHUB_APP_CLIENT_SECRET: Optional[str] = os.getenv("GITHUB_APP_CLIENT_SECRET")
+    GITHUB_APP_WEBHOOK_SECRET: Optional[str] = os.getenv("GITHUB_APP_WEBHOOK_SECRET")
+    GITHUB_APP_NAME: str = os.getenv("GITHUB_APP_NAME", "nexus-ai")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", os.getenv("NEXT_PUBLIC_FRONTEND_URL", "http://localhost:3000"))
 
     # ── Phase 4 Memory System ───────────────────────────────────
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
@@ -75,9 +82,14 @@ class Settings(BaseSettings):
     VAULT_PBKDF2_ITERATIONS: int = int(os.getenv("VAULT_PBKDF2_ITERATIONS", "600000"))
 
     # ── Sandbox Runtime ──────────────────────────────────────
+    APP_ENV: str = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local"))
     SANDBOX_PROVIDER: str = os.getenv("SANDBOX_PROVIDER", "local")
     SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim")
     E2B_API_KEY: Optional[str] = os.getenv("E2B_API_KEY")
+    ALLOW_LOCAL_SANDBOX: bool = os.getenv("ALLOW_LOCAL_SANDBOX", "false").lower() == "true"
+    SANDBOX_COMMAND_MAX_OUTPUT_CHARS: int = int(os.getenv("SANDBOX_COMMAND_MAX_OUTPUT_CHARS", "20000"))
+    SANDBOX_COMMAND_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_COMMAND_TIMEOUT_SECONDS", "120"))
+    SANDBOX_INSTALL_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_INSTALL_TIMEOUT_SECONDS", "300"))
     AGENT_WORKER_ENABLED: bool = os.getenv("AGENT_WORKER_ENABLED", "true").lower() == "true"
     AGENT_WORKER_POLL_SECONDS: float = float(os.getenv("AGENT_WORKER_POLL_SECONDS", "1.0"))
     AGENT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_JOB_TIMEOUT_SECONDS", "900"))

@@ -192,6 +192,12 @@ class CodeInstructionRequest(BaseModel):
 class CodeCommandRunRequest(BaseModel):
     command: str
     timeout_seconds: int = 45
+    approved: bool = False
+
+class CodeRuntimeInstallRequest(BaseModel):
+    command: Optional[str] = None
+    timeout_seconds: int = 300
+    approved: bool = False
 
 class CodePreviewCheckRequest(BaseModel):
     url: str
@@ -208,6 +214,21 @@ class CodeGitConnectRequest(BaseModel):
 class CodeGitImportRequest(BaseModel):
     repo_url: str
     branch: Optional[str] = None
+
+class GitHubSessionImportRequest(BaseModel):
+    repository: str
+    branch: Optional[str] = None
+
+class GitHubBranchRequest(BaseModel):
+    branch_name: Optional[str] = None
+    base_branch: Optional[str] = None
+
+class GitHubCommitRequest(BaseModel):
+    message: Optional[str] = None
+
+class GitHubPullRequestRequest(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
 
 class CodePreparePullRequest(BaseModel):
     title: Optional[str] = None
@@ -1274,6 +1295,36 @@ def get_code_session_runtime_status(session_id: UUID, user_id: UUID = Depends(ge
     session = get_code_session(db, user_id, session_id)
     return workspace_runtime_status(db, user_id, session)
 
+@app.post("/api/v1/code/sessions/{session_id}/runtime/install")
+def install_code_session_runtime(
+    session_id: UUID,
+    request: CodeRuntimeInstallRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, install_workspace_dependencies
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "runtime_install", request.command or "Install workspace dependencies", approval_state="approved" if request.approved else "pending")
+    result = install_workspace_dependencies(db, user_id, session, request.command, request.approved, request.timeout_seconds, job)
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/runtime/command")
+def run_code_session_runtime_command(
+    session_id: UUID,
+    request: CodeCommandRunRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, run_workspace_command
+    from .agent_jobs import create_agent_job, serialize_job
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "runtime_command", request.command)
+    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, job)
+    return {**result, "job": serialize_job(job)}
+
 @app.post("/api/v1/code/sessions/{session_id}/preview/start")
 def start_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .agent_jobs import create_agent_job, serialize_job
@@ -1638,6 +1689,130 @@ def run_code_session_command(
     result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, job)
     return {**result, "job": serialize_job(job)}
 
+@app.get("/api/v1/github/status")
+def get_github_app_status(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .github_service import github_status
+
+    return github_status(db, user_id)
+
+@app.get("/api/v1/github/install-url")
+def get_github_app_install_url(user_id: UUID = Depends(get_current_user_id)):
+    from .github_service import github_install_url
+
+    return github_install_url(user_id, JWT_SECRET_KEY)
+
+@app.get("/api/v1/github/callback")
+def github_app_callback(
+    installation_id: str = Query(""),
+    state: str = Query(""),
+    setup_action: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    from .github_service import handle_github_callback
+
+    if not installation_id:
+        raise HTTPException(status_code=400, detail="GitHub installation_id is missing")
+    result = handle_github_callback(db, installation_id, state, JWT_SECRET_KEY)
+    frontend = settings.FRONTEND_URL.rstrip("/")
+    return Response(
+        content=(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<title>GitHub connected</title></head><body style='font-family:sans-serif;background:#08080c;color:#f5f5f5;padding:32px'>"
+            "<h2>GitHub connected</h2><p>You can close this tab and return to NEXUS Code.</p>"
+            f"<script>setTimeout(function(){{location.href='{frontend}/workspace?github=connected'}},700)</script>"
+            "</body></html>"
+        ),
+        media_type="text/html",
+    )
+
+@app.get("/api/v1/github/repositories")
+def list_github_app_repositories(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .github_service import list_repositories
+
+    return list_repositories(db, user_id)
+
+@app.post("/api/v1/code/sessions/{session_id}/github/import")
+def github_import_code_session(
+    session_id: UUID,
+    request: GitHubSessionImportRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, refresh_file_tree, update_project_files_from_session, append_activity
+    from .github_service import import_repository
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_import", request.repository)
+    result = import_repository(db, user_id, session, request.repository, request.branch)
+    refresh_file_tree(db, user_id, session)
+    update_project_files_from_session(db, session)
+    append_activity(db, session, "read", "GitHub repository imported", f"{len(result.get('imported') or [])} file(s) imported from {request.repository}")
+    complete_job(db, job, "completed", result, files_touched=result.get("imported") or [])
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/github/branch")
+def github_create_code_session_branch(
+    session_id: UUID,
+    request: GitHubBranchRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, append_activity
+    from .github_service import create_branch
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_branch", request.branch_name or "Create GitHub branch", approval_state="approved")
+    result = create_branch(db, user_id, session, request.branch_name, request.base_branch)
+    append_activity(db, session, "done", "GitHub branch ready", f"{result['branch_name']} from {result['base_branch']}")
+    complete_job(db, job, "completed", result, approval_state="approved")
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/github/commit")
+def github_commit_code_session_changes(
+    session_id: UUID,
+    request: GitHubCommitRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, append_activity
+    from .github_service import commit_approved_changes
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_commit", request.message or "Commit approved NEXUS Code changes", approval_state="approved")
+    result = commit_approved_changes(db, user_id, session, request.message)
+    append_activity(db, session, "done", "GitHub commit created", f"{len(result.get('committed') or [])} file(s) committed to {result.get('branch_name')}")
+    complete_job(db, job, "completed", result, files_touched=result.get("committed") or [], approval_state="approved")
+    return {**result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/github/pr")
+def github_open_code_session_pr(
+    session_id: UUID,
+    request: GitHubPullRequestRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, append_activity
+    from .github_service import open_pull_request
+
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "github_pr", request.title or "Open GitHub pull request", approval_state="approved")
+    result = open_pull_request(db, user_id, session, request.title, request.body)
+    append_activity(db, session, "done", "GitHub pull request opened", result.get("pull_request_url") or "")
+    complete_job(db, job, "completed", result, approval_state="approved")
+    return {**result, "job": serialize_job(job)}
+
+@app.get("/api/v1/code/sessions/{session_id}/github/pr-status")
+def github_code_session_pr_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session
+    from .github_service import pr_status
+
+    session = get_code_session(db, user_id, session_id)
+    return pr_status(db, user_id, session)
+
 @app.post("/api/v1/code/sessions/{session_id}/run-checks")
 def run_code_session_checks(
     session_id: UUID,
@@ -1927,6 +2102,34 @@ def get_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_use
     from .agent_jobs import get_agent_job, serialize_job
 
     return serialize_job(get_agent_job(db, user_id, job_id))
+
+@app.get("/api/v1/code/jobs/{job_id}/logs/stream")
+def stream_agent_job_logs(job_id: UUID, user_id: UUID = Depends(get_current_user_id)):
+    import time
+    from services.shared.database import SessionLocal
+    from .agent_jobs import get_agent_job, serialize_job
+
+    def event_stream():
+        sent = 0
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            db_stream = SessionLocal()
+            try:
+                job = get_agent_job(db_stream, user_id, job_id)
+                payload = serialize_job(job)
+                logs = payload.get("logs") or []
+                for log in logs[sent:]:
+                    yield f"event: log\ndata: {json.dumps(log)}\n\n"
+                sent = len(logs)
+                yield f"event: status\ndata: {json.dumps({'status': payload.get('status'), 'progress': payload.get('progress')})}\n\n"
+                if payload.get("status") not in {"running", "queued"}:
+                    yield f"event: done\ndata: {json.dumps(payload)}\n\n"
+                    break
+            finally:
+                db_stream.close()
+            time.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 @app.post("/api/v1/code/jobs/{job_id}/cancel")
 def cancel_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

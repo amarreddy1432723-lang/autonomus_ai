@@ -29,6 +29,33 @@ def test_sandbox_resolver_defaults_to_local():
     # Mock settings
     class MockSettings:
         SANDBOX_PROVIDER = "local"
+        APP_ENV = "local"
+        ALLOW_LOCAL_SANDBOX = True
         
     sandbox = get_sandbox(session_id, workspace_root, MockSettings())
     assert isinstance(sandbox, LocalSandbox)
+
+def test_sandbox_resolver_rejects_local_in_production_without_explicit_allow():
+    session_id = str(uuid4())
+    workspace_root = Path("runtime/test-workspaces") / session_id
+
+    class MockSettings:
+        SANDBOX_PROVIDER = "local"
+        APP_ENV = "production"
+        ALLOW_LOCAL_SANDBOX = False
+
+    with pytest.raises(RuntimeError, match="local subprocess execution is disabled"):
+        get_sandbox(session_id, workspace_root, MockSettings())
+
+def test_e2b_requires_api_key_in_production():
+    session_id = str(uuid4())
+    workspace_root = Path("runtime/test-workspaces") / session_id
+
+    class MockSettings:
+        SANDBOX_PROVIDER = "e2b"
+        APP_ENV = "production"
+        ALLOW_LOCAL_SANDBOX = False
+        E2B_API_KEY = None
+
+    with pytest.raises(RuntimeError, match="E2B_API_KEY is required"):
+        get_sandbox(session_id, workspace_root, MockSettings())

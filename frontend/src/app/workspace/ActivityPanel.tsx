@@ -47,6 +47,55 @@ export type WorkspaceCommand = {
   script?: string;
 };
 
+export type GitHubRepository = {
+  id?: number | string;
+  full_name: string;
+  default_branch?: string;
+  private?: boolean;
+  html_url?: string;
+};
+
+export type GitHubStatus = {
+  configured?: boolean;
+  connected?: boolean;
+  app_name?: string;
+  account?: { login?: string; type?: string; avatar_url?: string };
+  repositories?: GitHubRepository[];
+  selected_repo?: string;
+  working_branch?: string;
+  latest_commit_sha?: string;
+  pull_request_url?: string;
+  checks?: Array<{ name?: string; status?: string; conclusion?: string; html_url?: string }>;
+};
+
+export type RuntimeStatus = {
+  provider?: string;
+  status?: string;
+  production?: boolean;
+  local_allowed?: boolean;
+  e2b_configured?: boolean;
+  root_exists?: boolean;
+  last_synced_at?: string;
+  files_written?: number;
+  files_skipped?: number;
+  managed_paths?: number;
+  install_state?: string;
+  last_heartbeat_at?: string;
+  last_command?: {
+    command?: string;
+    status?: string;
+    return_code?: number | null;
+    provider?: string;
+    duration_ms?: number;
+    output_excerpt?: string;
+  };
+  preview?: {
+    status?: string;
+    preview_url?: string;
+    command?: string;
+  };
+};
+
 export type PreviewLogs = {
   logs?: string;
   issues?: string[];
@@ -99,6 +148,10 @@ type Props = {
   jobs: AgentJob[];
   patchPreview: PatchPreviewItem[];
   commands: WorkspaceCommand[];
+  runtimeStatus: RuntimeStatus | null;
+  githubStatus: GitHubStatus | null;
+  githubRepositories: GitHubRepository[];
+  selectedGithubRepo: string;
   analysis: WorkspaceAnalysis | null;
   rollbackSnapshots: RollbackSnapshot[];
   hasPatch: boolean;
@@ -113,6 +166,7 @@ type Props = {
   canRunCommand: boolean;
   onRunCommand: (command: string) => void;
   onRunChecks: () => void;
+  onInstallRuntime: () => void;
   onRefreshJobs: () => void;
   onCancelJob: (jobId: string) => void;
   onRetryJob: (jobId: string) => void;
@@ -131,7 +185,15 @@ type Props = {
   canStartPreview: boolean;
   previewLogs: PreviewLogs | null;
   repoUrl: string;
+  githubBranchName: string;
   onRepoUrlChange: (value: string) => void;
+  onGithubRepoChange: (value: string) => void;
+  onGithubBranchNameChange: (value: string) => void;
+  onConnectGithubApp: () => void;
+  onRefreshGithub: () => void;
+  onCreateGithubBranch: () => void;
+  onCommitGithubChanges: () => void;
+  onCheckGithubPrStatus: () => void;
   onConnectRepo: () => void;
   onImportRepo: () => void;
   onPreparePr: () => void;
@@ -199,6 +261,10 @@ export default function ActivityPanel({
   jobs,
   patchPreview,
   commands: workspaceCommands,
+  runtimeStatus,
+  githubStatus,
+  githubRepositories,
+  selectedGithubRepo,
   analysis,
   rollbackSnapshots,
   hasPatch,
@@ -213,6 +279,7 @@ export default function ActivityPanel({
   canRunCommand,
   onRunCommand,
   onRunChecks,
+  onInstallRuntime,
   onRefreshJobs,
   onCancelJob,
   onRetryJob,
@@ -231,7 +298,15 @@ export default function ActivityPanel({
   canStartPreview,
   previewLogs,
   repoUrl,
+  githubBranchName,
   onRepoUrlChange,
+  onGithubRepoChange,
+  onGithubBranchNameChange,
+  onConnectGithubApp,
+  onRefreshGithub,
+  onCreateGithubBranch,
+  onCommitGithubChanges,
+  onCheckGithubPrStatus,
   onConnectRepo,
   onImportRepo,
   onPreparePr,
@@ -328,6 +403,40 @@ export default function ActivityPanel({
 
         {activeTab === 'checks' && (
           <div className={styles.analysisPanel}>
+            <div className={styles.runtimePanel}>
+              <div className={styles.changesHeader}>
+                <span>Runtime</span>
+                <strong>{runtimeStatus?.status || 'not synced'}</strong>
+              </div>
+              <div className={styles.runtimeGrid}>
+                <span>Provider</span>
+                <strong>{runtimeStatus?.provider || 'unknown'}</strong>
+                <span>Mode</span>
+                <strong>{runtimeStatus?.production ? 'production' : 'development'}</strong>
+                <span>Files</span>
+                <strong>{runtimeStatus?.files_written ?? 0} synced</strong>
+                <span>Install</span>
+                <strong>{runtimeStatus?.install_state || 'not installed'}</strong>
+                <span>Preview</span>
+                <strong>{runtimeStatus?.preview?.status || 'stopped'}</strong>
+              </div>
+              {runtimeStatus?.provider === 'local' && !runtimeStatus.local_allowed && (
+                <div className={styles.policyWarning}>Local subprocess execution is disabled for this environment.</div>
+              )}
+              {runtimeStatus?.provider === 'e2b' && runtimeStatus.e2b_configured === false && (
+                <div className={styles.policyWarning}>E2B is selected but no API key is configured.</div>
+              )}
+              {runtimeStatus?.last_command && (
+                <div className={styles.lastCommand}>
+                  <strong>{runtimeStatus.last_command.command}</strong>
+                  <span>{runtimeStatus.last_command.status} via {runtimeStatus.last_command.provider || runtimeStatus.provider} {runtimeStatus.last_command.duration_ms ? `· ${runtimeStatus.last_command.duration_ms}ms` : ''}</span>
+                  {runtimeStatus.last_command.output_excerpt && <em>{runtimeStatus.last_command.output_excerpt}</em>}
+                </div>
+              )}
+              <button className={styles.fullWidthButton} type="button" onClick={onInstallRuntime} disabled={!canRunCommand}>
+                Install dependencies
+              </button>
+            </div>
             <div className={styles.changesHeader}>
               <span>Workspace Map</span>
               <strong>{analysis?.summary?.files || 0}</strong>
@@ -489,27 +598,87 @@ export default function ActivityPanel({
 
         {activeTab === 'git' && (
           <div className={styles.previewPanel}>
-          <div className={styles.meta}>Git / PR</div>
-          <div className={styles.previewInputRow}>
+          <div className={styles.changesHeader}>
+            <span>GitHub App</span>
+            <strong>{githubStatus?.connected ? 'connected' : githubStatus?.configured ? 'ready' : 'not configured'}</strong>
+          </div>
+          {githubStatus?.connected ? (
+            <div className={styles.gitConnectionCard}>
+              <strong>{githubStatus.account?.login || 'GitHub connected'}</strong>
+              <span>{githubStatus.account?.type || 'installation'} · {githubRepositories.length} repo(s)</span>
+            </div>
+          ) : (
+            <button className={styles.fullWidthButton} type="button" onClick={onConnectGithubApp}>
+              Connect GitHub
+            </button>
+          )}
+          <button className={styles.fullWidthButton} type="button" onClick={onRefreshGithub}>
+            Refresh GitHub
+          </button>
+          <label className={styles.formLabel}>
+            Choose repo
+            <select className={styles.previewInput} value={selectedGithubRepo} onChange={(event) => onGithubRepoChange(event.target.value)} disabled={!githubStatus?.connected}>
+              <option value="">Select repository</option>
+              {githubRepositories.map((repo) => (
+                <option key={repo.full_name} value={repo.full_name}>
+                  {repo.full_name}{repo.private ? ' · private' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className={styles.fullWidthButton} type="button" onClick={onImportRepo} disabled={!selectedGithubRepo || !canUseGit}>
+            Import repo
+          </button>
+          <label className={styles.formLabel}>
+            Working branch
             <input
               className={styles.previewInput}
-              value={repoUrl}
-              onChange={(event) => onRepoUrlChange(event.target.value)}
-              placeholder="https://github.com/org/repo"
+              value={githubBranchName}
+              onChange={(event) => onGithubBranchNameChange(event.target.value)}
+              placeholder="nexus/workspace-update"
             />
-            <button className={styles.commandButton} type="button" onClick={onConnectRepo} disabled={!canUseGit}>
-              Connect
-            </button>
-          </div>
-          <button className={styles.fullWidthButton} type="button" onClick={onImportRepo} disabled={!canUseGit}>
-            Import repo files
+          </label>
+          <button className={styles.fullWidthButton} type="button" onClick={onCreateGithubBranch} disabled={!selectedGithubRepo || !canUseGit}>
+            Create branch
           </button>
           <button className={styles.fullWidthButton} type="button" onClick={onPreparePr} disabled={!canUseGit}>
             Prepare PR
           </button>
-          <button className={styles.fullWidthButton} type="button" onClick={onOpenPr} disabled={!canUseGit}>
-            Open GitHub PR
+          <button className={styles.fullWidthButton} type="button" onClick={onCommitGithubChanges} disabled={!canUseGit}>
+            Commit approved changes
           </button>
+          <button className={styles.fullWidthButton} type="button" onClick={onOpenPr} disabled={!canUseGit}>
+            Open PR
+          </button>
+          <button className={styles.fullWidthButton} type="button" onClick={onCheckGithubPrStatus} disabled={!canUseGit}>
+            View PR/check status
+          </button>
+          {githubStatus?.selected_repo && <div className={styles.contextMemory}>Repo: {githubStatus.selected_repo}</div>}
+          {githubStatus?.working_branch && <div className={styles.contextMemory}>Branch: {githubStatus.working_branch}</div>}
+          {githubStatus?.latest_commit_sha && <div className={styles.contextMemory}>Commit: {githubStatus.latest_commit_sha.slice(0, 12)}</div>}
+          {githubStatus?.pull_request_url && (
+            <a className={styles.contextMemory} href={githubStatus.pull_request_url} target="_blank" rel="noreferrer">Open pull request</a>
+          )}
+          {(githubStatus?.checks || []).slice(0, 5).map((check) => (
+            <div className={styles.contextLine} key={`${check.name}-${check.html_url}`}>
+              <strong>{check.name || 'check'}</strong>
+              <span>{check.conclusion || check.status || 'queued'}</span>
+            </div>
+          ))}
+          <details className={styles.advancedBox}>
+            <summary>Advanced manual URL fallback</summary>
+            <div className={styles.previewInputRow}>
+              <input
+                className={styles.previewInput}
+                value={repoUrl}
+                onChange={(event) => onRepoUrlChange(event.target.value)}
+                placeholder="https://github.com/org/repo"
+              />
+              <button className={styles.commandButton} type="button" onClick={onConnectRepo} disabled={!repoUrl.trim() || !canUseGit}>
+                Connect
+              </button>
+            </div>
+          </details>
         </div>
         )}
 

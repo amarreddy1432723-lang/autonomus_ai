@@ -844,6 +844,110 @@
   cursor: not-allowed;
 }
 
+.runtimePanel {
+  border: 1px solid #25253a;
+  background: #101018;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+
+.runtimeGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 7px 10px;
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+.runtimeGrid span {
+  color: #8f8f9d;
+}
+
+.runtimeGrid strong {
+  color: #e7e7ff;
+  text-align: right;
+}
+
+.policyWarning {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: #facc15;
+  border-radius: 7px;
+  padding: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.lastCommand {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid #25253a;
+  margin-top: 9px;
+  padding-top: 9px;
+  font-size: 11px;
+}
+
+.lastCommand strong {
+  color: #f5f5ff;
+}
+
+.lastCommand span {
+  color: #9b9bb2;
+}
+
+.lastCommand em {
+  max-height: 90px;
+  overflow: auto;
+  color: #b8b8c9;
+  white-space: pre-wrap;
+  font-style: normal;
+  font-family: var(--font-mono);
+}
+
+.gitConnectionCard {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.gitConnectionCard strong {
+  color: #f5f5ff;
+}
+
+.gitConnectionCard span {
+  color: #9ca3c7;
+}
+
+.formLabel {
+  display: grid;
+  gap: 6px;
+  color: #9ca3c7;
+  font-size: 11px;
+  font-weight: 800;
+  margin-top: 9px;
+}
+
+.advancedBox {
+  border-top: 1px solid #202033;
+  margin-top: 12px;
+  padding-top: 10px;
+  color: #8f8f9d;
+  font-size: 11px;
+}
+
+.advancedBox summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: #b8b8d8;
+}
+
 .activityItem {
   padding: 10px;
   margin-bottom: 8px;
