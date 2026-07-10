@@ -1,9 +1,12 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electron", {
+    isDesktop: true,
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
     close: () => ipcRenderer.send("window-close"),
+    hideLauncher: () => ipcRenderer.send("launcher-hide"),
+    openRoute: (route) => ipcRenderer.send("open-route", route),
     selectDirectory: () => ipcRenderer.invoke("dialog-select-directory"),
     watchDirectory: (dirPath) => ipcRenderer.send("watch-directory", dirPath),
     onDirectoryChanged: (callback) => {

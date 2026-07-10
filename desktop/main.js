@@ -4,8 +4,43 @@ const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
 
 let mainWindow;
+let launcherWindow;
 let backendProcesses = [];
 let frontendProcess = null;
+const FRONTEND_ORIGIN = process.env.NEXUS_FRONTEND_URL || "http://localhost:3000";
+const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/workspace";
+
+const gotLock = app.requestSingleInstanceLock();
+
+if (!gotLock) {
+    app.quit();
+} else {
+    app.on("second-instance", () => {
+        if (!mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    });
+}
+
+async function waitForFrontend(attempts = 90) {
+    for (let i = 0; i < attempts; i += 1) {
+        try {
+            const response = await fetch(FRONTEND_ORIGIN, { method: "HEAD" });
+            if (response.ok || response.status < 500) return;
+        } catch {
+            // The dev server is still booting.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+}
+
+async function loadFrontendRoute(windowRef, route) {
+    await waitForFrontend();
+    if (!windowRef || windowRef.isDestroyed()) return;
+    const safeRoute = typeof route === "string" && route.startsWith("/") ? route : DEFAULT_ROUTE;
+    windowRef.loadURL(`${FRONTEND_ORIGIN}${safeRoute}`);
+}
 
 function startBackendService(serviceName, entryPoint, port) {
     const rootDir = path.resolve(__dirname, "..");
@@ -23,7 +58,13 @@ function startBackendService(serviceName, entryPoint, port) {
     
     const p = spawn(uvicornPath, args, {
         cwd: backendDir,
-        env: { ...process.env, PORT: port.toString() },
+        env: {
+            ...process.env,
+            PORT: port.toString(),
+            LOCAL_WORKSPACE_IMPORT_ENABLED: process.env.LOCAL_WORKSPACE_IMPORT_ENABLED || "true",
+            LOCAL_WORKSPACE_ALLOWED_ROOTS: process.env.LOCAL_WORKSPACE_ALLOWED_ROOTS || (process.env.USERPROFILE || app.getPath("home")),
+            ALLOW_DEV_AUTH_FALLBACK: process.env.ALLOW_DEV_AUTH_FALLBACK || "true"
+        },
         shell: true
     });
 
@@ -48,6 +89,14 @@ function startFrontendService() {
     
     frontendProcess = spawn(command, args, {
         cwd: frontendDir,
+        env: {
+            ...process.env,
+            NEXT_PUBLIC_AUTH_URL: process.env.NEXT_PUBLIC_AUTH_URL || "http://localhost:8001",
+            NEXT_PUBLIC_GOALS_URL: process.env.NEXT_PUBLIC_GOALS_URL || "http://localhost:8002",
+            NEXT_PUBLIC_AGENT_URL: process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:8003",
+            NEXT_PUBLIC_REQUIRE_AUTH: process.env.NEXT_PUBLIC_REQUIRE_AUTH || "false",
+            BROWSER: "none"
+        },
         shell: true
     });
 
@@ -61,8 +110,6 @@ function startFrontendService() {
 
     console.log("Started Next.js frontend developer server.");
 }
-
-let launcherWindow;
 
 function createLauncherWindow() {
     launcherWindow = new BrowserWindow({
@@ -83,9 +130,7 @@ function createLauncherWindow() {
 
     launcherWindow.setMenuBarVisibility(false);
 
-    setTimeout(() => {
-        launcherWindow.loadURL("http://localhost:3000/launcher");
-    }, 4500);
+    loadFrontendRoute(launcherWindow, "/launcher");
 
     launcherWindow.on("blur", () => {
         if (launcherWindow) launcherWindow.hide();
@@ -113,9 +158,7 @@ function createWindow() {
 
     mainWindow.setMenuBarVisibility(false);
 
-    setTimeout(() => {
-        mainWindow.loadURL("http://localhost:3000/hub");
-    }, 4500);
+    loadFrontendRoute(mainWindow, DEFAULT_ROUTE);
 
     mainWindow.on("closed", () => {
         mainWindow = null;
@@ -139,6 +182,20 @@ ipcMain.on("window-maximize", () => {
 
 ipcMain.on("window-close", () => {
     if (mainWindow) mainWindow.close();
+});
+
+ipcMain.on("launcher-hide", () => {
+    if (launcherWindow) launcherWindow.hide();
+});
+
+ipcMain.on("open-route", (_event, route) => {
+    if (!mainWindow) createWindow();
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+        loadFrontendRoute(mainWindow, route);
+    }
+    if (launcherWindow) launcherWindow.hide();
 });
 
 // Select local directory IPC handler
@@ -204,7 +261,7 @@ app.whenReady().then(() => {
     createLauncherWindow();
 
     // 4. Register system-wide global shortcut to toggle launcher visibility
-    globalShortcut.register("CommandOrControl+Shift+Space", () => {
+    const shortcutRegistered = globalShortcut.register("CommandOrControl+Shift+Space", () => {
         if (launcherWindow) {
             if (launcherWindow.isVisible()) {
                 launcherWindow.hide();
@@ -214,6 +271,9 @@ app.whenReady().then(() => {
             }
         }
     });
+    if (!shortcutRegistered) {
+        console.warn("Global launcher shortcut CommandOrControl+Shift+Space could not be registered.");
+    }
 
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) {

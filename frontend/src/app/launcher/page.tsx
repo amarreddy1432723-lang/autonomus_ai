@@ -1,43 +1,109 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { Mic, Search, X, Calendar, Play } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Mic, Search } from 'lucide-react';
+import { apiRequest } from '../../utils/api';
 import styles from './Launcher.module.css';
 
 export default function LauncherPage() {
   const [command, setCommand] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const [status, setStatus] = useState('Type or click mic to dictate command...');
+  const [status, setStatus] = useState('Type or use the mic. Try: open code, interview, or remind me...');
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      try {
+        recognitionRef.current?.stop?.();
+      } catch {
+        // Ignore browser speech cleanup failures.
+      }
+    };
+  }, []);
+
+  const getElectron = () => (typeof window !== 'undefined' ? (window as any).electron : null);
 
   const handleMicToggle = () => {
-    setIsListening(!isListening);
-    if (!isListening) {
-      setStatus('Listening to voice...');
-      // Simulate speech-to-text response after 3 seconds
-      setTimeout(() => {
-        setCommand('Schedule team review today at 3pm');
-        setIsListening(false);
-        setStatus('Ready to run command');
-      }, 3000);
-    } else {
+    if (isListening) {
+      recognitionRef.current?.stop?.();
+      setIsListening(false);
       setStatus('Mic paused');
+      return;
     }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setStatus('Voice is unavailable in this runtime. Type the command instead.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setStatus('Listening...');
+    };
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        transcript += event.results[i][0].transcript;
+      }
+      if (transcript.trim()) setCommand(transcript.trim());
+    };
+    recognition.onerror = (event: any) => {
+      setStatus(`Voice error: ${event.error || 'could not listen'}`);
+      setIsListening(false);
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+      setStatus(command.trim() ? 'Ready to run command' : 'Type or use the mic. Try: open code, interview, or remind me...');
+    };
+    recognition.start();
   };
 
   const handleClose = () => {
-    if (typeof window !== 'undefined' && (window as any).electron) {
-      // Blur focuses back, which hides the launcher automatically based on the main process listeners
-      (window as any).document.activeElement?.blur();
-    }
+    getElectron()?.hideLauncher?.();
+    (window as any).document.activeElement?.blur();
   };
 
-  const handleRunCommand = () => {
+  const routeForCommand = (value: string) => {
+    const normalized = value.toLowerCase();
+    if (/\b(code|workspace|editor|repo|project)\b/.test(normalized)) return '/workspace';
+    if (/\b(interview|resume|candidate)\b/.test(normalized)) return '/interview';
+    if (/\b(pa|personal assistant|today|task|reminder|calendar|automation)\b/.test(normalized)) return '/pa';
+    if (/\b(setting|settings|billing|usage)\b/.test(normalized)) return '/settings';
+    if (/\b(hub|home|products)\b/.test(normalized)) return '/hub';
+    return null;
+  };
+
+  const handleRunCommand = async () => {
     if (!command.trim()) return;
-    setStatus(`Executing: "${command}"...`);
-    setTimeout(() => {
-      setStatus('Action completed successfully.');
+    const trimmed = command.trim();
+    const route = routeForCommand(trimmed);
+
+    if (route) {
+      setStatus(`Opening ${route.replace('/', '') || 'home'}...`);
+      getElectron()?.openRoute?.(route);
       setCommand('');
-    }, 1500);
+      return;
+    }
+
+    setStatus('Running command through NEXUS PA...');
+    try {
+      const result = await apiRequest('/api/v1/pa/command', {
+        method: 'POST',
+        body: JSON.stringify({ command: trimmed }),
+      });
+      setStatus(result?.summary || result?.message || result?.response || 'Command completed.');
+      setCommand('');
+      setTimeout(() => getElectron()?.hideLauncher?.(), 900);
+    } catch (error: any) {
+      setStatus(error?.message || 'Command failed.');
+    }
   };
 
   return (
