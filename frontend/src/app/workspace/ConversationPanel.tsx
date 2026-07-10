@@ -1,6 +1,6 @@
 'use client';
 
-import { Paperclip, Send } from 'lucide-react';
+import { Paperclip, Send, Mic, ArrowUp, Layers } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceMode = 'auto' | 'code' | 'plan' | 'design' | 'deploy' | 'research';
@@ -81,28 +81,34 @@ export default function ConversationPanel({
           ))}
           <span className={styles.meta}>{selectedFileCount} file{selectedFileCount === 1 ? '' : 's'} in context</span>
         </div>
-        <div className={styles.inputRow}>
-          <button className={styles.iconButton} type="button" onClick={onAttachClick} disabled={busy} aria-label="Attach files">
-            <Paperclip size={16} />
+        <div className={styles.prolongedComposer}>
+          <button className={styles.composerAttachBtn} type="button" onClick={onAttachClick} disabled={busy} title="Attach files">
+            <Paperclip size={18} />
           </button>
           <textarea
-            className={styles.prompt}
+            className={styles.prolongedInput}
             value={prompt}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+              if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 onSubmit();
               }
             }}
-            placeholder="Ask anything, attach files, build, deploy, research..."
+            placeholder="Message NEXUS Code..."
+            rows={1}
           />
-          <button className={styles.sendButton} type="button" onClick={onSubmit} disabled={busy || !prompt.trim()}>
-            <Send size={16} /> {busy ? 'Working' : 'Send'}
-          </button>
-          <button className={styles.sendButtonSecondary} type="button" onClick={onSubmitBackground} disabled={busy || !prompt.trim()}>
-            Background
-          </button>
+          <div className={styles.composerControlsRight}>
+            <button className={styles.composerMicBtn} type="button" title="Voice Assist">
+              <Mic size={18} />
+            </button>
+            <button className={styles.composerBgBtn} type="button" onClick={onSubmitBackground} disabled={busy || !prompt.trim()} title="Execute in Background">
+              <Layers size={16} />
+            </button>
+            <button className={styles.composerSendBtn} type="button" onClick={onSubmit} disabled={busy || !prompt.trim()} title="Send message">
+              <ArrowUp size={18} />
+            </button>
+          </div>
         </div>
       </div>
     </section>

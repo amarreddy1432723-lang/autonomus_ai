@@ -21,9 +21,11 @@ type Props = {
   onOpenRecent: (item: WorkspaceRecentItem) => void;
   onImportLocal?: (path: string) => void;
   onToggleFiles?: () => void;
+  onToggleEditor?: () => void;
+  editorOpen?: boolean;
 };
 
-export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent, onImportLocal, onToggleFiles }: Props) {
+export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent, onImportLocal, onToggleFiles, onToggleEditor, editorOpen }: Props) {
   const [isElectron, setIsElectron] = useState(false);
   const items = recentItems.length
     ? recentItems
@@ -76,6 +78,10 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         <button type="button" onClick={onToggleFiles} disabled={busy}>
           <Folder size={16} />
           Files Explorer
+        </button>
+        <button type="button" onClick={onToggleEditor}>
+          <Code2 size={16} />
+          {editorOpen ? 'Close Editor' : 'Open Editor'}
         </button>
       </div>
 

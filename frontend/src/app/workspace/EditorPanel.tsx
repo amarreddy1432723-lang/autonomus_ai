@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { Braces, Code2, Save, Wand2, X } from 'lucide-react';
+import { Braces, Code2, Save, Wand2, X, Minimize2, Maximize2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import styles from './Workspace.module.css';
 
@@ -28,6 +28,8 @@ type Props = {
   onCloseTab: (fileId: string) => void;
   onInlineEdit: (instruction: string, selectedText: string, start: number, end: number) => void;
   onComplete: (cursor: number) => void;
+  onToggleExpand?: () => void;
+  isCollapsed?: boolean;
 };
 
 function languageLabel(filename: string) {
@@ -57,7 +59,7 @@ function monacoLanguage(filename: string) {
   return 'plaintext';
 }
 
-export default function EditorPanel({ file, tabs, activeFileId, busy, onChange, onSave, onSelectTab, onCloseTab, onInlineEdit, onComplete }: Props) {
+export default function EditorPanel({ file, tabs, activeFileId, busy, onChange, onSave, onSelectTab, onCloseTab, onInlineEdit, onComplete, onToggleExpand, isCollapsed }: Props) {
   const editorRef = useRef<any>(null);
   const [editInstruction, setEditInstruction] = useState('');
   const [lineTarget, setLineTarget] = useState('');
@@ -100,6 +102,16 @@ export default function EditorPanel({ file, tabs, activeFileId, busy, onChange, 
       <div className={styles.panelHeader}>
         <span className={styles.editorTitle}><Code2 size={15} /> {file ? file.filename : 'Editor'}</span>
         {file && <span className={styles.meta}>{languageLabel(file.filename)}{file.dirty ? ' - unsaved' : ''}</span>}
+        {onToggleExpand && (
+          <button
+            className={styles.editorCollapseButton}
+            type="button"
+            onClick={onToggleExpand}
+            title={isCollapsed ? 'Expand Editor' : 'Close Editor'}
+          >
+            {isCollapsed ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+          </button>
+        )}
       </div>
       {tabs.length > 0 && (
         <div className={styles.editorTabs}>

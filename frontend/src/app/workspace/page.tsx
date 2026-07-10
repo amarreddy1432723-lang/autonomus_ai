@@ -96,6 +96,7 @@ export default function WorkspacePage() {
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(true);
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1452,6 +1453,8 @@ export default function WorkspacePage() {
         onOpenRecent={openRecent}
         onImportLocal={importLocalDirectory}
         onToggleFiles={() => setFilesOpen(!filesOpen)}
+        onToggleEditor={() => setEditorOpen(!editorOpen)}
+        editorOpen={editorOpen}
       />
       <header className={styles.topbar}>
         <input
@@ -1470,21 +1473,25 @@ export default function WorkspacePage() {
           <UserCircle size={22} />
         </div>
       </header>
-      <div className={styles.layout}>
-        <EditorPanel
-          file={openFile}
-          tabs={openTabs}
-          activeFileId={activeFileId}
-          busy={busy}
-          onChange={(content) => {
-            if (openFile) updateOpenTab(openFile.id, (file) => ({ ...file, content, dirty: true }));
-          }}
-          onSave={saveOpenFile}
-          onSelectTab={setActiveFileId}
-          onCloseTab={closeOpenTab}
-          onInlineEdit={inlineEditSelection}
-          onComplete={completeAtCursor}
-        />
+      <div className={`${styles.layout} ${!editorOpen ? styles.layoutNoEditor : ''}`}>
+        {editorOpen && (
+          <EditorPanel
+            file={openFile}
+            tabs={openTabs}
+            activeFileId={activeFileId}
+            busy={busy}
+            onChange={(content) => {
+              if (openFile) updateOpenTab(openFile.id, (file) => ({ ...file, content, dirty: true }));
+            }}
+            onSave={saveOpenFile}
+            onSelectTab={setActiveFileId}
+            onCloseTab={closeOpenTab}
+            onInlineEdit={inlineEditSelection}
+            onComplete={completeAtCursor}
+            onToggleExpand={() => setEditorOpen(false)}
+            isCollapsed={false}
+          />
+        )}
         <ConversationPanel
           mode={mode}
           messages={messages}
