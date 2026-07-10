@@ -1451,6 +1451,7 @@ export default function WorkspacePage() {
         onSearch={focusWorkspaceSearch}
         onOpenRecent={openRecent}
         onImportLocal={importLocalDirectory}
+        onToggleFiles={() => setFilesOpen(!filesOpen)}
       />
       <header className={styles.topbar}>
         <input

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Code2, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
+import { Code2, Folder, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceRecentItem = {
@@ -20,9 +20,10 @@ type Props = {
   onSearch: () => void;
   onOpenRecent: (item: WorkspaceRecentItem) => void;
   onImportLocal?: (path: string) => void;
+  onToggleFiles?: () => void;
 };
 
-export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent, onImportLocal }: Props) {
+export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent, onImportLocal, onToggleFiles }: Props) {
   const [isElectron, setIsElectron] = useState(false);
   const items = recentItems.length
     ? recentItems
@@ -71,6 +72,10 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
         <button type="button" onClick={onSearch}>
           <Search size={16} />
           Search
+        </button>
+        <button type="button" onClick={onToggleFiles} disabled={busy}>
+          <Folder size={16} />
+          Files Explorer
         </button>
       </div>
 

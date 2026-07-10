@@ -1,12 +1,13 @@
 .workspace {
-  flex: 1;
-  min-height: 0;
+  height: calc(100vh - 32px);
+  max-height: calc(100vh - 32px);
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   grid-template-rows: 52px 1fr;
   background: #0d0d0d;
   color: #e8e8e8;
   font-family: var(--font-sans);
+  overflow: hidden;
 }
 
 .workspaceSidebar {
