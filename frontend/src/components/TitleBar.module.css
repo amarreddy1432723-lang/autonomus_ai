@@ -1,0 +1,71 @@
+.titleBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 32px;
+  background-color: #0d0e12;
+  border-bottom: 1px solid #1f2937;
+  color: #9ca3af;
+  font-family: var(--font-sans), sans-serif;
+  font-size: 12px;
+  user-select: none;
+  z-index: 9999;
+  position: relative;
+}
+
+.titleDragRegion {
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding-left: 12px;
+  -webkit-app-region: drag;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: white;
+  font-weight: bold;
+  border-radius: 3px;
+  font-size: 10px;
+  margin-right: 8px;
+}
+
+.titleText {
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+.windowControls {
+  display: flex;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.controlButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.controlButton:hover {
+  background-color: #1f2937;
+  color: #f3f4f6;
+}
+
+.closeButton:hover {
+  background-color: #ef4444 !important;
+  color: white !important;
+}
