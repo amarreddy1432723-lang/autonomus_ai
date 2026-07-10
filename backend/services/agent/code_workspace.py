@@ -42,13 +42,19 @@ ALLOWED_COMMAND_PREFIXES = (
     ("node", "--check"),
 )
 SAFE_SCRIPT_NAMES = {"build", "test", "lint", "typecheck", "check", "validate"}
-BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
-BLOCKED_COMMAND_MARKERS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "\n", "\r")
-INSTALL_COMMAND_PREFIXES = (
+MUTATING_COMMAND_PREFIXES = (
     ("npm", "install"),
     ("npm", "ci"),
     ("pnpm", "install"),
     ("yarn", "install"),
+)
+BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo", "powershell", "cmd", "bash", "sh"}
+BLOCKED_COMMAND_MARKERS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "\n", "\r")
+INSTALL_COMMAND_PREFIXES = MUTATING_COMMAND_PREFIXES
+SECRET_OUTPUT_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|authorization|bearer)\s*[:=]\s*([^\s'\"`]+)"),
+    re.compile(r"(?i)(sk-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,})"),
 )
 PREVIEW_PROCESSES: dict[str, subprocess.Popen] = {}
 
@@ -710,6 +716,18 @@ def _command_parts(command: str) -> list[str]:
         raise HTTPException(status_code=400, detail="Command could not be parsed")
 
 
+def _redact_sensitive_output(output: str) -> str:
+    redacted = output or ""
+    for pattern in SECRET_OUTPUT_PATTERNS:
+        def replace(match: re.Match) -> str:
+            if match.lastindex and match.lastindex >= 2:
+                return f"{match.group(1)}=[redacted]"
+            return "[redacted-secret]"
+
+        redacted = pattern.sub(replace, redacted)
+    return redacted
+
+
 def discover_workspace_commands(db: Session, user_id: UUID, session: CodeSession) -> dict:
     commands: list[dict] = []
     seen: set[str] = set()
@@ -756,9 +774,10 @@ def discover_workspace_commands(db: Session, user_id: UUID, session: CodeSession
         "commands": commands[:12],
         "policy": {
             "allowed_prefixes": [" ".join(prefix) for prefix in ALLOWED_COMMAND_PREFIXES],
+            "approval_required_prefixes": [" ".join(prefix) for prefix in MUTATING_COMMAND_PREFIXES],
             "blocked_tokens": sorted(BLOCKED_TOKENS),
             "blocked_markers": list(BLOCKED_COMMAND_MARKERS),
-            "mode": "exact discovered scripts plus safe built-in check commands",
+            "mode": "exact safe discovered scripts, safe built-in check commands, and approval-gated installs",
         },
     }
 
@@ -993,22 +1012,28 @@ def _dynamic_command_allowed(parts: list[str], commands: list[dict]) -> bool:
     return any(command == str(item.get("command") or "").lower() for item in commands)
 
 
-def _command_policy(command: str, parts: list[str], commands: list[dict] | None = None) -> dict:
+def _command_policy(command: str, parts: list[str], commands: list[dict] | None = None, approved: bool = False) -> dict:
     lowered = [part.lower() for part in parts]
     allowed_commands = [str(item.get("command") or "") for item in (commands or []) if item.get("command")]
+    approval_commands = [" ".join(prefix) for prefix in MUTATING_COMMAND_PREFIXES]
     if not lowered:
-        return {"allowed": False, "reason": "Empty command.", "allowed_commands": allowed_commands}
+        return {"allowed": False, "requires_approval": False, "reason": "Empty command.", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
     if any(marker in command for marker in BLOCKED_COMMAND_MARKERS):
-        return {"allowed": False, "reason": "Shell control operators are blocked. Run one safe command at a time.", "allowed_commands": allowed_commands}
+        return {"allowed": False, "requires_approval": False, "reason": "Shell control operators are blocked. Run one safe command at a time.", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
     blocked = [token for token in lowered if token in BLOCKED_TOKENS]
     if blocked:
-        return {"allowed": False, "reason": f"Blocked token: {blocked[0]}", "allowed_commands": allowed_commands}
+        return {"allowed": False, "requires_approval": False, "reason": f"Blocked token: {blocked[0]}", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
     if commands and _dynamic_command_allowed(lowered, commands):
-        return {"allowed": True, "reason": "Matches a discovered safe workspace script.", "allowed_commands": allowed_commands}
+        return {"allowed": True, "requires_approval": False, "reason": "Matches a discovered safe workspace script.", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
     for prefix in ALLOWED_COMMAND_PREFIXES:
         if tuple(lowered[: len(prefix)]) == prefix:
-            return {"allowed": True, "reason": f"Matches safe prefix: {' '.join(prefix)}", "allowed_commands": allowed_commands}
-    return {"allowed": False, "reason": "Command is outside the workspace allowlist.", "allowed_commands": allowed_commands}
+            return {"allowed": True, "requires_approval": False, "reason": f"Matches safe prefix: {' '.join(prefix)}", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
+    for prefix in MUTATING_COMMAND_PREFIXES:
+        if tuple(lowered[: len(prefix)]) == prefix:
+            if not approved:
+                return {"allowed": False, "requires_approval": True, "reason": "Dependency mutation requires explicit approval.", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
+            return {"allowed": True, "requires_approval": True, "reason": f"Approved mutation command: {' '.join(prefix)}", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
+    return {"allowed": False, "requires_approval": False, "reason": "Command is outside the workspace allowlist.", "allowed_commands": allowed_commands, "approval_required_prefixes": approval_commands}
 
 
 def _install_policy(command: str, approved: bool) -> dict:
@@ -1030,7 +1055,7 @@ def _install_policy(command: str, approved: bool) -> dict:
 
 
 def _standard_command_result(command: str, raw: dict, policy: dict, workspace_root: Path) -> dict:
-    output = str(raw.get("output") or "(no output)")
+    output = _redact_sensitive_output(str(raw.get("output") or "(no output)"))
     max_chars = max(1000, int(settings.SANDBOX_COMMAND_MAX_OUTPUT_CHARS))
     return {
         "command": command,
@@ -1040,7 +1065,7 @@ def _standard_command_result(command: str, raw: dict, policy: dict, workspace_ro
         "duration_ms": raw.get("duration_ms"),
         "timeout_seconds": raw.get("timeout_seconds"),
         "output": output[-max_chars:],
-        "output_excerpt": str(raw.get("output_excerpt") or output[-4000:]),
+        "output_excerpt": _redact_sensitive_output(str(raw.get("output_excerpt") or output[-4000:])),
         "artifacts": raw.get("artifacts") or [],
         "started_at": raw.get("started_at"),
         "completed_at": raw.get("completed_at") or raw.get("ran_at") or _now(),
@@ -1060,15 +1085,19 @@ def run_workspace_command(
     session: CodeSession,
     command: str,
     timeout_seconds: int = 45,
+    approved: bool = False,
     job=None,
 ) -> dict:
     parts = _command_parts(command)
     discovered_commands = discover_workspace_commands(db, user_id, session).get("commands") or []
-    policy = _command_policy(command, parts, discovered_commands)
+    policy = _command_policy(command, parts, discovered_commands, approved=approved)
     if not policy.get("allowed"):
         append_activity(db, session, "error", "Command blocked", policy.get("reason") or "Only safe build/test/lint commands are enabled in v1.")
         complete_job(db, job, "blocked", {"error": "Command is not allowed", "policy": policy}, commands_run=[command])
-        raise HTTPException(status_code=400, detail={"message": "Command is not allowed for workspace execution.", "policy": policy})
+        raise HTTPException(
+            status_code=403 if policy.get("requires_approval") else 400,
+            detail={"message": policy.get("reason") or "Command is not allowed for workspace execution.", "policy": policy},
+        )
 
     runtime = sync_workspace_runtime(db, user_id, session)
     workspace_root = Path(runtime["root"])

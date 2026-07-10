@@ -1730,8 +1730,15 @@ def run_code_session_runtime_command(
     from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "runtime_command", request.command)
-    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, job)
+    job = create_agent_job(
+        db,
+        user_id,
+        session.id,
+        "runtime_command",
+        request.command,
+        approval_state="approved" if request.approved else "none",
+    )
+    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, request.approved, job)
     return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/preview/start")
