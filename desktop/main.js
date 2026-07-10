@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
 
@@ -42,12 +43,43 @@ async function loadFrontendRoute(windowRef, route) {
     windowRef.loadURL(`${FRONTEND_ORIGIN}${safeRoute}`);
 }
 
+function findRepoRoot() {
+    const starts = [
+        process.env.NEXUS_REPO_ROOT,
+        __dirname,
+        process.cwd(),
+        app.getAppPath()
+    ].filter(Boolean);
+
+    for (const start of starts) {
+        let current = path.resolve(start);
+        while (true) {
+            const hasBackend = fs.existsSync(path.join(current, "backend", "services"));
+            const hasFrontend = fs.existsSync(path.join(current, "frontend", "package.json"));
+            if (hasBackend && hasFrontend) return current;
+
+            const parent = path.dirname(current);
+            if (parent === current) break;
+            current = parent;
+        }
+    }
+
+    throw new Error("Could not find NEXUS repo root. Set NEXUS_REPO_ROOT to the folder that contains backend and frontend.");
+}
+
+function getBackendEnv(port) {
+    return {
+        ...process.env,
+        PORT: port.toString(),
+        LOCAL_WORKSPACE_IMPORT_ENABLED: process.env.LOCAL_WORKSPACE_IMPORT_ENABLED || "true",
+        LOCAL_WORKSPACE_ALLOWED_ROOTS: process.env.LOCAL_WORKSPACE_ALLOWED_ROOTS || (process.env.USERPROFILE || app.getPath("home")),
+        ALLOW_DEV_AUTH_FALLBACK: process.env.ALLOW_DEV_AUTH_FALLBACK || "true"
+    };
+}
+
 function startBackendService(serviceName, entryPoint, port) {
-    const rootDir = path.resolve(__dirname, "..");
+    const rootDir = findRepoRoot();
     const backendDir = path.join(rootDir, "backend");
-    
-    let command = "uvicorn";
-    let args = [entryPoint, "--host", "127.0.0.1", "--port", port.toString()];
     
     const isWindows = process.platform === "win32";
     const venvBin = isWindows 
@@ -55,17 +87,22 @@ function startBackendService(serviceName, entryPoint, port) {
         : path.join(backendDir, ".venv", "bin");
         
     const uvicornPath = path.join(venvBin, isWindows ? "uvicorn.exe" : "uvicorn");
+    const pythonPath = path.join(venvBin, isWindows ? "python.exe" : "python");
+    const hasUvicorn = fs.existsSync(uvicornPath);
+    const hasPython = fs.existsSync(pythonPath);
+    const command = hasUvicorn ? uvicornPath : (hasPython ? pythonPath : "python");
+    const args = hasUvicorn
+        ? [entryPoint, "--host", "127.0.0.1", "--port", port.toString()]
+        : ["-m", "uvicorn", entryPoint, "--host", "127.0.0.1", "--port", port.toString()];
     
-    const p = spawn(uvicornPath, args, {
+    const p = spawn(command, args, {
         cwd: backendDir,
-        env: {
-            ...process.env,
-            PORT: port.toString(),
-            LOCAL_WORKSPACE_IMPORT_ENABLED: process.env.LOCAL_WORKSPACE_IMPORT_ENABLED || "true",
-            LOCAL_WORKSPACE_ALLOWED_ROOTS: process.env.LOCAL_WORKSPACE_ALLOWED_ROOTS || (process.env.USERPROFILE || app.getPath("home")),
-            ALLOW_DEV_AUTH_FALLBACK: process.env.ALLOW_DEV_AUTH_FALLBACK || "true"
-        },
-        shell: true
+        env: getBackendEnv(port),
+        shell: false
+    });
+
+    p.on("error", (error) => {
+        console.error(`[${serviceName}] failed to start: ${error.message}`);
     });
 
     p.stdout.on("data", (data) => {
@@ -81,10 +118,10 @@ function startBackendService(serviceName, entryPoint, port) {
 }
 
 function startFrontendService() {
-    const rootDir = path.resolve(__dirname, "..");
+    const rootDir = findRepoRoot();
     const frontendDir = path.join(rootDir, "frontend");
     
-    const command = "npm";
+    const command = process.platform === "win32" ? "npm.cmd" : "npm";
     const args = ["run", "dev"];
     
     frontendProcess = spawn(command, args, {
@@ -95,9 +132,14 @@ function startFrontendService() {
             NEXT_PUBLIC_GOALS_URL: process.env.NEXT_PUBLIC_GOALS_URL || "http://localhost:8002",
             NEXT_PUBLIC_AGENT_URL: process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:8003",
             NEXT_PUBLIC_REQUIRE_AUTH: process.env.NEXT_PUBLIC_REQUIRE_AUTH || "false",
+            PORT: process.env.NEXUS_FRONTEND_PORT || "3000",
             BROWSER: "none"
         },
-        shell: true
+        shell: false
+    });
+
+    frontendProcess.on("error", (error) => {
+        console.error(`[Frontend] failed to start: ${error.message}`);
     });
 
     frontendProcess.stdout.on("data", (data) => {
