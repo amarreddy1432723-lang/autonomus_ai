@@ -43,6 +43,7 @@ ALLOWED_COMMAND_PREFIXES = (
 )
 SAFE_SCRIPT_NAMES = {"build", "test", "lint", "typecheck", "check", "validate"}
 BLOCKED_TOKENS = {"rm", "del", "erase", "format", "shutdown", "reboot", "curl", "wget", "scp", "ssh", "sudo"}
+BLOCKED_COMMAND_MARKERS = ("&&", "||", ";", "|", ">", "<", "`", "$(", "\n", "\r")
 PREVIEW_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
@@ -401,6 +402,28 @@ def sync_workspace_runtime(db: Session, user_id: UUID, session: CodeSession) -> 
     }
 
 
+def workspace_runtime_status(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    root = _workspace_runtime_root(session)
+    metadata = _metadata(session)
+    runtime = metadata.get("workspace_runtime") or {}
+    command_data = discover_workspace_commands(db, user_id, session)
+    command_log = list(metadata.get("command_log") or [])
+    return {
+        "provider": settings.SANDBOX_PROVIDER.lower(),
+        "root": str(root),
+        "root_exists": root.exists(),
+        "last_synced_at": runtime.get("last_synced_at"),
+        "files_written": runtime.get("files_written") or 0,
+        "files_skipped": runtime.get("files_skipped") or 0,
+        "managed_paths": len(metadata.get("workspace_managed_paths") or []),
+        "commands": command_data.get("commands") or [],
+        "policy": command_data.get("policy") or {},
+        "last_command": command_log[-1] if command_log else None,
+        "last_check_run": metadata.get("last_check_run"),
+        "preview": preview_status(session),
+    }
+
+
 def _safe_archive_name(name: str) -> str | None:
     normalized = name.replace("\\", "/").lstrip("/")
     if not normalized or normalized.endswith("/"):
@@ -674,7 +697,15 @@ def discover_workspace_commands(db: Session, user_id: UUID, session: CodeSession
             "source": "Python workspace",
             "script": "Run Python tests with pytest.",
         })
-    return {"commands": commands[:12]}
+    return {
+        "commands": commands[:12],
+        "policy": {
+            "allowed_prefixes": [" ".join(prefix) for prefix in ALLOWED_COMMAND_PREFIXES],
+            "blocked_tokens": sorted(BLOCKED_TOKENS),
+            "blocked_markers": list(BLOCKED_COMMAND_MARKERS),
+            "mode": "exact discovered scripts plus safe built-in check commands",
+        },
+    }
 
 
 def _workspace_preview_port(session: CodeSession) -> int:
@@ -907,13 +938,26 @@ def _dynamic_command_allowed(parts: list[str], commands: list[dict]) -> bool:
     return any(command == str(item.get("command") or "").lower() for item in commands)
 
 
-def _command_allowed(parts: list[str], commands: list[dict] | None = None) -> bool:
+def _command_policy(command: str, parts: list[str], commands: list[dict] | None = None) -> dict:
     lowered = [part.lower() for part in parts]
-    if not lowered or any(token in BLOCKED_TOKENS for token in lowered):
-        return False
+    allowed_commands = [str(item.get("command") or "") for item in (commands or []) if item.get("command")]
+    if not lowered:
+        return {"allowed": False, "reason": "Empty command.", "allowed_commands": allowed_commands}
+    if any(marker in command for marker in BLOCKED_COMMAND_MARKERS):
+        return {"allowed": False, "reason": "Shell control operators are blocked. Run one safe command at a time.", "allowed_commands": allowed_commands}
+    blocked = [token for token in lowered if token in BLOCKED_TOKENS]
+    if blocked:
+        return {"allowed": False, "reason": f"Blocked token: {blocked[0]}", "allowed_commands": allowed_commands}
     if commands and _dynamic_command_allowed(lowered, commands):
-        return True
-    return any(tuple(lowered[: len(prefix)]) == prefix for prefix in ALLOWED_COMMAND_PREFIXES)
+        return {"allowed": True, "reason": "Matches a discovered safe workspace script.", "allowed_commands": allowed_commands}
+    for prefix in ALLOWED_COMMAND_PREFIXES:
+        if tuple(lowered[: len(prefix)]) == prefix:
+            return {"allowed": True, "reason": f"Matches safe prefix: {' '.join(prefix)}", "allowed_commands": allowed_commands}
+    return {"allowed": False, "reason": "Command is outside the workspace allowlist.", "allowed_commands": allowed_commands}
+
+
+def _command_allowed(parts: list[str], commands: list[dict] | None = None) -> bool:
+    return bool(_command_policy(" ".join(parts), parts, commands).get("allowed"))
 
 
 def run_workspace_command(
@@ -926,10 +970,11 @@ def run_workspace_command(
 ) -> dict:
     parts = _command_parts(command)
     discovered_commands = discover_workspace_commands(db, user_id, session).get("commands") or []
-    if not _command_allowed(parts, discovered_commands):
-        append_activity(db, session, "error", "Command blocked", "Only safe build/test/lint commands are enabled in v1.")
-        complete_job(db, job, "blocked", {"error": "Command is not allowed"}, commands_run=[command])
-        raise HTTPException(status_code=400, detail="Command is not allowed for workspace execution.")
+    policy = _command_policy(command, parts, discovered_commands)
+    if not policy.get("allowed"):
+        append_activity(db, session, "error", "Command blocked", policy.get("reason") or "Only safe build/test/lint commands are enabled in v1.")
+        complete_job(db, job, "blocked", {"error": "Command is not allowed", "policy": policy}, commands_run=[command])
+        raise HTTPException(status_code=400, detail={"message": "Command is not allowed for workspace execution.", "policy": policy})
 
     runtime = sync_workspace_runtime(db, user_id, session)
     workspace_root = Path(runtime["root"])
@@ -956,6 +1001,10 @@ def run_workspace_command(
             "status": status,
             "return_code": return_code,
             "output": clipped,
+            "provider": result_data.get("provider"),
+            "duration_ms": result_data.get("duration_ms"),
+            "timeout_seconds": result_data.get("timeout_seconds"),
+            "policy": policy,
             "workspace_root": str(workspace_root),
             "ran_at": ran_at,
         }
@@ -1024,6 +1073,9 @@ def run_workspace_checks(
             "status": res["status"],
             "return_code": res["return_code"],
             "output": res["output"][-8000:] if res["output"] else "(no output)",
+            "provider": res.get("provider"),
+            "duration_ms": res.get("duration_ms"),
+            "timeout_seconds": res.get("timeout_seconds"),
             "workspace_root": str(workspace_root),
             "ran_at": res["ran_at"],
         }

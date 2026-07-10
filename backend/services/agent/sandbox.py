@@ -9,6 +9,27 @@ from pathlib import Path
 
 logger = logging.getLogger("nexus-sandbox")
 
+
+def _command_result(
+    provider: str,
+    status: str,
+    return_code: int | None,
+    output: str,
+    started: float,
+    timeout: int,
+    workspace_root: Path,
+) -> Dict[str, Any]:
+    return {
+        "provider": provider,
+        "status": status,
+        "return_code": return_code,
+        "output": (output or "(no output)")[-20000:],
+        "ran_at": datetime_now_iso(),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "timeout_seconds": timeout,
+        "workspace_root": str(workspace_root),
+    }
+
 class CodeSandbox(ABC):
     def __init__(self, session_id: str, workspace_root: Path):
         self.session_id = session_id
@@ -45,6 +66,7 @@ class LocalSandbox(CodeSandbox):
         logger.info(f"Running local command: {command} in {self.workspace_root}")
         # Parse command safely
         parts = shlex.split(command)
+        started = time.monotonic()
         try:
             completed = subprocess.run(
                 parts,
@@ -55,27 +77,12 @@ class LocalSandbox(CodeSandbox):
                 check=False,
             )
             output = "\n".join(filter(None, [completed.stdout, completed.stderr])).strip()
-            return {
-                "status": "passed" if completed.returncode == 0 else "failed",
-                "return_code": completed.returncode,
-                "output": output or "(no output)",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("local", "passed" if completed.returncode == 0 else "failed", completed.returncode, output, started, timeout, self.workspace_root)
         except subprocess.TimeoutExpired as e:
             output = "\n".join(filter(None, [e.stdout or "", e.stderr or ""])).strip()
-            return {
-                "status": "timeout",
-                "return_code": None,
-                "output": output or "Command timed out before producing output.",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("local", "timeout", None, output or "Command timed out before producing output.", started, timeout, self.workspace_root)
         except Exception as e:
-            return {
-                "status": "failed",
-                "return_code": -1,
-                "output": f"Internal Sandbox Error: {str(e)}",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("local", "failed", -1, f"Internal Sandbox Error: {str(e)}", started, timeout, self.workspace_root)
 
     def start_preview_server(self, command: str, port: int) -> Dict[str, Any]:
         self.stop_preview_server()
@@ -166,6 +173,7 @@ class DockerSandbox(CodeSandbox):
         self._ensure_container_running()
         # shlex.split the user command and build the docker exec call
         exec_cmd = ["docker", "exec", self.container_name] + shlex.split(command)
+        started = time.monotonic()
         try:
             completed = subprocess.run(
                 exec_cmd,
@@ -175,27 +183,12 @@ class DockerSandbox(CodeSandbox):
                 check=False
             )
             output = "\n".join(filter(None, [completed.stdout, completed.stderr])).strip()
-            return {
-                "status": "passed" if completed.returncode == 0 else "failed",
-                "return_code": completed.returncode,
-                "output": output or "(no output)",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("docker", "passed" if completed.returncode == 0 else "failed", completed.returncode, output, started, timeout, self.workspace_root)
         except subprocess.TimeoutExpired as e:
             output = "\n".join(filter(None, [e.stdout or "", e.stderr or ""])).strip()
-            return {
-                "status": "timeout",
-                "return_code": None,
-                "output": output or "Command timed out inside container.",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("docker", "timeout", None, output or "Command timed out inside container.", started, timeout, self.workspace_root)
         except Exception as e:
-            return {
-                "status": "failed",
-                "return_code": -1,
-                "output": f"Docker Exec Error: {str(e)}",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("docker", "failed", -1, f"Docker Exec Error: {str(e)}", started, timeout, self.workspace_root)
 
     def start_preview_server(self, command: str, port: int) -> Dict[str, Any]:
         # To run a preview server in Docker, we need port forwarding.
@@ -280,23 +273,15 @@ class E2BSandbox(CodeSandbox):
     def run_command(self, command: str, timeout: int = 60) -> Dict[str, Any]:
         if not self.sandbox:
             self._init_sandbox()
+        started = time.monotonic()
         try:
             cmd_res = self.sandbox.commands.run(command, timeout=timeout)
             # Sync back modifications to local dir so local workspace is up to date
             self._sync_files_from_e2b()
-            return {
-                "status": "passed" if cmd_res.exit_code == 0 else "failed",
-                "return_code": cmd_res.exit_code,
-                "output": cmd_res.stdout + cmd_res.stderr,
-                "ran_at": datetime_now_iso(),
-            }
+            output = f"{cmd_res.stdout or ''}{cmd_res.stderr or ''}"
+            return _command_result("e2b", "passed" if cmd_res.exit_code == 0 else "failed", cmd_res.exit_code, output, started, timeout, self.workspace_root)
         except Exception as e:
-            return {
-                "status": "failed",
-                "return_code": -1,
-                "output": f"E2B Run Error: {str(e)}",
-                "ran_at": datetime_now_iso(),
-            }
+            return _command_result("e2b", "failed", -1, f"E2B Run Error: {str(e)}", started, timeout, self.workspace_root)
 
     def start_preview_server(self, command: str, port: int) -> Dict[str, Any]:
         if not self.sandbox:

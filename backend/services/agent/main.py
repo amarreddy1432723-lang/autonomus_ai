@@ -1124,6 +1124,13 @@ def sync_code_session_runtime(session_id: UUID, user_id: UUID = Depends(get_curr
     complete_job(db, job, "completed", result, files_touched=[{"filename": path} for path in result.get("files_written") or []])
     return {**result, "job": serialize_job(job)}
 
+@app.get("/api/v1/code/sessions/{session_id}/runtime/status")
+def get_code_session_runtime_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, workspace_runtime_status
+
+    session = get_code_session(db, user_id, session_id)
+    return workspace_runtime_status(db, user_id, session)
+
 @app.post("/api/v1/code/sessions/{session_id}/preview/start")
 def start_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .agent_jobs import create_agent_job, serialize_job

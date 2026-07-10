@@ -20,7 +20,7 @@ export type AgentJob = {
   prompt?: string;
   logs?: Array<{ kind: string; message: string; detail?: string; timestamp?: string }>;
   files_touched?: Array<{ filename?: string; file_id?: string }>;
-  commands_run?: Array<{ command?: string; status?: string; return_code?: number | null } | string>;
+  commands_run?: Array<{ command?: string; status?: string; return_code?: number | null; provider?: string; duration_ms?: number } | string>;
   result?: Record<string, any>;
   metadata?: Record<string, any>;
   progress?: { stage?: string; detail?: string; percent?: number; updated_at?: string };
@@ -569,7 +569,12 @@ export default function ActivityPanel({
                 )}
                 {(job.commands_run || []).length > 0 && (
                   <div className={styles.jobMetaLine}>
-                    Commands: {(job.commands_run || []).map((command) => typeof command === 'string' ? command : command.command).filter(Boolean).join(', ')}
+                    Commands: {(job.commands_run || []).map((command) => {
+                      if (typeof command === 'string') return command;
+                      const timing = typeof command.duration_ms === 'number' ? ` ${command.duration_ms}ms` : '';
+                      const provider = command.provider ? ` via ${command.provider}` : '';
+                      return `${command.command || 'command'}${provider}${timing}`;
+                    }).filter(Boolean).join(', ')}
                   </div>
                 )}
                 {running && (
