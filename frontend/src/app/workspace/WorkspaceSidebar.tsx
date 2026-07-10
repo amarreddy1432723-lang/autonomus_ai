@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { Code2, FolderPlus, MessageSquarePlus, Search, Settings } from 'lucide-react';
 import styles from './Workspace.module.css';
 
@@ -18,15 +19,28 @@ type Props = {
   onNewChat: () => void;
   onSearch: () => void;
   onOpenRecent: (item: WorkspaceRecentItem) => void;
+  onImportLocal?: (path: string) => void;
 };
 
-export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent }: Props) {
+export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, onNewChat, onSearch, onOpenRecent, onImportLocal }: Props) {
+  const [isElectron, setIsElectron] = useState(false);
   const items = recentItems.length
     ? recentItems
     : [
         { id: 'empty-project', label: 'No recent project yet', detail: 'Import files or a repo to begin' },
         { id: 'empty-chat', label: 'No recent chat yet', detail: 'Ask NEXUS to plan or edit' },
       ];
+
+  useEffect(() => {
+    setIsElectron(typeof window !== 'undefined' && Boolean((window as any).electron));
+  }, []);
+
+  const openLocalFolder = async () => {
+    const electron = (window as any).electron;
+    if (!electron?.selectDirectory || !onImportLocal) return;
+    const path = await electron.selectDirectory();
+    if (path) onImportLocal(path);
+  };
 
   return (
     <aside className={styles.workspaceSidebar}>
@@ -39,10 +53,17 @@ export default function WorkspaceSidebar({ recentItems, busy, onCreateProject, o
       </div>
 
       <div className={styles.sidebarActions}>
-        <button type="button" onClick={onCreateProject} disabled={busy}>
-          <FolderPlus size={16} />
-          Create Project
-        </button>
+        {isElectron ? (
+          <button type="button" onClick={openLocalFolder} disabled={busy}>
+            <FolderPlus size={16} />
+            Open Local Folder
+          </button>
+        ) : (
+          <button type="button" onClick={onCreateProject} disabled={busy}>
+            <FolderPlus size={16} />
+            Create Project
+          </button>
+        )}
         <button type="button" onClick={onNewChat} disabled={busy}>
           <MessageSquarePlus size={16} />
           New Chat

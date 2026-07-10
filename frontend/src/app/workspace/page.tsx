@@ -208,6 +208,28 @@ export default function WorkspacePage() {
     }
   };
 
+  const importLocalDirectory = async (localPath: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      resetWorkspaceForProject();
+      const session = await apiRequest('/api/v1/code/sessions/import-local', {
+        method: 'POST',
+        body: JSON.stringify({ local_path: localPath }),
+      });
+      setProjectId(session.project_id);
+      setSessionId(session.id);
+      localStorage.setItem('nexus.code.session_id', session.id);
+      await loadProjects();
+      addEvent({ kind: 'start', message: 'Local directory imported', detail: localPath });
+      await hydrateSession(session.id);
+    } catch (error) {
+      addEvent({ kind: 'error', message: 'Import local directory failed', detail: error instanceof Error ? error.message : 'Could not import directory.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const loadProjects = async () => {
     try {
       const data = await apiRequest('/api/v1/code/projects');
@@ -1184,6 +1206,7 @@ export default function WorkspacePage() {
         onNewChat={newChat}
         onSearch={focusWorkspaceSearch}
         onOpenRecent={openRecent}
+        onImportLocal={importLocalDirectory}
       />
       <header className={styles.topbar}>
         <input

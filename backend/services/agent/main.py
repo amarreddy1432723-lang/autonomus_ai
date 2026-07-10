@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
         verify_default_user(db)
     finally:
         db.close()
-    
+
     # Start background worker queue
     worker_queue.start()
     try:
@@ -63,7 +63,7 @@ app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
 
 def get_current_user_id(
-    authorization: str | None = Header(None), 
+    authorization: str | None = Header(None),
     x_user_id: str | None = Header(None, alias="x-user-id"),
     db: Session = Depends(get_db),
 ) -> UUID:
@@ -80,7 +80,7 @@ def parse_vault_key(x_vault_key: str | None) -> bytes | None:
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"
     content: str
-    
+
 class ChatRequest(BaseModel):
     user_id: str
     messages: List[ChatMessage]
@@ -325,14 +325,14 @@ async def chat_stream_generator(
 ):
     from .brain import brain_agent
     from .memory_agent import RedisShortTermMemoryStore, extract_memories
-    
+
     formatted_messages = []
     for msg in chat_history:
         if msg.role == "user":
             formatted_messages.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
             formatted_messages.append(AIMessage(content=msg.content))
-            
+
     formatted_messages.append(HumanMessage(content=prompt))
 
     input_state = {
@@ -349,7 +349,7 @@ async def chat_stream_generator(
             input_state["file_context"] = file_context_for_prompt(db, UUID(user_id), file_ids, prompt)
         finally:
             db.close()
-    
+
     config = {
         "configurable": {
             "session_id": session_id,
@@ -362,7 +362,7 @@ async def chat_stream_generator(
             "interview_prompt": interview_prompt,
         }
     }
-    
+
     assistant_text = []
     stm = RedisShortTermMemoryStore()
     if persist:
@@ -372,13 +372,13 @@ async def chat_stream_generator(
         async for event in brain_agent.astream_events(input_state, config=config, version="v2"):
             kind = event.get("event")
             node_name = event.get("metadata", {}).get("langgraph_node", "")
-            
+
             if kind == "on_chain_start" and event.get("name") == "LangGraph":
                 yield f"event: thinking\ndata: {json.dumps({'status': 'started'})}\n\n"
-                
+
             elif kind == "on_chain_start" and node_name:
                 yield f"event: thinking\ndata: {json.dumps({'node': node_name, 'status': 'running'})}\n\n"
-                
+
             elif kind == "on_chat_model_stream":
                 chunk = event["data"].get("chunk")
                 if chunk and chunk.content:
@@ -393,17 +393,17 @@ async def chat_stream_generator(
                         pass
                     assistant_text.append(str(chunk.content))
                     yield f"event: token\ndata: {json.dumps({'token': chunk.content})}\n\n"
-                    
+
             elif kind == "on_tool_start":
                 tool_name = event.get("name")
                 inputs = event["data"].get("input")
                 yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'inputs': inputs})}\n\n"
-                
+
             elif kind == "on_tool_end":
                 tool_name = event.get("name")
                 output = event["data"].get("output")
                 yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'output': str(output)})}\n\n"
-                
+
         final_text = "".join(assistant_text)
         if persist and final_text:
             stm.append_event(user_id, session_id, {"role": "assistant", "content": final_text})
@@ -458,11 +458,11 @@ async def chat_endpoint(
     access = check_entitlement(db, user_id, "chat_message")
     if not access.get("allowed"):
         raise HTTPException(status_code=402, detail={"message": "Plan limit reached", "access": access})
-        
+
     prompt = request.messages[-1].content
     history = request.messages[:-1]
     llm_provider, llm_model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
-    
+
     return StreamingResponse(
         chat_stream_generator(
             str(user_id),
@@ -663,7 +663,7 @@ def get_file_content(file_id: UUID, user_id: UUID = Depends(get_current_user_id)
 def update_file_content(file_id: UUID, request: FileContentUpdate, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from pathlib import Path
     from services.shared.models import FileChunk
-    from .file_service import put_object
+    from .file_service import put_object, storage_provider
 
     record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id, FileReference.status == "active").first()
     if not record:
@@ -676,6 +676,21 @@ def update_file_content(file_id: UUID, request: FileContentUpdate, user_id: UUID
     if len(data) > 1_500_000:
         raise HTTPException(status_code=413, detail="Edited file exceeds the inline editor limit")
     put_object(record.object_key, data, record.content_type or "text/plain")
+
+    # Desktop/local mode: mirror inline edits back into the selected local project.
+    if record.owner_type == "code_workspace" and record.owner_id:
+        from services.shared.models import CodeSession
+        session = db.query(CodeSession).filter(CodeSession.id == record.owner_id).first()
+        if session and session.metadata_json and session.metadata_json.get("local_workspace_path"):
+            from pathlib import Path
+            local_root = Path(str(session.metadata_json["local_workspace_path"])).expanduser().resolve()
+            safe_name = record.filename.replace("\\", "/").lstrip("/")
+            local_file = (local_root / safe_name).resolve()
+            if not str(local_file).startswith(str(local_root)):
+                raise HTTPException(status_code=400, detail="Unsafe local workspace file path")
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            local_file.write_bytes(data)
+
     record.size_bytes = len(data)
     record.metadata_json = {**(record.metadata_json or {}), "edited_inline": True, "inline_editor_updated_at": datetime.now(timezone.utc).isoformat()}
     db.query(FileChunk).filter(FileChunk.file_id == record.id, FileChunk.user_id == user_id).delete()
@@ -965,6 +980,134 @@ def get_nexus_os_context(user_id: UUID = Depends(get_current_user_id), db: Sessi
         ],
     }
 
+class CodeSessionImportLocalRequest(BaseModel):
+    local_path: str
+
+@app.post("/api/v1/code/sessions/import-local", status_code=201)
+def import_local_workspace_session(
+    request: CodeSessionImportLocalRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    import os
+    import hashlib
+    import uuid
+    from pathlib import Path
+    from services.shared.models import CodeProject, CodeSession, FileReference
+    from .file_service import put_object, storage_provider
+    from .code_workspace import refresh_file_tree, serialize_code_session, _activity
+
+    if not settings.LOCAL_WORKSPACE_IMPORT_ENABLED:
+        raise HTTPException(status_code=403, detail="Local workspace import is disabled on this deployment.")
+
+    local_root = Path(request.local_path).expanduser().resolve()
+    allowed_roots = [
+        Path(value).expanduser().resolve()
+        for value in settings.LOCAL_WORKSPACE_ALLOWED_ROOTS.split(os.pathsep)
+        if value.strip()
+    ]
+    if allowed_roots and not any(str(local_root).startswith(str(root)) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Local path is outside configured allowed workspace roots.")
+    if not local_root.is_dir():
+        raise HTTPException(status_code=400, detail="Provided local path is not a valid directory")
+
+    local_path = str(local_root)
+    project_name = local_root.name or "Local Project"
+
+    # 1. Create project
+    project = CodeProject(
+        user_id=user_id,
+        name=project_name,
+        description=f"Local project imported from {local_path}",
+        status="active"
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+
+    # 2. Create session
+    session = CodeSession(
+        user_id=user_id,
+        project_id=project.id,
+        title=f"{project_name} workspace",
+        file_ids=[],
+        status="active",
+        metadata_json={
+            "local_workspace_path": local_path,
+            "activity_log": [_activity("start", "Local workspace imported", f"Path: {local_path}")],
+            "file_tree": [],
+            "patch_preview": [],
+            "rollback_snapshots": [],
+        }
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    # 3. Recursively scan files and save references
+    ignore_dirs = {".git", "node_modules", ".venv", "venv", ".next", "dist", "build", "__pycache__", ".pytest_cache"}
+    file_ids = []
+    skipped_errors = []
+
+    count = 0
+    for root_dir, dirs, files in os.walk(local_path):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        for file in files:
+            filepath = os.path.join(root_dir, file)
+            if os.path.islink(filepath) or os.path.getsize(filepath) > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
+                continue
+            try:
+                rel_path = os.path.relpath(filepath, local_path).replace("\\", "/")
+                if rel_path.startswith("../") or rel_path == "..":
+                    continue
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+
+                if "\x00" in content:
+                    continue
+
+                record = FileReference(
+                    user_id=user_id,
+                    filename=rel_path,
+                    size_bytes=len(content.encode("utf-8")),
+                    owner_type="code_workspace",
+                    owner_id=session.id,
+                    storage_provider=storage_provider(),
+                    bucket=settings.S3_BUCKET,
+                    object_key=f"users/{user_id}/code/{session.id}/{uuid.uuid4()}{Path(rel_path).suffix or '.txt'}",
+                    content_type="text/plain",
+                    checksum_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    status="active",
+                    metadata_json={"local_workspace_path": local_path, "local_relative_path": rel_path},
+                )
+                db.add(record)
+                db.flush()
+
+                put_object(record.object_key, content.encode("utf-8"), "text/plain")
+                db.commit()
+                db.refresh(record)
+                file_ids.append(str(record.id))
+                count += 1
+                if count >= settings.LOCAL_WORKSPACE_MAX_FILES:
+                    break
+            except Exception as e:
+                import logging
+                logging.exception(f"Error importing local file {filepath}: {e}")
+                db.rollback()
+                if len(skipped_errors) < 8:
+                    skipped_errors.append({"file": os.path.relpath(filepath, local_path).replace("\\", "/"), "error": str(e)})
+                continue
+        if count >= settings.LOCAL_WORKSPACE_MAX_FILES:
+            break
+
+    session.file_ids = file_ids
+    db.commit()
+    db.refresh(session)
+
+    refresh_file_tree(db, user_id, session)
+    payload = serialize_code_session(db, user_id, session)
+    payload["skipped_errors"] = skipped_errors
+    return payload
 @app.post("/api/v1/code/sessions", status_code=201)
 def create_code_session_endpoint(
     request: CodeSessionCreate,
@@ -1182,7 +1325,7 @@ async def proxy_code_session_preview_path(session_id: UUID, path: str, request: 
     query = [(key, value) for key, value in request.query_params.multi_items() if key != "token"]
     query_string = ("?" + "&".join(f"{quote(key)}={quote(value)}" for key, value in query)) if query else ""
     target = f"{local_url}/{path}{query_string}"
-    
+
     body = await request.body()
     headers = {key: value for key, value in request.headers.items() if key.lower() not in ("host", "authorization")}
     try:
@@ -1248,11 +1391,11 @@ def create_session_pr(
 ):
     from .code_workspace import get_code_session
     from .github_service import create_pull_request
-    
+
     session = get_code_session(db, user_id, session_id)
     if not session.project:
         raise HTTPException(status_code=400, detail="This session is not associated with any Code Project.")
-        
+
     result = create_pull_request(
         db,
         user_id,
@@ -1274,19 +1417,19 @@ def approve_patch_hunk(
     db: Session = Depends(get_db),
 ):
     from .code_workspace import get_code_session, _metadata, _set_metadata
-    
+
     session = get_code_session(db, user_id, session_id)
     metadata = _metadata(session)
     hunks_state = metadata.get("patch_hunks_state") or {}
     hunks_state[hunk_id] = "approved"
     metadata["patch_hunks_state"] = hunks_state
-    
+
     previews = metadata.get("patch_preview") or []
     for file_prev in previews:
         for hunk in file_prev.get("hunks") or []:
             if hunk.get("id") == hunk_id:
                 hunk["status"] = "approved"
-                
+
     _set_metadata(session, metadata)
     db.commit()
     return {"status": "success", "hunk_id": hunk_id, "state": "approved"}
@@ -1299,19 +1442,19 @@ def reject_patch_hunk(
     db: Session = Depends(get_db),
 ):
     from .code_workspace import get_code_session, _metadata, _set_metadata
-    
+
     session = get_code_session(db, user_id, session_id)
     metadata = _metadata(session)
     hunks_state = metadata.get("patch_hunks_state") or {}
     hunks_state[hunk_id] = "rejected"
     metadata["patch_hunks_state"] = hunks_state
-    
+
     previews = metadata.get("patch_preview") or []
     for file_prev in previews:
         for hunk in file_prev.get("hunks") or []:
             if hunk.get("id") == hunk_id:
                 hunk["status"] = "rejected"
-                
+
     _set_metadata(session, metadata)
     db.commit()
     return {"status": "success", "hunk_id": hunk_id, "state": "rejected"}
@@ -1324,7 +1467,7 @@ def get_session_diagnostics(
 ):
     from .code_workspace import get_code_session
     from .diagnostics import run_diagnostics_checks
-    
+
     session = get_code_session(db, user_id, session_id)
     diagnostics = run_diagnostics_checks(db, user_id, session)
     return {"diagnostics": diagnostics}
@@ -1399,14 +1542,14 @@ def run_code_session_background(
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
     mode = request.mode if request.mode in {"plan", "code"} else "code"
-    
+
     # Enqueue job with queued status and pass model configurations
     job = create_agent_job(
-        db, 
-        user_id, 
-        session.id, 
-        f"background_{mode}", 
-        request.instruction, 
+        db,
+        user_id,
+        session.id,
+        f"background_{mode}",
+        request.instruction,
         approval_state="pending" if mode == "code" else "none",
         status="queued",
         metadata_json={"llm_provider": provider, "llm_model": model}
@@ -2166,7 +2309,7 @@ def trigger_memory_compression(request: CompressRequest):
     from uuid import UUID
     from services.shared.database import SessionLocal
     from .memory_agent import compress_memories
-    
+
     db = SessionLocal()
     try:
         user_uuid = UUID(request.user_id)

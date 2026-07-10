@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     AGENT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_JOB_TIMEOUT_SECONDS", "900"))
     AGENT_JOB_STALE_SECONDS: int = int(os.getenv("AGENT_JOB_STALE_SECONDS", "1800"))
     AGENT_JOB_MAX_RETRIES: int = int(os.getenv("AGENT_JOB_MAX_RETRIES", "2"))
+    LOCAL_WORKSPACE_IMPORT_ENABLED: bool = os.getenv("LOCAL_WORKSPACE_IMPORT_ENABLED", "true").lower() == "true"
+    LOCAL_WORKSPACE_ALLOWED_ROOTS: str = os.getenv("LOCAL_WORKSPACE_ALLOWED_ROOTS", "")
+    LOCAL_WORKSPACE_MAX_FILES: int = int(os.getenv("LOCAL_WORKSPACE_MAX_FILES", "1000"))
+    LOCAL_WORKSPACE_MAX_FILE_BYTES: int = int(os.getenv("LOCAL_WORKSPACE_MAX_FILE_BYTES", "1500000"))
 
     class Config:
         env_file = ".env"

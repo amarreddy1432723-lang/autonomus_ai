@@ -421,4 +421,16 @@ def get_file_text(db: Session, user_id: UUID, file_id: UUID) -> str:
     record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="File not found")
+    if record.owner_type == "code_workspace" and record.owner_id:
+        from services.shared.models import CodeSession
+        session = db.query(CodeSession).filter(CodeSession.id == record.owner_id).first()
+        if session and session.metadata_json and session.metadata_json.get("local_workspace_path"):
+            from pathlib import Path
+            local_root = Path(str(session.metadata_json["local_workspace_path"])).expanduser().resolve()
+            safe_name = record.filename.replace("\\", "/").lstrip("/")
+            local_file = (local_root / safe_name).resolve()
+            if not str(local_file).startswith(str(local_root)):
+                raise HTTPException(status_code=400, detail="Unsafe local workspace file path")
+            if local_file.exists():
+                return local_file.read_text(encoding="utf-8", errors="ignore")
     return extract_text_from_file(record)

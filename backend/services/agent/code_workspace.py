@@ -347,6 +347,18 @@ def _workspace_runtime_root(session: CodeSession) -> Path:
     return root
 
 
+def _safe_local_workspace_file(session: CodeSession, filename: str) -> Path | None:
+    local_path = (_metadata(session) or {}).get("local_workspace_path")
+    if not local_path:
+        return None
+    local_root = Path(str(local_path)).expanduser().resolve()
+    safe_name = filename.replace("\\", "/").lstrip("/")
+    target = (local_root / safe_name).resolve()
+    if not str(target).startswith(str(local_root)):
+        raise HTTPException(status_code=400, detail=f"Unsafe local workspace path: {filename}")
+    return target
+
+
 def get_session_sandbox(session: CodeSession):
     from .sandbox import get_sandbox
     root = _workspace_runtime_root(session)
@@ -753,7 +765,7 @@ def preview_status(session: CodeSession) -> dict:
     metadata = _metadata(session)
     preview = metadata.get("preview_runtime") or {}
     provider = settings.SANDBOX_PROVIDER.lower()
-    
+
     if provider == "local":
         process = PREVIEW_PROCESSES.get(str(session.id))
         running = bool(process and process.poll() is None)
@@ -829,7 +841,7 @@ def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, jo
     preview_command = _detect_preview_command(db, user_id, session)
     port = _workspace_preview_port(session)
     token = uuid.uuid4().hex
-    
+
     append_activity(db, session, "deploy", "Starting workspace preview", preview_command["command"])
     append_job_log(db, job, "deploy", "Starting workspace preview", f"{preview_command['command']} on port {port}")
 
@@ -907,7 +919,7 @@ def start_workspace_preview(db: Session, user_id: UUID, session: CodeSession, jo
 def stop_workspace_preview(db: Session, session: CodeSession, job=None) -> dict:
     provider = settings.SANDBOX_PROVIDER.lower()
     stopped = False
-    
+
     if provider == "local":
         process = PREVIEW_PROCESSES.pop(str(session.id), None)
         if process and process.poll() is None:
@@ -984,16 +996,16 @@ def run_workspace_command(
     try:
         sandbox = get_session_sandbox(session)
         result_data = sandbox.run_command(command, timeout=max(5, min(timeout_seconds, 120)))
-        
+
         status = result_data["status"]
         output = result_data["output"]
         return_code = result_data["return_code"]
         ran_at = result_data["ran_at"]
-        
+
         clipped = output[-12000:] if output else "(no output)"
         event_kind = "done" if status == "passed" else "error"
         append_activity(db, session, event_kind, f"Command {status}: {command}", clipped)
-        
+
         metadata = _metadata(session)
         command_log = list(metadata.get("command_log") or [])
         result = {
@@ -1673,11 +1685,11 @@ def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
         new_text.splitlines(),
         lineterm=""
     ))
-    
+
     hunks = []
     current_hunk = None
     hunk_idx = 0
-    
+
     for line in diff:
         if line.startswith("---") or line.startswith("+++"):
             continue
@@ -1688,10 +1700,10 @@ def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
                 old_len = int(match.group(2)) if match.group(2) else 1
                 new_start = int(match.group(3))
                 new_len = int(match.group(4)) if match.group(4) else 1
-                
+
                 if current_hunk:
                     hunks.append(current_hunk)
-                
+
                 current_hunk = {
                     "index": hunk_idx,
                     "old_start": old_start,
@@ -1706,7 +1718,7 @@ def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
                 }
                 hunk_idx += 1
             continue
-            
+
         if current_hunk is not None:
             current_hunk["lines"].append(line)
             if line.startswith("-"):
@@ -1716,30 +1728,30 @@ def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
             else:
                 current_hunk["old_lines"].append(line[1:])
                 current_hunk["new_lines"].append(line[1:])
-                
+
     if current_hunk:
         hunks.append(current_hunk)
-        
+
     return hunks
 
 
 def apply_hunks_to_file(old_text: str, hunks: list[dict]) -> str:
     lines = old_text.splitlines()
     sorted_hunks = sorted(hunks, key=lambda h: h["old_start"])
-    
+
     offset = 0
     for hunk in sorted_hunks:
         if hunk.get("status") == "rejected":
             continue
-            
+
         start_idx = hunk["old_start"] + offset - 1
         end_idx = start_idx + hunk["old_len"]
-        
+
         lines[start_idx:end_idx] = hunk["new_lines"]
-        
+
         shift = len(hunk["new_lines"]) - hunk["old_len"]
         offset += shift
-        
+
     return "\n".join(lines)
 
 
@@ -1764,7 +1776,7 @@ def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> l
             tofile=f"b/{record.filename}",
             lineterm="",
         ))
-        
+
         # Parse hunks and assign status
         hunks = parse_diff_to_hunks(old_text, new_text)
         for hunk in hunks:
@@ -1772,7 +1784,7 @@ def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> l
             hunk["id"] = hunk_id
             if hunk_id in hunks_state:
                 hunk["status"] = hunks_state[hunk_id]
-                
+
         previews.append({
             "file_id": str(record.id),
             "filename": record.filename,
@@ -1862,7 +1874,7 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
             raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
         old_text = get_file_text(db, user_id, record.id)
         new_text = str(item.get("content") or "")
-        
+
         # Resolve hunk states
         session_metadata = _metadata(session)
         hunks_state = session_metadata.get("patch_hunks_state") or {}
@@ -1873,10 +1885,10 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
             if hunks_state.get(hunk_id) == "rejected":
                 hunk["status"] = "rejected"
                 hunks_modified = True
-                
+
         if hunks_modified:
             new_text = apply_hunks_to_file(old_text, hunks)
-            
+
         if not new_text:
             continue
         rollback_snapshots.append({
@@ -1886,6 +1898,13 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
             "captured_at": _now(),
         })
         put_object(record.object_key, new_text.encode("utf-8"), record.content_type or "text/plain")
+
+        # Desktop/local mode: mirror approved patches back into the selected local project.
+        local_file = _safe_local_workspace_file(session, record.filename)
+        if local_file:
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            local_file.write_text(new_text, encoding="utf-8")
+
         record.size_bytes = len(new_text.encode("utf-8"))
         record.metadata_json = {**(record.metadata_json or {}), "last_code_session_id": str(session.id)}
         changed.append({
