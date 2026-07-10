@@ -1,6 +1,6 @@
 'use client';
 
-import { Paperclip, Send, Mic, ArrowUp, Layers } from 'lucide-react';
+import { Bot, ChevronDown, Code2, Layers, Mic, Paperclip, Plus, X, ArrowUp } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceMode = 'auto' | 'code' | 'plan' | 'design' | 'deploy' | 'research';
@@ -47,6 +47,20 @@ export default function ConversationPanel({
 }: Props) {
   return (
     <section className={styles.conversation}>
+      <div className={styles.agentHeader}>
+        <div className={styles.agentTitle}>
+          <Bot size={15} />
+          <span>New Agent</span>
+        </div>
+        <div className={styles.agentHeaderActions}>
+          <button type="button" title="New agent" disabled={busy}>
+            <Plus size={14} />
+          </button>
+          <button type="button" title="Close agent panel">
+            <X size={14} />
+          </button>
+        </div>
+      </div>
       <div className={styles.messages}>
         {messages.length === 0 ? (
           <div className={styles.emptyState}>
@@ -67,29 +81,7 @@ export default function ConversationPanel({
         )}
       </div>
       <div className={styles.composer}>
-        <div className={styles.modeRow}>
-          {modes.map((item) => (
-            <button
-              key={item.id}
-              className={`${styles.modePill} ${mode === item.id ? styles.modePillActive : ''}`}
-              type="button"
-              onClick={() => onModeChange(item.id)}
-              disabled={busy}
-            >
-              {item.label}
-            </button>
-          ))}
-          <select className={styles.modelSelect} defaultValue="composer-2.5-fast">
-            <option value="composer-2.5-fast">Composer 2.5 Fast</option>
-            <option value="nexus-agent-pro">NEXUS Agent Pro</option>
-            <option value="nexus-agent-lite">NEXUS Agent Lite</option>
-          </select>
-          <span className={styles.meta}>{selectedFileCount} file{selectedFileCount === 1 ? '' : 's'} in context</span>
-        </div>
         <div className={styles.prolongedComposer}>
-          <button className={styles.composerAttachBtn} type="button" onClick={onAttachClick} disabled={busy} title="Attach files">
-            <Paperclip size={14} />
-          </button>
           <textarea
             className={styles.prolongedInput}
             value={prompt}
@@ -103,7 +95,27 @@ export default function ConversationPanel({
             placeholder="Plan, Build, / for skills, @ for context"
             rows={1}
           />
+          <div className={styles.agentToolbar}>
+            <div className={styles.agentModeSelect}>
+              <Code2 size={13} />
+              <select value={mode} onChange={(event) => onModeChange(event.target.value as WorkspaceMode)} disabled={busy} title="Agent mode">
+                {modes.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+              <ChevronDown size={12} />
+            </div>
+            <select className={styles.modelSelect} defaultValue="nexus-agent-fast" title="Agent model">
+              <option value="nexus-agent-fast">NEXUS Agent Fast</option>
+              <option value="nexus-agent-pro">NEXUS Agent Pro</option>
+              <option value="autonomus-ai">Autonomus AI</option>
+            </select>
+            <span className={styles.contextCount}>{selectedFileCount} ctx</span>
+          </div>
           <div className={styles.composerControlsRight}>
+            <button className={styles.composerAttachBtn} type="button" onClick={onAttachClick} disabled={busy} title="Attach files">
+              <Paperclip size={14} />
+            </button>
             <button className={styles.composerMicBtn} type="button" title="Voice Assist">
               <Mic size={14} />
             </button>

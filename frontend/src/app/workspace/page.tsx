@@ -1,6 +1,6 @@
 'use client';
 
-import { MoreHorizontal, UserCircle, Settings } from 'lucide-react';
+import { Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -665,7 +665,7 @@ export default function WorkspacePage() {
     } finally {
       setBusy(false);
       if (autoCompile) {
-        runChecks();
+        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so NEXUS is verifying the applied patch.' });
       }
     }
   };
@@ -910,6 +910,7 @@ export default function WorkspacePage() {
   const applyFileChange = async (fileId: string) => {
     if (!sessionId || busy) return;
     setBusy(true);
+    let applied = false;
     try {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, {
         method: 'POST',
@@ -925,10 +926,14 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
+      applied = true;
     } catch (error) {
       addEvent({ kind: 'error', message: 'Apply file failed', detail: error instanceof Error ? error.message : 'Could not apply selected file.' });
     } finally {
       setBusy(false);
+      if (applied && autoCompile) {
+        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so NEXUS is verifying the applied file.' });
+      }
     }
   };
 
@@ -957,12 +962,12 @@ export default function WorkspacePage() {
     }
   };
 
-  const runChecks = async () => {
-    if (busy) return;
+  const runChecks = async (options: { ignoreBusy?: boolean; reason?: string } = {}) => {
+    if (busy && !options.ignoreBusy) return;
     setBusy(true);
     try {
       const sid = await ensureSession();
-      addEvent({ kind: 'deploy', message: 'Running workspace checks', detail: 'NEXUS will run detected safe build/test/lint/typecheck commands.' });
+      addEvent({ kind: 'deploy', message: 'Running workspace checks', detail: options.reason || 'NEXUS will run detected safe build/test/lint/typecheck commands.' });
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-checks`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({
@@ -1467,6 +1472,10 @@ export default function WorkspacePage() {
         editorOpen={editorOpen}
       />
       <header className={styles.topbar}>
+        <div className={styles.breadcrumb}>
+          <span>NEXUS Code</span>
+          <strong>{activeProject?.name || 'Workspace'}</strong>
+        </div>
         <input
           className={styles.search}
           value={searchQuery}
@@ -1478,7 +1487,9 @@ export default function WorkspacePage() {
           placeholder="Search files, commands, agents..."
         />
         <div className={styles.topActions}>
-          <span className={styles.projectBadge}>{activeProject?.name || 'No project'}</span>
+          <span className={styles.projectBadge} title={`Sandbox: ${sandboxType}`}>
+            <Circle size={7} fill="currentColor" /> {runtimeStatus?.status || 'ready'}
+          </span>
           
           <div className={styles.settingsWrapper}>
             <button 
@@ -1513,7 +1524,7 @@ export default function WorkspacePage() {
                   </label>
                 </div>
                 <div className={styles.settingItem}>
-                  <label>Sandbox Environment:</label>
+                  <label>Sandbox</label>
                   <select 
                     value={sandboxType} 
                     onChange={(e) => setSandboxType(e.target.value)}
@@ -1527,8 +1538,10 @@ export default function WorkspacePage() {
             )}
           </div>
 
-          <MoreHorizontal size={18} />
-          <UserCircle size={22} />
+          <button className={styles.iconButton} type="button" title="More workspace actions">
+            <MoreHorizontal size={15} />
+          </button>
+          <UserCircle size={18} />
         </div>
       </header>
       <div className={`${styles.layout} ${!editorOpen ? styles.layoutNoEditor : ''}`}>

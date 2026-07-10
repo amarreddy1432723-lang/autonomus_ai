@@ -165,7 +165,38 @@
   gap: 16px;
   border-bottom: 1px solid #1e1e1e;
   background: #101010;
-  padding: 0 16px;
+  padding: 0 12px;
+}
+
+.breadcrumb {
+  position: absolute;
+  left: 14px;
+  min-width: 0;
+  max-width: 34%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #7c7c84;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.breadcrumb span,
+.breadcrumb strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breadcrumb strong {
+  color: #dedee7;
+}
+
+.breadcrumb span::after {
+  content: "›";
+  margin-left: 8px;
+  color: #56565d;
 }
 
 .brand {
@@ -190,7 +221,7 @@
   right: 16px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   color: #888;
 }
 
@@ -203,9 +234,13 @@
   background: #151515;
   color: #bdb8ff;
   border-radius: 999px;
-  padding: 5px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
   font-size: 11px;
   font-weight: 900;
+  text-transform: capitalize;
 }
 
 .layout {
@@ -316,16 +351,71 @@
   background: #0d0d0d;
 }
 
+.agentHeader {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1e1e1e;
+  background: #101010;
+  padding: 0 10px;
+}
+
+.agentTitle {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #f1f1f1;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.agentHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agentHeaderActions button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #90909a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.agentHeaderActions button:hover:not(:disabled) {
+  border-color: #292929;
+  background: #171717;
+  color: #fff;
+}
+
+.agentHeaderActions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .panelHeader {
   height: 46px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #1e1e1e;
-  padding: 0 14px;
+  padding: 0 10px;
   color: #cfcfcf;
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.fileToolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .activityTabs {
@@ -476,14 +566,14 @@
 
 .fileList {
   height: calc(100vh - 52px - 46px - 172px);
-  padding: 8px;
+  padding: 7px;
 }
 
 .explorerSearch {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px;
+  grid-template-columns: minmax(0, 1fr) 30px;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .explorerSearch input {
@@ -491,10 +581,10 @@
   border: 1px solid #292929;
   background: #0d0d0d;
   color: #e8e8e8;
-  border-radius: 7px;
-  padding: 8px;
+  border-radius: 6px;
+  padding: 7px 8px;
   outline: none;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .explorerSearch button,
@@ -507,8 +597,9 @@
 }
 
 .explorerSearch button {
-  font-size: 11px;
-  font-weight: 800;
+  height: 30px;
+  display: grid;
+  place-items: center;
 }
 
 .searchMatches {
@@ -575,12 +666,13 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   color: #d8d8d8;
   cursor: pointer;
-  padding: 9px;
+  padding: 7px 8px;
   text-align: left;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
+  font-size: 12px;
 }
 
 .fileItemActive {
@@ -603,11 +695,11 @@
 
 .uploadBox {
   border-top: 1px solid #1e1e1e;
-  padding: 12px;
+  padding: 8px;
 }
 
 .uploadLabel {
-  height: 86px;
+  height: 54px;
   display: grid;
   place-items: center;
   border: 1px dashed #343434;
@@ -618,9 +710,16 @@
   text-align: center;
 }
 
+.uploadLabel span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
 .messages {
   flex: 1;
-  padding: 24px;
+  padding: 18px;
 }
 
 .emptyState {
@@ -634,7 +733,7 @@
 .emptyState h1 {
   color: #e8e8e8;
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: 18px;
 }
 
 .message {
@@ -656,7 +755,7 @@
 
 .composer {
   border-top: 1px solid #1e1e1e;
-  padding: 14px;
+  padding: 10px;
   background: #101010;
 }
 
@@ -710,12 +809,14 @@
   font: inherit;
 }
 .modelSelect {
-  background: #17181c;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  height: 26px;
+  max-width: 134px;
+  background: transparent;
+  border: 0;
   color: #c9cdd4;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-size: 12px;
   font-weight: 600;
   outline: none;
   cursor: pointer;
@@ -733,12 +834,14 @@
 }
 
 .settingsGearBtn {
-  background: transparent;
-  border: none;
+  width: 30px;
+  height: 30px;
+  background: #151515;
+  border: 1px solid #292929;
   color: #8e939e;
   cursor: pointer;
-  padding: 6px;
-  border-radius: 50%;
+  padding: 0;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -756,9 +859,9 @@
   right: 0;
   background: #15161a;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 16px;
-  width: 240px;
+  border-radius: 9px;
+  padding: 10px;
+  width: 220px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
   z-index: 1000;
   display: flex;
@@ -768,7 +871,7 @@
 
 .settingsPopover h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: #ffffff;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -802,15 +905,16 @@
 }
 
 .prolongedComposer {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: #17181c;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 28px;
-  padding: 6px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(72px, auto) 30px;
+  gap: 8px;
+  background: #0f1013;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 12px;
+  padding: 10px;
   width: 100%;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  box-shadow: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -822,12 +926,14 @@
 .composerAttachBtn,
 .composerMicBtn,
 .composerBgBtn {
+  width: 28px;
+  height: 28px;
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   color: #8e939e;
   cursor: pointer;
-  padding: 8px;
-  border-radius: 50%;
+  padding: 0;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -837,28 +943,70 @@
 .composerAttachBtn:hover,
 .composerMicBtn:hover,
 .composerBgBtn:hover {
+  border-color: #292929;
   background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
 }
 
 .prolongedInput {
-  flex: 1;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 66px;
   background: transparent;
   border: none;
   outline: none;
   color: #e8e8e8;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   resize: none;
   line-height: 1.4;
-  padding: 6px 0;
+  padding: 0;
   max-height: 120px;
 }
 
-.composerControlsRight {
+.agentToolbar {
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+.agentModeSelect {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #292929;
+  background: #1a1a1d;
+  color: #c8c8d0;
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.agentModeSelect select {
+  max-width: 62px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  outline: none;
+  appearance: none;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.contextCount {
+  color: #777b84;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.composerControlsRight {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
 }
 
 .composerSendBtn {
@@ -866,9 +1014,9 @@
   border: none;
   color: #ffffff;
   cursor: pointer;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1871,8 +2019,7 @@
 }
 
 .approveButton,
-.rejectButton,
-.iconButton {
+.rejectButton {
   display: inline-flex;
   justify-content: center;
   align-items: center;
@@ -1880,6 +2027,16 @@
   min-height: 38px;
   padding: 8px 10px;
   font-weight: 800;
+}
+
+.iconButton {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
 }
 
 .approveButton {

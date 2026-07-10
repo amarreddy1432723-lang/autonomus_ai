@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { FileCode2, FileText, Folder, RefreshCw, Upload } from 'lucide-react';
+import { FileCode2, FileText, FolderOpen, GitBranch, Plus, RefreshCw, Search, Upload } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceFile = {
@@ -78,10 +78,21 @@ export default function FileExplorer({
   return (
     <aside className={styles.files}>
       <div className={styles.panelHeader}>
-        <span>Project Files</span>
-        <button className={styles.iconButton} type="button" onClick={onRefresh} disabled={busy} aria-label="Refresh files">
-          <RefreshCw size={14} />
-        </button>
+        <span>MY AI</span>
+        <div className={styles.fileToolbar}>
+          <button className={styles.iconButton} type="button" disabled={busy} title="New file">
+            <Plus size={14} />
+          </button>
+          <button className={styles.iconButton} type="button" onClick={() => searchInputRef.current?.focus()} title="Search files">
+            <Search size={14} />
+          </button>
+          <button className={styles.iconButton} type="button" disabled title="Git status">
+            <GitBranch size={14} />
+          </button>
+          <button className={styles.iconButton} type="button" onClick={onRefresh} disabled={busy} title="Refresh files">
+            <RefreshCw size={14} />
+          </button>
+        </div>
       </div>
       <div className={styles.fileList}>
         <div className={styles.explorerSearch}>
@@ -94,8 +105,8 @@ export default function FileExplorer({
             }}
             placeholder="Search workspace..."
           />
-          <button type="button" onClick={onSearch} disabled={busy || !searchQuery.trim()}>
-            Search
+          <button type="button" onClick={onSearch} disabled={busy || !searchQuery.trim()} title="Run search">
+            <Search size={14} />
           </button>
         </div>
         {searchMatches.length > 0 && (
@@ -120,7 +131,7 @@ export default function FileExplorer({
           </div>
         )}
         <div className={styles.meta} style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0 10px' }}>
-          <Folder size={14} /> Uploaded workspace
+          <FolderOpen size={14} /> Uploaded workspace
         </div>
         {files.map((file) => {
           const active = selectedIds.includes(file.id);
@@ -145,9 +156,8 @@ export default function FileExplorer({
       <div className={styles.uploadBox}>
         <label className={styles.uploadLabel}>
           <span>
-            <Upload size={18} />
-            <br />
-            Drop or choose files
+            <Upload size={15} />
+            <strong>Drop or choose files</strong>
           </span>
           <input
             hidden
