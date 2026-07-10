@@ -1,6 +1,6 @@
 'use client';
 
-import { Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
+import { Activity, AppWindow, ChevronLeft, ChevronRight, Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -8,6 +8,7 @@ import ActivityPanel, { ActivityEvent, AgentJob, GitHubRepository, GitHubStatus,
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
+import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
 import styles from './Workspace.module.css';
 
@@ -97,6 +98,8 @@ export default function WorkspacePage() {
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [rightPanelView, setRightPanelView] = useState<'activity' | 'apps'>('activity');
   const [autoCompile, setAutoCompile] = useState(true);
   const [autoRunCommands, setAutoRunCommands] = useState(true);
   const [sandboxType, setSandboxType] = useState('local');
@@ -1544,7 +1547,7 @@ export default function WorkspacePage() {
           <UserCircle size={18} />
         </div>
       </header>
-      <div className={`${styles.layout} ${!editorOpen ? styles.layoutNoEditor : ''}`}>
+      <div className={`${styles.layout} ${!editorOpen ? styles.layoutNoEditor : ''} ${!rightPanelOpen ? styles.layoutRightCollapsed : ''}`}>
         {editorOpen && (
           <EditorPanel
             file={openFile}
@@ -1575,63 +1578,108 @@ export default function WorkspacePage() {
           onSubmitBackground={runWorkspaceBackground}
           onAttachClick={() => fileInputRef.current?.click()}
         />
-        <ActivityPanel
-          events={events}
-          jobs={jobs}
-          patchPreview={patchPreview}
-          commands={commands}
-          runtimeStatus={runtimeStatus}
-          githubStatus={githubStatus}
-          githubRepositories={githubRepositories}
-          selectedGithubRepo={selectedGithubRepo}
-          analysis={analysis}
-          rollbackSnapshots={rollbackSnapshots}
-          hasPatch={patchReady}
-          canApply={patchReady && !!sessionId && !busy}
-          canRunCommand={selectedFileIds.length > 0 && !busy}
-          previewUrl={previewUrl}
-          previewChecks={previewChecks}
-          previewLogs={previewLogs}
-          canCheckPreview={/^https?:\/\//.test(previewUrl.trim()) && !busy}
-          canFixPreview={Boolean(sessionId) && !busy}
-          canStartPreview={selectedFileIds.length > 0 && !busy}
-          repoUrl={repoUrl}
-          githubBranchName={githubBranchName}
-          canUseGit={Boolean(sessionId) && !busy}
-          onApply={applyChanges}
-          onReject={rejectChanges}
-          onApplyFile={applyFileChange}
-          onRejectFile={rejectFileChange}
-          onRollback={rollbackChanges}
-          onRollbackSnapshot={rollbackSnapshot}
-          onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
-          onRunCommand={runCommand}
-          onRunChecks={runChecks}
-          onInstallRuntime={installRuntime}
-          onRefreshJobs={refreshCurrentJobs}
-          onCancelJob={cancelJob}
-          onRetryJob={retryJob}
-          onSyncRuntime={syncRuntime}
-          onAnalyzeWorkspace={analyzeWorkspace}
-          onPreviewUrlChange={setPreviewUrl}
-          onCheckPreview={checkPreview}
-          onFixPreview={fixPreviewIssue}
-          onStartPreview={startLivePreview}
-          onStopPreview={stopLivePreview}
-          onLoadPreviewLogs={loadPreviewLogs}
-          onRepoUrlChange={setRepoUrl}
-          onGithubRepoChange={setSelectedGithubRepo}
-          onGithubBranchNameChange={setGithubBranchName}
-          onConnectGithubApp={connectGithubApp}
-          onRefreshGithub={refreshGithubState}
-          onCreateGithubBranch={createGithubBranch}
-          onCommitGithubChanges={commitGithubChanges}
-          onCheckGithubPrStatus={checkGithubPrStatus}
-          onConnectRepo={connectRepo}
-          onImportRepo={importRepo}
-          onPreparePr={preparePr}
-          onOpenPr={openGithubAppPr}
-        />
+        {rightPanelOpen && rightPanelView === 'activity' && (
+          <ActivityPanel
+            events={events}
+            jobs={jobs}
+            patchPreview={patchPreview}
+            commands={commands}
+            runtimeStatus={runtimeStatus}
+            githubStatus={githubStatus}
+            githubRepositories={githubRepositories}
+            selectedGithubRepo={selectedGithubRepo}
+            analysis={analysis}
+            rollbackSnapshots={rollbackSnapshots}
+            hasPatch={patchReady}
+            canApply={patchReady && !!sessionId && !busy}
+            canRunCommand={selectedFileIds.length > 0 && !busy}
+            previewUrl={previewUrl}
+            previewChecks={previewChecks}
+            previewLogs={previewLogs}
+            canCheckPreview={/^https?:\/\//.test(previewUrl.trim()) && !busy}
+            canFixPreview={Boolean(sessionId) && !busy}
+            canStartPreview={selectedFileIds.length > 0 && !busy}
+            repoUrl={repoUrl}
+            githubBranchName={githubBranchName}
+            canUseGit={Boolean(sessionId) && !busy}
+            onApply={applyChanges}
+            onReject={rejectChanges}
+            onApplyFile={applyFileChange}
+            onRejectFile={rejectFileChange}
+            onRollback={rollbackChanges}
+            onRollbackSnapshot={rollbackSnapshot}
+            onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
+            onRunCommand={runCommand}
+            onRunChecks={runChecks}
+            onInstallRuntime={installRuntime}
+            onRefreshJobs={refreshCurrentJobs}
+            onCancelJob={cancelJob}
+            onRetryJob={retryJob}
+            onSyncRuntime={syncRuntime}
+            onAnalyzeWorkspace={analyzeWorkspace}
+            onPreviewUrlChange={setPreviewUrl}
+            onCheckPreview={checkPreview}
+            onFixPreview={fixPreviewIssue}
+            onStartPreview={startLivePreview}
+            onStopPreview={stopLivePreview}
+            onLoadPreviewLogs={loadPreviewLogs}
+            onRepoUrlChange={setRepoUrl}
+            onGithubRepoChange={setSelectedGithubRepo}
+            onGithubBranchNameChange={setGithubBranchName}
+            onConnectGithubApp={connectGithubApp}
+            onRefreshGithub={refreshGithubState}
+            onCreateGithubBranch={createGithubBranch}
+            onCommitGithubChanges={commitGithubChanges}
+            onCheckGithubPrStatus={checkGithubPrStatus}
+            onConnectRepo={connectRepo}
+            onImportRepo={importRepo}
+            onPreparePr={preparePr}
+            onOpenPr={openGithubAppPr}
+          />
+        )}
+        {rightPanelOpen && rightPanelView === 'apps' && (
+          <WorkspaceAppsPanel
+            githubStatus={githubStatus}
+            runtimeStatus={runtimeStatus}
+            busy={busy}
+            onConnectGithub={connectGithubApp}
+            onRefreshGithub={refreshGithubState}
+            onSyncRuntime={syncRuntime}
+            onRunChecks={runChecks}
+          />
+        )}
+        <div className={styles.rightRail}>
+          <button
+            className={rightPanelOpen && rightPanelView === 'activity' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Activity / Changes"
+            onClick={() => {
+              setRightPanelView('activity');
+              setRightPanelOpen(true);
+            }}
+          >
+            <Activity size={14} />
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'apps' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Apps / Connectors"
+            onClick={() => {
+              setRightPanelView('apps');
+              setRightPanelOpen(true);
+            }}
+          >
+            <AppWindow size={14} />
+          </button>
+          <button
+            className={styles.rightRailButton}
+            type="button"
+            title={rightPanelOpen ? 'Hide right panel' : 'Show right panel'}
+            onClick={() => setRightPanelOpen((current) => !current)}
+          >
+            {rightPanelOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
+        </div>
       </div>
       {filesOpen && (
         <div className={styles.filesDrawerBackdrop} role="presentation" onMouseDown={() => setFilesOpen(false)}>

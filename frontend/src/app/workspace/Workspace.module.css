@@ -266,11 +266,19 @@
   grid-column: 2;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.2fr) 320px;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.2fr) 320px 42px;
 }
 
 .layoutNoEditor {
-  grid-template-columns: minmax(380px, 1fr) 320px !important;
+  grid-template-columns: minmax(420px, 1fr) 320px 42px !important;
+}
+
+.layoutRightCollapsed {
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.2fr) 42px;
+}
+
+.layoutNoEditor.layoutRightCollapsed {
+  grid-template-columns: minmax(420px, 1fr) 42px !important;
 }
 
 .editorCollapseButton {
@@ -358,8 +366,54 @@
   border-right: 1px solid #24262b;
 }
 
-.activity {
+.activity,
+.appsPanel {
   border-left: 1px solid #24262b;
+}
+
+.appsPanel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #111215;
+}
+
+.rightRail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border-left: 1px solid #24262b;
+  background: #0b0b0d;
+  padding: 10px 6px;
+}
+
+.rightRailButton,
+.rightRailButtonActive {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #8b8f98;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.rightRailButton:hover,
+.rightRailButtonActive {
+  border-color: #26282d;
+  background: #15161a;
+  color: #f2f2f2;
+}
+
+.rightRailButtonActive {
+  color: #c4b5fd;
+  border-color: rgba(139, 92, 246, 0.32);
+  background: rgba(139, 92, 246, 0.1);
 }
 
 .conversation {
@@ -677,6 +731,134 @@
 .activityList {
   height: calc(100vh - 52px - 46px - 47px);
   padding: 10px;
+}
+
+.appsList {
+  height: calc(100vh - 44px - 44px);
+  overflow: auto;
+  padding: 10px;
+}
+
+.appsIntro {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  background: rgba(139, 92, 246, 0.07);
+  border-radius: 12px;
+  padding: 11px;
+  margin-bottom: 10px;
+}
+
+.appsIntro strong {
+  color: #f2f2f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.appsIntro span {
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.appCard {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  border: 1px solid #24262b;
+  background: #15161a;
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.appIcon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #26282d;
+  background: #111215;
+  color: #c4b5fd;
+  border-radius: 9px;
+}
+
+.appBody {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.appTitleRow {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.appTitleRow strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f2f2f2;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.appTitleRow em {
+  flex: 0 0 auto;
+  border: 1px solid #30333a;
+  background: #111215;
+  color: #a0a4ab;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.appBody p {
+  margin: 0;
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.appBody button,
+.appsSettingsLink {
+  width: fit-content;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #24262b;
+  background: #111215;
+  color: #d7d9df;
+  border-radius: 8px;
+  padding: 0 9px;
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.appBody button:hover:not(:disabled),
+.appsSettingsLink:hover {
+  border-color: rgba(139, 92, 246, 0.34);
+  color: #f2f2f2;
+}
+
+.appBody button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.appsSettingsLink {
+  width: 100%;
+  justify-content: center;
+  margin-top: 4px;
 }
 
 .fileItem,
