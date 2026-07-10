@@ -1,6 +1,6 @@
 'use client';
 
-import { MoreHorizontal, UserCircle } from 'lucide-react';
+import { MoreHorizontal, UserCircle, Settings } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -97,6 +97,10 @@ export default function WorkspacePage() {
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
+  const [autoCompile, setAutoCompile] = useState(true);
+  const [autoRunCommands, setAutoRunCommands] = useState(true);
+  const [sandboxType, setSandboxType] = useState('local');
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -660,6 +664,9 @@ export default function WorkspacePage() {
       addEvent({ kind: 'error', message: 'Save failed', detail: error instanceof Error ? error.message : 'Could not save file.' });
     } finally {
       setBusy(false);
+      if (autoCompile) {
+        runChecks();
+      }
     }
   };
 
@@ -894,6 +901,9 @@ export default function WorkspacePage() {
       addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
     } finally {
       setBusy(false);
+      if (autoCompile) {
+        runChecks();
+      }
     }
   };
 
@@ -1469,6 +1479,54 @@ export default function WorkspacePage() {
         />
         <div className={styles.topActions}>
           <span className={styles.projectBadge}>{activeProject?.name || 'No project'}</span>
+          
+          <div className={styles.settingsWrapper}>
+            <button 
+              className={styles.settingsGearBtn} 
+              type="button" 
+              onClick={() => setSettingsOpen(!settingsOpen)}
+              title="Workspace Settings"
+            >
+              <Settings size={15} />
+            </button>
+            {settingsOpen && (
+              <div className={styles.settingsPopover}>
+                <h4>Workspace Configuration</h4>
+                <div className={styles.settingItem}>
+                  <label>
+                    <input 
+                      type="checkbox" 
+                      checked={autoCompile} 
+                      onChange={(e) => setAutoCompile(e.target.checked)} 
+                    />
+                    <span>Auto-Compile Code</span>
+                  </label>
+                </div>
+                <div className={styles.settingItem}>
+                  <label>
+                    <input 
+                      type="checkbox" 
+                      checked={autoRunCommands} 
+                      onChange={(e) => setAutoRunCommands(e.target.checked)} 
+                    />
+                    <span>Auto-Run Agent Commands</span>
+                  </label>
+                </div>
+                <div className={styles.settingItem}>
+                  <label>Sandbox Environment:</label>
+                  <select 
+                    value={sandboxType} 
+                    onChange={(e) => setSandboxType(e.target.value)}
+                  >
+                    <option value="local">Local Sandbox</option>
+                    <option value="docker">Docker Container</option>
+                    <option value="e2b">E2B Cloud</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
           <MoreHorizontal size={18} />
           <UserCircle size={22} />
         </div>

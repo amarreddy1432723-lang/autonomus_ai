@@ -79,6 +79,11 @@ export default function ConversationPanel({
               {item.label}
             </button>
           ))}
+          <select className={styles.modelSelect} defaultValue="composer-2.5-fast">
+            <option value="composer-2.5-fast">Composer 2.5 Fast</option>
+            <option value="nexus-agent-pro">NEXUS Agent Pro</option>
+            <option value="nexus-agent-lite">NEXUS Agent Lite</option>
+          </select>
           <span className={styles.meta}>{selectedFileCount} file{selectedFileCount === 1 ? '' : 's'} in context</span>
         </div>
         <div className={styles.prolongedComposer}>
@@ -95,7 +100,7 @@ export default function ConversationPanel({
                 onSubmit();
               }
             }}
-            placeholder="Message NEXUS Code..."
+            placeholder="Plan, Build, / for skills, @ for context"
             rows={1}
           />
           <div className={styles.composerControlsRight}>

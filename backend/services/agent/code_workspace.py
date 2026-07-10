@@ -368,6 +368,7 @@ def _safe_local_workspace_file(session: CodeSession, filename: str) -> Path | No
     target = (local_root / safe_name).resolve()
     if not str(target).startswith(str(local_root)):
         raise HTTPException(status_code=400, detail=f"Unsafe local workspace path: {filename}")
+    target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 
