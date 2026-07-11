@@ -27,6 +27,15 @@ type CodeProject = {
   last_opened_at?: string | null;
 };
 
+type WorkspaceCommandAction = {
+  id: string;
+  title: string;
+  detail: string;
+  keywords: string;
+  rank: number;
+  run: () => void | Promise<void>;
+};
+
 function id(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -96,6 +105,7 @@ export default function WorkspacePage() {
   const [openTabs, setOpenTabs] = useState<OpenWorkspaceFile[]>([]);
   const [activeFileId, setActiveFileId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -137,6 +147,35 @@ export default function WorkspacePage() {
     () => (workspaceTasks.length ? workspaceTasks : suggestions),
     [suggestions, workspaceTasks]
   );
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('nexus.code.preferences');
+      if (!raw) return;
+      const preferences = JSON.parse(raw);
+      if (preferences.mode) setMode(preferences.mode);
+      if (typeof preferences.autoCompile === 'boolean') setAutoCompile(preferences.autoCompile);
+      if (typeof preferences.autoRunCommands === 'boolean') setAutoRunCommands(preferences.autoRunCommands);
+      if (typeof preferences.sandboxType === 'string') setSandboxType(preferences.sandboxType);
+    } catch {
+      // Preferences are optional and should never block the workspace.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nexus.code.preferences', JSON.stringify({
+        mode,
+        autoCompile,
+        autoRunCommands,
+        sandboxType,
+        approvalStyle: 'review-first',
+        verbosity: 'concise',
+      }));
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [autoCompile, autoRunCommands, mode, sandboxType]);
 
   const openFile = useMemo(
     () => openTabs.find((file) => file.id === activeFileId) || openTabs[0] || null,
@@ -743,6 +782,7 @@ export default function WorkspacePage() {
   const searchWorkspace = async () => {
     const query = searchQuery.trim();
     if (!query || busy) return;
+    setFilesOpen(true);
     setBusy(true);
     try {
       const sid = await ensureSession();
@@ -1624,6 +1664,140 @@ export default function WorkspacePage() {
     }
   };
 
+  const commandActions = useMemo<WorkspaceCommandAction[]>(() => {
+    const failedJob = jobs.find((job) => ['failed', 'timeout', 'interrupted'].includes(job.status || ''));
+    const currentFilename = openFile?.filename || 'current file';
+    const previewFailed = previewChecks.some((check) => check.status !== 'passed');
+    const hasGit = Boolean(githubStatus?.connected || repoUrl);
+    return [
+      {
+        id: 'open-pending-changes',
+        title: 'Open pending changes',
+        detail: patchPreview.length ? `${patchPreview.length} file(s), +${patchPreview.reduce((total, item) => total + (item.additions || 0), 0)} / -${patchPreview.reduce((total, item) => total + (item.deletions || 0), 0)}` : 'No pending patch right now.',
+        keywords: 'open pending changes review diff approval patch',
+        rank: patchPreview.length ? 100 : 22,
+        run: () => {
+          setRightPanelOpen(true);
+          setRightPanelView('activity');
+        },
+      },
+      {
+        id: 'fix-failing-build',
+        title: 'Fix failing build',
+        detail: failedJob ? failedJob.prompt || 'Use latest failed job output.' : 'No failed job detected; prepare a verification-first fix prompt.',
+        keywords: 'fix failing build error failed job test lint typecheck',
+        rank: failedJob ? 96 : 42,
+        run: () => {
+          setMode('code');
+          setPrompt(failedJob ? `Fix the latest failed workspace job: ${failedJob.prompt || failedJob.mode}. Inspect the failure, identify root cause, prepare a small patch, and recommend checks.` : 'Check the workspace for build/test/lint failures, explain the root cause, and prepare the smallest safe fix.');
+        },
+      },
+      {
+        id: 'fix-preview-issue',
+        title: 'Fix preview issue',
+        detail: previewFailed ? 'Use latest preview evidence.' : 'Run a preview check first if needed.',
+        keywords: 'fix preview issue browser screenshot console network',
+        rank: previewFailed ? 90 : 45,
+        run: () => {
+          if (previewFailed) void fixPreviewIssue();
+          else {
+            setMode('code');
+            setPrompt('Check the preview state, identify visible/runtime issues, and prepare the smallest fix plan before patching.');
+          }
+        },
+      },
+      {
+        id: 'run-checks',
+        title: 'Run checks',
+        detail: commands.length ? commands.slice(0, 3).map((item) => item.command).join(', ') : 'Use detected safe build/test/lint commands.',
+        keywords: 'run checks build test lint typecheck',
+        rank: commands.length ? 84 : 60,
+        run: () => runChecks({ reason: 'Started from command palette.' }),
+      },
+      {
+        id: 'explain-current-file',
+        title: 'Explain current file',
+        detail: openFile ? currentFilename : 'Open a file first for the best explanation.',
+        keywords: 'explain current file understand code',
+        rank: openFile ? 82 : 25,
+        run: () => {
+          setMode('plan');
+          setPrompt(`Explain ${currentFilename} in plain engineering language. Cover what it does, important functions/components, dependencies, risks, and where to modify it safely.`);
+        },
+      },
+      {
+        id: 'refactor-selected-code',
+        title: 'Refactor selected code',
+        detail: openFile ? `Prepare a reviewable refactor for ${currentFilename}.` : 'Open a file before refactoring.',
+        keywords: 'refactor selected code clean simplify maintainability',
+        rank: openFile ? 78 : 20,
+        run: () => {
+          setMode('code');
+          setPrompt(`Refactor ${currentFilename} with the smallest reviewable change. Preserve behavior, explain files changed, line impact, and checks to run.`);
+        },
+      },
+      {
+        id: 'continue-last-task',
+        title: 'Continue last task',
+        detail: workspaceTasks[0]?.title || 'No durable task yet.',
+        keywords: 'continue last task resume suggested task',
+        rank: workspaceTasks.length ? 76 : 18,
+        run: () => {
+          const task = workspaceTasks[0];
+          if (task) void typeSuggestion(task);
+        },
+      },
+      {
+        id: 'generate-tests',
+        title: 'Generate tests',
+        detail: openFile ? `Add or improve tests around ${currentFilename}.` : 'Find likely test targets from the workspace.',
+        keywords: 'generate tests unit integration coverage',
+        rank: openFile ? 74 : 58,
+        run: () => {
+          setMode('code');
+          setPrompt(`Generate focused tests for ${openFile ? currentFilename : 'the current workspace task'}. Identify the code under test, add minimal test files, and recommend the exact test command.`);
+        },
+      },
+      {
+        id: 'create-pr',
+        title: hasGit ? 'Create PR' : 'Connect GitHub',
+        detail: hasGit ? 'Prepare branch, commit approved changes, and open PR.' : 'Install/connect GitHub before PR automation.',
+        keywords: 'github git pr pull request branch commit connect',
+        rank: hasGit && patchPreview.length ? 72 : 55,
+        run: () => {
+          setRightPanelOpen(true);
+          setRightPanelView('activity');
+          if (hasGit) void preparePr();
+          else void connectGithubApp();
+        },
+      },
+      {
+        id: 'connect-apps',
+        title: 'Open app connectors',
+        detail: 'GitHub, runtime CLI, preview, deploy, browser, and future connectors.',
+        keywords: 'apps connectors integrations github runtime cli preview deploy browser',
+        rank: 52,
+        run: () => {
+          setRightPanelOpen(true);
+          setRightPanelView('apps');
+        },
+      },
+    ].sort((a, b) => b.rank - a.rank);
+  }, [commands, githubStatus, jobs, openFile, patchPreview, previewChecks, repoUrl, workspaceTasks]);
+
+  const visibleCommandActions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return commandActions
+      .filter((action) => !query || `${action.title} ${action.detail} ${action.keywords}`.toLowerCase().includes(query))
+      .slice(0, 7);
+  }, [commandActions, searchQuery]);
+
+  const runCommandAction = (action: WorkspaceCommandAction) => {
+    setCommandPaletteOpen(false);
+    setSearchQuery('');
+    void action.run();
+  };
+
   return (
     <DesktopOnlyGuard product="NEXUS Code" reason="NEXUS Code is optimized for desktop workspaces with files, editor, terminal-style actions, preview, diffs, jobs, and Git controls.">
       <main className={styles.workspace}>
@@ -1644,16 +1818,49 @@ export default function WorkspacePage() {
           <span>NEXUS Code</span>
           <strong>{activeProject?.name || 'Workspace'}</strong>
         </div>
-        <input
-          className={styles.search}
-          value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)}
-          onFocus={focusWorkspaceSearch}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') searchWorkspace();
-          }}
-          placeholder="Search files, commands, agents..."
-        />
+        <div
+          className={styles.commandSearchWrap}
+          onBlur={() => window.setTimeout(() => setCommandPaletteOpen(false), 120)}
+        >
+          <input
+            className={styles.search}
+            value={searchQuery}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setCommandPaletteOpen(true);
+            }}
+            onFocus={() => {
+              setCommandPaletteOpen(true);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                const firstAction = visibleCommandActions[0];
+                if (firstAction) runCommandAction(firstAction);
+                else searchWorkspace();
+              }
+              if (event.key === 'Escape') setCommandPaletteOpen(false);
+            }}
+            placeholder="Search files, commands, agents..."
+          />
+          {commandPaletteOpen && (
+            <div className={styles.commandPalette}>
+              <div className={styles.commandPaletteHeader}>
+                <span>Recommended actions</span>
+                <em>{searchQuery.trim() ? 'filtered' : 'ranked by workspace state'}</em>
+              </div>
+              {visibleCommandActions.map((action) => (
+                <button key={action.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runCommandAction(action)}>
+                  <strong>{action.title}</strong>
+                  <span>{action.detail}</span>
+                </button>
+              ))}
+              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={searchWorkspace}>
+                <strong>Search workspace files</strong>
+                <span>{searchQuery.trim() ? `Find "${searchQuery.trim()}" in files, symbols, imports, and routes.` : 'Type a query to search files and code intelligence.'}</span>
+              </button>
+            </div>
+          )}
+        </div>
         <div className={styles.topActions}>
           <span className={styles.projectBadge} title={`Sandbox: ${sandboxType}`}>
             <Circle size={7} fill="currentColor" /> {runtimeStatus?.status || 'ready'}

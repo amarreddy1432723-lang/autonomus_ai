@@ -2135,6 +2135,58 @@ def suggest_next_actions(
             alternatives=["Inspect screenshot and logs without patching.", "Run build checks before fixing UI."],
             next_after_done="Recheck the preview and inspect remaining console/network errors.",
         ))
+    github = context.get("github") or {}
+    github_connected = bool(github.get("repo_url") or github.get("selected_repo") or github.get("repo_full_name"))
+    if github_connected and context["pending_patch"]["exists"]:
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Prepare GitHub PR",
+            summary="Package the approved workspace change into a branch and pull request instead of leaving it as a local patch.",
+            mode="deploy",
+            risk="medium",
+            files=[item["filename"] for item in context["pending_patch"]["files"] if item.get("filename")],
+            folders=folders,
+            steps=["Review or approve the pending patch.", "Create or confirm a working branch.", "Commit approved files.", "Open the PR and check status."],
+            commands=[],
+            requires_approval=True,
+            prompt="Prepare this pending change for GitHub PR. Summarize changed files, branch name, PR title/body, and checks to confirm before opening.",
+            impact="No force push. PR actions stay approval-gated.",
+            file_hint="Pending changed files.",
+            check_hint="Run checks before PR when available.",
+            source="github_pr",
+            confidence=0.82,
+            decision_reason="GitHub is connected and a patch exists, so the next professional step is review, branch, commit, and PR.",
+            tradeoffs=["Adds Git workflow overhead.", "Creates a clean review trail for the work."],
+            thinking_prompt="Is this patch complete enough to become a reviewable PR?",
+            coach_lens=["collaboration", "release safety", "maintainability"],
+            alternatives=["Run checks first.", "Split the patch before opening a PR."],
+            next_after_done="Watch PR checks and fix failures.",
+        ))
+    if not github_connected and context["file_count"] > 0:
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Connect GitHub",
+            summary="Connect a repository so NEXUS can turn approved changes into branches, commits, and pull requests.",
+            mode="deploy",
+            risk="low",
+            files=[],
+            folders=[],
+            steps=["Open the Git panel.", "Install or connect GitHub.", "Choose a repo.", "Import or map files."],
+            commands=[],
+            requires_approval=False,
+            prompt="Help me connect this workspace to GitHub, choose the correct repository, and prepare the safest branch/PR workflow.",
+            impact="No code changes. Enables professional source-control flow.",
+            file_hint="Current workspace files remain unchanged.",
+            check_hint="GitHub connection required before PR automation.",
+            source="github_connect",
+            confidence=0.76,
+            decision_reason="The workspace has files but no connected repo, so GitHub is the missing path from local work to reviewable delivery.",
+            tradeoffs=["Requires one-time setup.", "Unlocks branch, commit, PR, and check status workflows."],
+            thinking_prompt="Which repo should own this workspace and who needs to review changes?",
+            coach_lens=["collaboration", "delivery"],
+            alternatives=["Keep working locally.", "Export a ZIP instead of connecting GitHub."],
+            next_after_done="Import repo files or prepare the first PR branch.",
+        ))
 
     base_files = target_files[:6]
     suggestions.extend([
@@ -2700,6 +2752,50 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
         {"file_id": item["file_id"], "filename": item["filename"], "applied_at": _now()}
         for item in changed
     ]
+    active_task_id = metadata.get("active_workspace_task_id")
+    if active_task_id:
+        impact_result = {
+            "changed_files": [
+                {
+                    "file_id": item["file_id"],
+                    "filename": item["filename"],
+                    "additions": sum(1 for line in item["diff"].splitlines() if line.startswith("+") and not line.startswith("+++")),
+                    "deletions": sum(1 for line in item["diff"].splitlines() if line.startswith("-") and not line.startswith("---")),
+                }
+                for item in changed
+            ],
+            "total_additions": sum(
+                1
+                for item in changed
+                for line in item["diff"].splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            ),
+            "total_deletions": sum(
+                1
+                for item in changed
+                for line in item["diff"].splitlines()
+                if line.startswith("-") and not line.startswith("---")
+            ),
+            "summary": payload.get("summary") or "",
+        }
+        tasks = _workspace_tasks(metadata)
+        for index, task in enumerate(tasks):
+            if str(task.get("id")) != str(active_task_id):
+                continue
+            next_task = dict(task)
+            next_task["status"] = "waiting_approval" if remaining_replacements else "done"
+            next_task["updated_at"] = _now()
+            next_task["metadata"] = {**(next_task.get("metadata") or {}), "last_apply": impact_result}
+            next_task["impact"] = (
+                f"Applied {len(changed)} file(s), +{impact_result['total_additions']} / -{impact_result['total_deletions']}."
+                if changed else next_task.get("impact") or ""
+            )
+            if not remaining_replacements:
+                next_task["completed_at"] = next_task["updated_at"]
+                metadata.pop("active_workspace_task_id", None)
+            tasks[index] = next_task
+            metadata["workspace_tasks"] = tasks
+            break
     metadata["rollback_snapshots"] = (metadata.get("rollback_snapshots") or [])[-10:] + [{
         "snapshot_id": uuid.uuid4().hex,
         "applied_at": _now(),

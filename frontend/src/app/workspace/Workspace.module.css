@@ -235,6 +235,75 @@
   font-size: 12px;
 }
 
+.commandSearchWrap {
+  position: relative;
+  width: min(460px, 42vw);
+}
+
+.commandSearchWrap .search {
+  width: 100%;
+}
+
+.commandPalette {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  border: 1px solid #26282d;
+  background: rgba(17, 18, 21, 0.98);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+  border-radius: 12px;
+  padding: 7px;
+}
+
+.commandPaletteHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 7px 7px;
+  color: #a0a4ab;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.commandPaletteHeader em {
+  color: #6f7480;
+  font-style: normal;
+}
+
+.commandPalette button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #f2f2f2;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  border-radius: 9px;
+  padding: 8px 9px;
+  cursor: pointer;
+}
+
+.commandPalette button:hover {
+  background: rgba(139, 92, 246, 0.12);
+}
+
+.commandPalette strong {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.commandPalette span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #a0a4ab;
+  font-size: 11px;
+}
+
 .topActions {
   position: absolute;
   right: 16px;
