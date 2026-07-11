@@ -366,6 +366,14 @@ class NexusModelRouteRequest(BaseModel):
     prompt: str
     speed_priority: bool = True
 
+class ModelAccessResolveRequest(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+class ModelByokRegisterRequest(BaseModel):
+    provider: str
+    label: str = ""
+
 class NexusBlendRequest(BaseModel):
     prompt: str
     context: str = ""
@@ -1329,6 +1337,27 @@ def get_model_gateway_status(user_id: UUID = Depends(get_current_user_id)):
         "providers": sorted(model_gateway.providers.keys()),
         "default_provider": "nexus",
     }
+
+@app.get("/api/v1/models/access")
+def get_model_access_summary(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_access import model_access_summary
+
+    return model_access_summary(db, user_id)
+
+@app.post("/api/v1/models/access/resolve")
+def post_model_access_resolve(request: ModelAccessResolveRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_access import resolve_model_access_mode
+
+    return resolve_model_access_mode(db, user_id, request.provider, request.model)
+
+@app.post("/api/v1/models/byok/register")
+def post_model_byok_register(request: ModelByokRegisterRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_access import register_byok_placeholder
+
+    try:
+        return register_byok_placeholder(db, user_id, request.provider, request.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/v1/models/health-check")
 def post_model_registry_health_check(user_id: UUID = Depends(get_current_user_id)):
