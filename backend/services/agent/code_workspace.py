@@ -107,6 +107,8 @@ def append_activity(db: Session, session: CodeSession, kind: str, message: str, 
     metadata = _metadata(session)
     log = list(metadata.get("activity_log") or [])
     event = _activity(kind, message, detail, diff)
+    if metadata.get("active_workspace_task_id"):
+        event["task_id"] = metadata["active_workspace_task_id"]
     log.append(event)
     metadata["activity_log"] = log[-200:]
     metadata["last_activity_at"] = _now()
@@ -1632,6 +1634,509 @@ def search_workspace_files(db: Session, user_id: UUID, session: CodeSession, que
             "routes": sum(1 for item in matches if item.get("kind") == "route"),
             "text": sum(1 for item in matches if item.get("kind") == "text"),
         },
+    }
+
+
+WORKSPACE_TASK_STATUSES = {
+    "suggested",
+    "typed",
+    "accepted",
+    "running",
+    "waiting_approval",
+    "done",
+    "failed",
+    "dismissed",
+}
+
+
+def _workspace_tasks(metadata: dict) -> list[dict]:
+    tasks = metadata.get("workspace_tasks") or []
+    return [task for task in tasks if isinstance(task, dict)]
+
+
+def _write_workspace_tasks(db: Session, session: CodeSession, tasks: list[dict]) -> None:
+    metadata = _metadata(session)
+    metadata["workspace_tasks"] = tasks[-80:]
+    _set_metadata(session, metadata)
+    db.commit()
+
+
+def _serialize_workspace_task(task: dict) -> dict:
+    return {
+        "id": str(task.get("id") or ""),
+        "session_id": str(task.get("session_id") or ""),
+        "title": task.get("title") or "Workspace task",
+        "description": task.get("description") or "",
+        "summary": task.get("summary") or task.get("description") or "",
+        "mode": task.get("mode") or "code",
+        "status": task.get("status") or "suggested",
+        "risk": task.get("risk") or "medium",
+        "requires_approval": bool(task.get("requires_approval")),
+        "files": task.get("files") or [],
+        "folders": task.get("folders") or [],
+        "steps": task.get("steps") or [],
+        "commands": task.get("commands") or [],
+        "expected_commands": task.get("expected_commands") or task.get("commands") or [],
+        "suggested_prompt": task.get("suggested_prompt") or "",
+        "prompt": task.get("suggested_prompt") or task.get("prompt") or "",
+        "impact": task.get("impact") or "",
+        "file_hint": task.get("file_hint") or "",
+        "check_hint": task.get("check_hint") or "",
+        "metadata": task.get("metadata") or {},
+        "created_at": task.get("created_at"),
+        "updated_at": task.get("updated_at"),
+        "accepted_at": task.get("accepted_at"),
+        "completed_at": task.get("completed_at"),
+    }
+
+
+def list_workspace_tasks(db: Session, user_id: UUID, session: CodeSession, include_dismissed: bool = False) -> dict:
+    tasks = _workspace_tasks(_metadata(session))
+    if not include_dismissed:
+        tasks = [task for task in tasks if task.get("status") != "dismissed"]
+    return {
+        "session_id": str(session.id),
+        "tasks": [_serialize_workspace_task(task) for task in reversed(tasks)],
+    }
+
+
+def upsert_workspace_task(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    payload: dict,
+    status: str = "typed",
+) -> dict:
+    if status not in WORKSPACE_TASK_STATUSES:
+        raise HTTPException(status_code=400, detail="Unsupported workspace task status")
+    metadata = _metadata(session)
+    tasks = _workspace_tasks(metadata)
+    original_id = str(payload.get("id") or "")
+    try:
+        task_id = str(UUID(original_id)) if original_id else str(uuid.uuid4())
+    except Exception:
+        task_id = str(uuid.uuid4())
+    now = _now()
+    existing_index = next((index for index, task in enumerate(tasks) if str(task.get("id")) == task_id), None)
+    task = dict(tasks[existing_index]) if existing_index is not None else {
+        "id": task_id,
+        "session_id": str(session.id),
+        "created_at": now,
+    }
+    task.update({
+        "title": str(payload.get("title") or task.get("title") or "Workspace task")[:255],
+        "description": payload.get("description") or payload.get("summary") or task.get("description") or "",
+        "summary": payload.get("summary") or task.get("summary") or "",
+        "mode": payload.get("mode") or task.get("mode") or "code",
+        "status": status,
+        "risk": payload.get("risk") or payload.get("risk_level") or task.get("risk") or "medium",
+        "requires_approval": bool(payload.get("requires_approval", task.get("requires_approval", False))),
+        "files": payload.get("files") or task.get("files") or [],
+        "folders": payload.get("folders") or task.get("folders") or [],
+        "steps": payload.get("steps") or task.get("steps") or [],
+        "commands": payload.get("commands") or payload.get("expected_commands") or task.get("commands") or [],
+        "expected_commands": payload.get("expected_commands") or payload.get("commands") or task.get("expected_commands") or [],
+        "suggested_prompt": payload.get("suggested_prompt") or payload.get("prompt") or task.get("suggested_prompt") or "",
+        "impact": payload.get("impact") or task.get("impact") or "",
+        "file_hint": payload.get("file_hint") or payload.get("fileHint") or task.get("file_hint") or "",
+        "check_hint": payload.get("check_hint") or payload.get("checkHint") or task.get("check_hint") or "",
+        "metadata": {
+            **(task.get("metadata") or {}),
+            **(payload.get("metadata") or {}),
+            **({"client_suggestion_id": original_id} if original_id and original_id != task_id else {}),
+        },
+        "updated_at": now,
+    })
+    if status == "accepted" and not task.get("accepted_at"):
+        task["accepted_at"] = now
+    if status in {"done", "failed"} and not task.get("completed_at"):
+        task["completed_at"] = now
+    if existing_index is None:
+        tasks.append(task)
+    else:
+        tasks[existing_index] = task
+    metadata["workspace_tasks"] = tasks[-80:]
+    metadata["active_workspace_task_id"] = task_id if status in {"typed", "accepted", "running", "waiting_approval"} else metadata.get("active_workspace_task_id")
+    if status in {"done", "failed", "dismissed"} and metadata.get("active_workspace_task_id") == task_id:
+        metadata.pop("active_workspace_task_id", None)
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(db, session, "code", f"Task {status}: {task['title']}", task.get("summary") or task.get("description") or None)
+    return _serialize_workspace_task(task)
+
+
+def update_workspace_task(
+    db: Session,
+    user_id: UUID,
+    task_id: UUID,
+    payload: dict,
+) -> dict:
+    from services.shared.models import CodeSession as CodeSessionModel
+
+    sessions = db.query(CodeSessionModel).filter(CodeSessionModel.user_id == user_id).all()
+    for session in sessions:
+        metadata = _metadata(session)
+        tasks = _workspace_tasks(metadata)
+        for index, task in enumerate(tasks):
+            if str(task.get("id")) != str(task_id):
+                continue
+            next_task = {**task, **{key: value for key, value in payload.items() if value is not None}}
+            status = next_task.get("status") or task.get("status") or "suggested"
+            if status not in WORKSPACE_TASK_STATUSES:
+                raise HTTPException(status_code=400, detail="Unsupported workspace task status")
+            next_task["updated_at"] = _now()
+            if status == "accepted" and not next_task.get("accepted_at"):
+                next_task["accepted_at"] = next_task["updated_at"]
+            if status in {"done", "failed"} and not next_task.get("completed_at"):
+                next_task["completed_at"] = next_task["updated_at"]
+            tasks[index] = next_task
+            metadata["workspace_tasks"] = tasks
+            if status in {"done", "failed", "dismissed"} and metadata.get("active_workspace_task_id") == str(task_id):
+                metadata.pop("active_workspace_task_id", None)
+            _set_metadata(session, metadata)
+            db.commit()
+            return _serialize_workspace_task(next_task)
+    raise HTTPException(status_code=404, detail="Workspace task not found")
+
+
+def set_workspace_task_status(db: Session, user_id: UUID, task_id: UUID, status: str) -> dict:
+    return update_workspace_task(db, user_id, task_id, {"status": status})
+
+
+def _selected_records(db: Session, user_id: UUID, ids: list[str]) -> list[FileReference]:
+    if not ids:
+        return []
+    parsed = []
+    for item in ids:
+        try:
+            parsed.append(UUID(str(item)))
+        except Exception:
+            continue
+    if not parsed:
+        return []
+    return (
+        db.query(FileReference)
+        .filter(FileReference.user_id == user_id, FileReference.id.in_(parsed))
+        .all()
+    )
+
+
+def _commands_for_suggestion(db: Session, user_id: UUID, session: CodeSession) -> list[str]:
+    discovered = discover_workspace_commands(db, user_id, session).get("commands") or []
+    preferred = []
+    for command in discovered:
+        value = command.get("command") if isinstance(command, dict) else ""
+        if value and any(name in value for name in ("test", "build", "lint", "typecheck")):
+            preferred.append(value)
+    return preferred[:3] or ["Run discovered build/test/lint checks"]
+
+
+def workspace_suggestion_context(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    selected_file_ids: list[str] | None = None,
+    open_file_ids: list[str] | None = None,
+) -> dict:
+    metadata = _metadata(session)
+    files = code_files(db, user_id, session)
+    selected_records = _selected_records(db, user_id, selected_file_ids or [])
+    open_records = _selected_records(db, user_id, open_file_ids or [])
+    patch_preview = metadata.get("patch_preview") or []
+    preview_checks = metadata.get("preview_checks") or []
+    activity_log = metadata.get("activity_log") or []
+    failed_preview = next((check for check in reversed(preview_checks) if check.get("status") != "passed"), None)
+    from services.shared.models import AgentJob
+    jobs = (
+        db.query(AgentJob)
+        .filter(AgentJob.user_id == user_id, AgentJob.code_session_id == session.id)
+        .order_by(AgentJob.created_at.desc())
+        .limit(8)
+        .all()
+    )
+    failed_jobs = [
+        {"id": str(job.id), "mode": job.mode, "status": job.status, "prompt": job.prompt}
+        for job in jobs
+        if job.status in {"failed", "timeout", "interrupted"}
+    ]
+    return {
+        "session_id": str(session.id),
+        "title": session.title,
+        "file_count": len(files),
+        "file_tree": _file_tree_for_records(files)[:80],
+        "selected_files": _file_tree_for_records(selected_records),
+        "open_files": _file_tree_for_records(open_records),
+        "recent_activity": activity_log[-8:],
+        "failed_jobs": failed_jobs[:5],
+        "running_jobs": [
+            {"id": str(job.id), "mode": job.mode, "status": job.status, "prompt": job.prompt}
+            for job in jobs
+            if job.status in {"queued", "running"}
+        ][:5],
+        "pending_patch": {
+            "exists": bool(patch_preview),
+            "files": [
+                {
+                    "file_id": item.get("file_id"),
+                    "filename": item.get("filename"),
+                    "additions": item.get("additions") or 0,
+                    "deletions": item.get("deletions") or 0,
+                    "status": item.get("status") or "pending",
+                }
+                for item in patch_preview
+            ],
+        },
+        "preview_error": failed_preview,
+        "github": metadata.get("github") or metadata.get("git") or {},
+        "commands": _commands_for_suggestion(db, user_id, session),
+        "analysis": metadata.get("workspace_analysis") or {},
+        "tasks": [_serialize_workspace_task(task) for task in _workspace_tasks(metadata)[-8:]],
+    }
+
+
+def _compact_task_text(value: str, max_chars: int = 120) -> str:
+    normalized = re.sub(r"\s+", " ", value or "").strip()
+    return normalized[: max_chars - 3].rstrip() + "..." if len(normalized) > max_chars else normalized
+
+
+def _infer_suggestion_mode(text: str, selected_mode: str) -> str:
+    if selected_mode and selected_mode != "auto":
+        return selected_mode
+    lowered = text.lower()
+    if re.search(r"\b(design|ui|ux|layout|screen|component)\b", lowered):
+        return "design"
+    if re.search(r"\b(deploy|production|railway|vercel|render|release)\b", lowered):
+        return "deploy"
+    if re.search(r"\b(research|latest|compare|find|search)\b", lowered):
+        return "research"
+    if re.search(r"\b(plan|architecture|roadmap|steps)\b", lowered):
+        return "plan"
+    return "code"
+
+
+def _suggestion_payload(
+    *,
+    session: CodeSession,
+    title: str,
+    summary: str,
+    mode: str,
+    risk: str,
+    files: list[str],
+    folders: list[str],
+    steps: list[str],
+    commands: list[str],
+    requires_approval: bool,
+    prompt: str,
+    impact: str,
+    file_hint: str,
+    check_hint: str,
+    source: str,
+) -> dict:
+    now = _now()
+    return _serialize_workspace_task({
+        "id": str(uuid.uuid4()),
+        "session_id": str(session.id),
+        "title": title,
+        "summary": summary,
+        "description": summary,
+        "mode": mode,
+        "status": "suggested",
+        "risk": risk,
+        "requires_approval": requires_approval,
+        "files": files,
+        "folders": folders,
+        "steps": steps,
+        "commands": commands,
+        "expected_commands": commands,
+        "suggested_prompt": prompt,
+        "impact": impact,
+        "file_hint": file_hint,
+        "check_hint": check_hint,
+        "metadata": {"source": source},
+        "created_at": now,
+        "updated_at": now,
+    })
+
+
+def suggest_next_actions(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    user_description: str,
+    selected_mode: str = "auto",
+    selected_file_ids: list[str] | None = None,
+    open_file_ids: list[str] | None = None,
+    current_prompt: str = "",
+    recent_messages: list[dict] | None = None,
+) -> dict:
+    description = _compact_task_text(user_description or current_prompt or "the current workspace task", 180)
+    context = workspace_suggestion_context(db, user_id, session, selected_file_ids, open_file_ids)
+    mode = _infer_suggestion_mode(description, selected_mode)
+    selected_files = [item["path"] for item in context["selected_files"]]
+    open_files = [item["path"] for item in context["open_files"]]
+    target_files = selected_files or open_files
+    if not target_files and context["pending_patch"]["files"]:
+        target_files = [item["filename"] for item in context["pending_patch"]["files"] if item.get("filename")]
+    if not target_files:
+        target_files = [item["path"] for item in context["file_tree"][:5]]
+
+    folders = sorted({str(Path(path).parent).replace("\\", "/") for path in target_files if str(Path(path).parent) not in {".", ""}})[:5]
+    commands = context["commands"]
+    suggestions: list[dict] = []
+
+    if context["file_count"] == 0:
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Open or import a project",
+            summary="Start by adding repo files so NEXUS can inspect real code instead of guessing from the prompt.",
+            mode="code",
+            risk="low",
+            files=[],
+            folders=[],
+            steps=["Open a local folder, upload a ZIP, or connect GitHub.", "Index the project structure.", "Then ask for the first change."],
+            commands=[],
+            requires_approval=False,
+            prompt="Help me import or open a project for this workspace, then summarize the file structure and recommended first checks.",
+            impact="No code changes. Creates useful workspace context first.",
+            file_hint="No files are available yet.",
+            check_hint="Checks are suggested after import.",
+            source="no_files",
+        ))
+    if context["pending_patch"]["exists"]:
+        files = [item["filename"] for item in context["pending_patch"]["files"] if item.get("filename")]
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Review pending changes",
+            summary="A patch is already waiting. Review the changed files, line counts, and approval risk before doing more work.",
+            mode="code",
+            risk="medium",
+            files=files,
+            folders=folders,
+            steps=["Open the pending diff.", "Review additions/deletions by file.", "Approve, reject, or ask NEXUS for a smaller patch."],
+            commands=commands[:2],
+            requires_approval=True,
+            prompt="Review the pending patch. Summarize changed files, additions/deletions, risk, and the exact checks I should run before approval.",
+            impact="No new patch unless you ask. Focuses on safe review.",
+            file_hint=", ".join(files[:4]) or "Pending patch files",
+            check_hint=", ".join(commands[:2]) or "Run checks after review.",
+            source="pending_patch",
+        ))
+    if context["failed_jobs"]:
+        failed = context["failed_jobs"][0]
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Fix the failed job",
+            summary="Use the latest failed job and workspace diagnostics to create a focused recovery plan.",
+            mode="code",
+            risk="medium",
+            files=target_files,
+            folders=folders,
+            steps=["Read the failed job output.", "Find files connected to the failure.", "Prepare a small fix and rerun checks."],
+            commands=commands[:3],
+            requires_approval=True,
+            prompt=f"Fix the latest failed workspace job: {failed.get('prompt') or description}. Inspect only relevant files, explain root cause, prepare a small patch, and recommend checks.",
+            impact="Creates a reviewable fix for a known failure.",
+            file_hint=", ".join(target_files[:4]) or "Relevant files from failure context.",
+            check_hint=", ".join(commands[:3]) or "Rerun the failed command.",
+            source="failed_job",
+        ))
+    if context.get("preview_error"):
+        suggestions.append(_suggestion_payload(
+            session=session,
+            title="Fix preview issue",
+            summary="Use the latest preview evidence, console/network errors, and source files to repair the visible UI/runtime issue.",
+            mode="code",
+            risk="medium",
+            files=target_files,
+            folders=folders,
+            steps=["Read preview errors.", "Map error to source files.", "Patch the smallest UI/runtime fix.", "Recheck preview."],
+            commands=commands[:2],
+            requires_approval=True,
+            prompt=f"Fix the latest preview issue for: {description}. Use console/network evidence first, then patch the smallest relevant files and summarize visual impact.",
+            impact="Creates a reviewable patch for the preview failure.",
+            file_hint=", ".join(target_files[:4]) or "Preview-related source files.",
+            check_hint="Run preview check after patch.",
+            source="preview_error",
+        ))
+
+    base_files = target_files[:6]
+    suggestions.extend([
+        _suggestion_payload(
+            session=session,
+            title="Plan with exact files",
+            summary="Turn the request into a concise task plan with exact files/folders, steps, commands, and approval risk.",
+            mode="plan",
+            risk="low",
+            files=base_files,
+            folders=folders,
+            steps=["Inspect workspace context.", "List impacted files/folders.", "Define three execution steps.", "Name checks before editing."],
+            commands=commands[:3],
+            requires_approval=False,
+            prompt=f"Create a concise implementation plan for: {description}\n\nUse current workspace context. Return exact files/folders, three steps, expected commands, risk, and approval requirement. Do not edit files yet.",
+            impact="No code changes. Best when the task is broad or unclear.",
+            file_hint=", ".join(base_files[:4]) or "Inspect project file tree first.",
+            check_hint=", ".join(commands[:3]) or "Recommend checks from project scripts.",
+            source="general_plan",
+        ),
+        _suggestion_payload(
+            session=session,
+            title="Implement reviewed patch",
+            summary="Make the smallest useful change, then report files created/modified and line impact before approval.",
+            mode=mode if mode in {"code", "design", "deploy", "research"} else "code",
+            risk="medium",
+            files=base_files,
+            folders=folders,
+            steps=["Inspect relevant files.", "Prepare minimal patch.", "Compute changed lines.", "Show diff for approval."],
+            commands=commands[:3],
+            requires_approval=True,
+            prompt=f"Implement this as a reviewed patch: {description}\n\nUse exact workspace files only. Report files inspected, files created/modified/deleted, folders created, additions/deletions, and checks to run. Do not apply without approval.",
+            impact="Creates a pending patch; user approval is required before applying.",
+            file_hint=", ".join(base_files[:4]) or "Relevant files selected by workspace analysis.",
+            check_hint=", ".join(commands[:3]) or "Run build/test/lint if available.",
+            source="general_patch",
+        ),
+        _suggestion_payload(
+            session=session,
+            title="Verify and suggest next fix",
+            summary="Check build quality, pending changes, preview state, and propose the next highest-impact fix.",
+            mode="code",
+            risk="low",
+            files=base_files,
+            folders=folders,
+            steps=["Review recent activity.", "Check pending/failed states.", "Recommend one next fix.", "List commands to verify."],
+            commands=commands[:3],
+            requires_approval=False,
+            prompt=f"Verify the current workspace state for: {description}\n\nSummarize pending changes, failed jobs, preview problems, risky files, and the next best fix. Do not create a patch unless I ask.",
+            impact="No direct code changes. Reduces blind execution.",
+            file_hint=", ".join(base_files[:4]) or "Uses current workspace state.",
+            check_hint=", ".join(commands[:3]) or "Suggest available checks.",
+            source="general_verify",
+        ),
+    ])
+
+    unique: list[dict] = []
+    seen_titles: set[str] = set()
+    for suggestion in suggestions:
+        title = suggestion["title"]
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+        unique.append(suggestion)
+        if len(unique) == 3:
+            break
+
+    return {
+        "session_id": str(session.id),
+        "context": {
+            "file_count": context["file_count"],
+            "selected_files": context["selected_files"],
+            "open_files": context["open_files"],
+            "pending_patch": context["pending_patch"],
+            "failed_jobs": context["failed_jobs"],
+            "preview_error": context["preview_error"],
+            "commands": context["commands"],
+        },
+        "suggestions": unique,
     }
 
 

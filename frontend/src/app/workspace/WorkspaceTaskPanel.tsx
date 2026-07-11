@@ -38,17 +38,24 @@ export default function WorkspaceTaskPanel({ suggestions, activeSuggestionId, on
               <span>{index + 1}</span>
               <div>
                 <strong>{suggestion.title}</strong>
-                <em>{suggestion.mode}</em>
+                <em>{suggestion.mode} · {suggestion.risk || 'medium'}{suggestion.requiresApproval ? ' · approval' : ''}</em>
               </div>
             </div>
             <p>{suggestion.summary}</p>
+            {!!suggestion.steps?.length && (
+              <ol className={styles.taskSteps}>
+                {suggestion.steps.slice(0, 3).map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            )}
             <div className={styles.taskMetaLine}>
               <FileText size={12} />
-              <span>{suggestion.fileHint}</span>
+              <span>{suggestion.files?.length ? suggestion.files.slice(0, 4).join(', ') : suggestion.fileHint}</span>
             </div>
             <div className={styles.taskMetaLine}>
               <CheckCircle2 size={12} />
-              <span>{suggestion.checkHint}</span>
+              <span>{suggestion.expectedCommands?.length ? suggestion.expectedCommands.slice(0, 3).join(', ') : suggestion.checkHint}</span>
             </div>
             <div className={styles.taskImpact}>{suggestion.impact}</div>
             <button type="button" onClick={() => onTypeSuggestion(suggestion)} disabled={busy}>

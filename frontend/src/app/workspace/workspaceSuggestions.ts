@@ -9,7 +9,42 @@ export type WorkspaceSuggestion = {
   impact: string;
   fileHint: string;
   checkHint: string;
+  description?: string;
+  risk?: string;
+  requiresApproval?: boolean;
+  files?: string[];
+  folders?: string[];
+  steps?: string[];
+  commands?: string[];
+  expectedCommands?: string[];
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
+
+export function normalizeWorkspaceSuggestion(raw: any): WorkspaceSuggestion {
+  return {
+    id: String(raw?.id || `suggestion-${Date.now()}`),
+    title: raw?.title || 'Workspace task',
+    summary: raw?.summary || raw?.description || 'Suggested next action for this workspace.',
+    description: raw?.description || raw?.summary || '',
+    prompt: raw?.suggested_prompt || raw?.prompt || '',
+    mode: (raw?.mode || 'code') as WorkspaceMode,
+    impact: raw?.impact || '',
+    fileHint: raw?.file_hint || raw?.fileHint || ((raw?.files || []).slice(0, 3).join(', ') || 'Workspace context'),
+    checkHint: raw?.check_hint || raw?.checkHint || ((raw?.commands || raw?.expected_commands || []).slice(0, 2).join(', ') || 'Recommended checks'),
+    risk: raw?.risk || raw?.risk_level || 'medium',
+    requiresApproval: Boolean(raw?.requires_approval ?? raw?.requiresApproval),
+    files: Array.isArray(raw?.files) ? raw.files : [],
+    folders: Array.isArray(raw?.folders) ? raw.folders : [],
+    steps: Array.isArray(raw?.steps) ? raw.steps : [],
+    commands: Array.isArray(raw?.commands) ? raw.commands : [],
+    expectedCommands: Array.isArray(raw?.expected_commands) ? raw.expected_commands : Array.isArray(raw?.expectedCommands) ? raw.expectedCommands : [],
+    status: raw?.status,
+    createdAt: raw?.created_at || raw?.createdAt,
+    updatedAt: raw?.updated_at || raw?.updatedAt,
+  };
+}
 
 function compact(value: string, max = 160) {
   const normalized = value.replace(/\s+/g, ' ').trim();

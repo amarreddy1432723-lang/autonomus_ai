@@ -964,6 +964,18 @@
   line-height: 1.45;
 }
 
+.taskSteps {
+  margin: 0;
+  padding-left: 16px;
+  color: #b8bac2;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskSteps li + li {
+  margin-top: 3px;
+}
+
 .taskMetaLine {
   min-width: 0;
   display: grid;

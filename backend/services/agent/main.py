@@ -204,6 +204,55 @@ class CodeCommandRunRequest(BaseModel):
     timeout_seconds: int = 45
     approved: bool = False
 
+class CodeSuggestNextRequest(BaseModel):
+    user_description: str = ""
+    selected_mode: str = "auto"
+    selected_file_ids: List[str] = Field(default_factory=list)
+    open_file_ids: List[str] = Field(default_factory=list)
+    current_prompt: str = ""
+    recent_messages: List[dict[str, Any]] = Field(default_factory=list)
+
+class CodeWorkspaceTaskRequest(BaseModel):
+    id: Optional[str] = None
+    title: str = "Workspace task"
+    description: str = ""
+    summary: str = ""
+    mode: str = "code"
+    status: str = "typed"
+    risk: str = "medium"
+    requires_approval: bool = False
+    files: List[str] = Field(default_factory=list)
+    folders: List[str] = Field(default_factory=list)
+    steps: List[str] = Field(default_factory=list)
+    commands: List[str] = Field(default_factory=list)
+    expected_commands: List[str] = Field(default_factory=list)
+    suggested_prompt: str = ""
+    prompt: str = ""
+    impact: str = ""
+    file_hint: str = ""
+    check_hint: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class CodeWorkspaceTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    summary: Optional[str] = None
+    mode: Optional[str] = None
+    status: Optional[str] = None
+    risk: Optional[str] = None
+    requires_approval: Optional[bool] = None
+    files: Optional[List[str]] = None
+    folders: Optional[List[str]] = None
+    steps: Optional[List[str]] = None
+    commands: Optional[List[str]] = None
+    expected_commands: Optional[List[str]] = None
+    suggested_prompt: Optional[str] = None
+    prompt: Optional[str] = None
+    impact: Optional[str] = None
+    file_hint: Optional[str] = None
+    check_hint: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
 class CodeRuntimeInstallRequest(BaseModel):
     command: Optional[str] = None
     timeout_seconds: int = 300
@@ -1264,6 +1313,16 @@ def get_model_registry_status(user_id: UUID = Depends(get_current_user_id)):
 
     return registry_snapshot()
 
+@app.get("/api/v1/models/gateway")
+def get_model_gateway_status(user_id: UUID = Depends(get_current_user_id)):
+    from .model_gateway import model_gateway
+
+    return {
+        "architecture": "provider_agnostic_model_gateway",
+        "providers": sorted(model_gateway.providers.keys()),
+        "default_provider": "nexus",
+    }
+
 @app.post("/api/v1/models/health-check")
 def post_model_registry_health_check(user_id: UUID = Depends(get_current_user_id)):
     from .model_registry import health_check_registry
@@ -1717,6 +1776,75 @@ def search_code_session_files(
 
     session = get_code_session(db, user_id, session_id)
     return search_workspace_files(db, user_id, session, q)
+
+@app.post("/api/v1/code/sessions/{session_id}/suggest-next")
+def suggest_next_code_session_actions(
+    session_id: UUID,
+    request: CodeSuggestNextRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, suggest_next_actions
+
+    session = get_code_session(db, user_id, session_id)
+    return suggest_next_actions(
+        db,
+        user_id,
+        session,
+        user_description=request.user_description,
+        selected_mode=request.selected_mode,
+        selected_file_ids=request.selected_file_ids,
+        open_file_ids=request.open_file_ids,
+        current_prompt=request.current_prompt,
+        recent_messages=request.recent_messages,
+    )
+
+@app.get("/api/v1/code/sessions/{session_id}/tasks")
+def list_code_session_tasks(
+    session_id: UUID,
+    include_dismissed: bool = Query(False),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, list_workspace_tasks
+
+    session = get_code_session(db, user_id, session_id)
+    return list_workspace_tasks(db, user_id, session, include_dismissed=include_dismissed)
+
+@app.post("/api/v1/code/sessions/{session_id}/tasks")
+def create_code_session_task(
+    session_id: UUID,
+    request: CodeWorkspaceTaskRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, upsert_workspace_task
+
+    session = get_code_session(db, user_id, session_id)
+    return upsert_workspace_task(db, user_id, session, request.model_dump(), status=request.status or "typed")
+
+@app.patch("/api/v1/code/tasks/{task_id}")
+def update_code_workspace_task(
+    task_id: UUID,
+    request: CodeWorkspaceTaskUpdate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import update_workspace_task
+
+    return update_workspace_task(db, user_id, task_id, request.model_dump(exclude_unset=True))
+
+@app.post("/api/v1/code/tasks/{task_id}/accept")
+def accept_code_workspace_task(task_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import set_workspace_task_status
+
+    return set_workspace_task_status(db, user_id, task_id, "accepted")
+
+@app.post("/api/v1/code/tasks/{task_id}/dismiss")
+def dismiss_code_workspace_task(task_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import set_workspace_task_status
+
+    return set_workspace_task_status(db, user_id, task_id, "dismissed")
 
 @app.post("/api/v1/code/sessions/{session_id}/analyze")
 def analyze_code_session_workspace(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):

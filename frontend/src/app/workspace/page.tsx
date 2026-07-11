@@ -12,7 +12,7 @@ import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
 import WorkspaceTaskPanel from './WorkspaceTaskPanel';
 import styles from './Workspace.module.css';
-import { buildWorkspaceSuggestions, WorkspaceSuggestion } from './workspaceSuggestions';
+import { buildWorkspaceSuggestions, normalizeWorkspaceSuggestion, WorkspaceSuggestion } from './workspaceSuggestions';
 
 const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
 
@@ -103,6 +103,8 @@ export default function WorkspacePage() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rightPanelView, setRightPanelView] = useState<'activity' | 'apps' | 'tasks'>('activity');
   const [typedSuggestionId, setTypedSuggestionId] = useState('');
+  const [backendSuggestions, setBackendSuggestions] = useState<WorkspaceSuggestion[]>([]);
+  const [workspaceTasks, setWorkspaceTasks] = useState<WorkspaceSuggestion[]>([]);
   const [autoCompile, setAutoCompile] = useState(true);
   const [autoRunCommands, setAutoRunCommands] = useState(true);
   const [sandboxType, setSandboxType] = useState('local');
@@ -121,9 +123,19 @@ export default function WorkspacePage() {
     [projectId, projects]
   );
 
-  const suggestions = useMemo(
+  const localSuggestions = useMemo(
     () => buildWorkspaceSuggestions(prompt, mode, selectedFileIds.length),
     [mode, prompt, selectedFileIds.length]
+  );
+
+  const suggestions = useMemo(
+    () => (backendSuggestions.length ? backendSuggestions : localSuggestions),
+    [backendSuggestions, localSuggestions]
+  );
+
+  const taskRailItems = useMemo(
+    () => (workspaceTasks.length ? workspaceTasks : suggestions),
+    [suggestions, workspaceTasks]
   );
 
   const openFile = useMemo(
@@ -205,6 +217,8 @@ export default function WorkspacePage() {
     setOpenTabs([]);
     setActiveFileId('');
     setSearchMatches([]);
+    setBackendSuggestions([]);
+    setWorkspaceTasks([]);
   };
 
   const createProject = async () => {
@@ -311,6 +325,7 @@ export default function WorkspacePage() {
     setMessages([]);
     setPrompt('');
     setTypedSuggestionId('');
+    setBackendSuggestions([]);
     addEvent({ kind: 'start', message: 'New chat started', detail: 'Current project files remain in context.' });
   };
 
@@ -319,12 +334,76 @@ export default function WorkspacePage() {
     setTypedSuggestionId('');
   };
 
-  const typeSuggestion = (suggestion: WorkspaceSuggestion) => {
+  const refreshWorkspaceTasks = async (idValue = sessionId) => {
+    if (!idValue) return;
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/tasks`);
+      setWorkspaceTasks((data.tasks || []).map(normalizeWorkspaceSuggestion));
+    } catch {
+      // Task rail falls back to live suggestions when task persistence is unavailable.
+    }
+  };
+
+  const fetchBackendSuggestions = async (value: string, currentMode: WorkspaceMode, idValue = sessionId) => {
+    const trimmed = value.trim();
+    if (!trimmed || !idValue) {
+      setBackendSuggestions([]);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/suggest-next`, {
+        method: 'POST',
+        body: JSON.stringify({
+          user_description: trimmed,
+          selected_mode: currentMode,
+          selected_file_ids: selectedFileIds,
+          open_file_ids: openTabs.map((file) => file.id),
+          current_prompt: trimmed,
+          recent_messages: messages.slice(-6).map((message) => ({ role: message.role, content: message.content.slice(0, 1000) })),
+        }),
+      });
+      setBackendSuggestions((data.suggestions || []).map(normalizeWorkspaceSuggestion));
+    } catch {
+      setBackendSuggestions([]);
+    }
+  };
+
+  const typeSuggestion = async (suggestion: WorkspaceSuggestion) => {
     setPrompt(suggestion.prompt);
     setMode(suggestion.mode);
-    setTypedSuggestionId(suggestion.id);
     setRightPanelView('tasks');
     setRightPanelOpen(true);
+    try {
+      const sid = await ensureSession();
+      const task = await apiRequest(`/api/v1/code/sessions/${sid}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({
+          id: suggestion.id,
+          title: suggestion.title,
+          description: suggestion.description || suggestion.summary,
+          summary: suggestion.summary,
+          mode: suggestion.mode,
+          status: 'typed',
+          risk: suggestion.risk || 'medium',
+          requires_approval: Boolean(suggestion.requiresApproval),
+          files: suggestion.files || [],
+          folders: suggestion.folders || [],
+          steps: suggestion.steps || [],
+          commands: suggestion.commands || suggestion.expectedCommands || [],
+          expected_commands: suggestion.expectedCommands || suggestion.commands || [],
+          suggested_prompt: suggestion.prompt,
+          impact: suggestion.impact,
+          file_hint: suggestion.fileHint,
+          check_hint: suggestion.checkHint,
+        }),
+      });
+      const normalized = normalizeWorkspaceSuggestion(task);
+      setTypedSuggestionId(normalized.id);
+      setWorkspaceTasks((current) => [normalized, ...current.filter((item) => item.id !== normalized.id)].slice(0, 20));
+      addEvent({ kind: 'code', message: `Typed task: ${normalized.title}`, detail: normalized.summary });
+    } catch {
+      setTypedSuggestionId(suggestion.id);
+    }
   };
 
   const loadFiles = async () => {
@@ -354,6 +433,7 @@ export default function WorkspacePage() {
       await refreshCommands(session.id);
       await refreshRuntimeStatus(session.id);
       await loadRollbackSnapshots(session.id);
+      await refreshWorkspaceTasks(session.id);
       if (session.patch_preview?.length) {
         session.patch_preview.forEach((item: any) => {
           addEvent({
@@ -528,6 +608,18 @@ export default function WorkspacePage() {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [jobs, sessionId]);
+
+  useEffect(() => {
+    const value = prompt.trim();
+    if (!value) {
+      setBackendSuggestions([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void fetchBackendSuggestions(value, mode);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [mode, prompt, selectedFileIds.join('|'), openTabs.map((file) => file.id).join('|'), sessionId]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && (window as any).electron && sessionId) {
@@ -787,13 +879,30 @@ export default function WorkspacePage() {
   const runWorkspace = async () => {
     const instruction = prompt.trim();
     if (!instruction || busy) return;
+    const activeTask = workspaceTasks.find((task) => task.id === typedSuggestionId);
+    const activeTaskContext = activeTask
+      ? `\n\nSelected NEXUS task:\n- Title: ${activeTask.title}\n- Mode: ${activeTask.mode}\n- Risk: ${activeTask.risk || 'medium'}\n- Approval required: ${activeTask.requiresApproval ? 'yes' : 'no'}\n- Expected files: ${(activeTask.files || []).join(', ') || 'infer from workspace'}\n- Planned steps: ${(activeTask.steps || []).join(' | ') || 'inspect, plan, execute safely'}\n- Expected commands: ${(activeTask.expectedCommands || activeTask.commands || []).join(', ') || 'recommend checks'}`
+      : '';
+    const agentInstruction = `${instruction}${activeTaskContext}`;
     setBusy(true);
     setPatchReady(false);
     addMessage('user', instruction);
     setPrompt('');
+    setBackendSuggestions([]);
+    if (activeTask?.id) {
+      try {
+        const accepted = await apiRequest(`/api/v1/code/tasks/${activeTask.id}/accept`, { method: 'POST' });
+        const normalized = normalizeWorkspaceSuggestion(accepted);
+        setWorkspaceTasks((current) => [normalized, ...current.filter((task) => task.id !== normalized.id)].slice(0, 20));
+        addEvent({ kind: 'code', message: `Accepted task: ${normalized.title}`, detail: normalized.summary });
+      } catch {
+        addEvent({ kind: 'code', message: `Accepted task: ${activeTask.title}`, detail: 'Task persistence unavailable; continuing locally.' });
+      }
+    }
     await fetchActivityPlan(instruction, mode);
     const modes = inferModes(instruction, mode);
     const outputs: string[] = [];
+    let producedPatch = false;
 
     try {
       if (selectedFileIds.length) {
@@ -804,7 +913,7 @@ export default function WorkspacePage() {
         addEvent({ kind: 'research', message: 'Research agent running', detail: 'Gathering relevant web context.' });
         const result = await apiRequest('/api/v1/internet/research', {
           method: 'POST',
-          body: JSON.stringify({ query: instruction, depth: 'standard' }),
+          body: JSON.stringify({ query: agentInstruction, depth: 'standard' }),
         });
         outputs.push(result.report || JSON.stringify(result, null, 2));
         addEvent({ kind: 'done', message: 'Research complete' });
@@ -814,7 +923,7 @@ export default function WorkspacePage() {
         addEvent({ kind: 'design', message: 'Design agent running', detail: 'Generating implementation-ready UI guidance.' });
         const result = await apiRequest('/api/v1/design/generate-ui', {
           method: 'POST',
-          body: JSON.stringify({ description: instruction, output_type: 'ui', ...model }),
+          body: JSON.stringify({ description: agentInstruction, output_type: 'ui', ...model }),
         });
         outputs.push(result.content || JSON.stringify(result, null, 2));
         addEvent({ kind: 'done', message: 'Design generated' });
@@ -824,7 +933,7 @@ export default function WorkspacePage() {
         addEvent({ kind: 'deploy', message: 'Deploy agent analyzing', detail: 'No production deploy is triggered without explicit approval.' });
         const result = await apiRequest('/api/v1/deploy/analyze', {
           method: 'POST',
-          body: JSON.stringify({ project_type: 'NEXUS Code workspace', repo_context: instruction }),
+          body: JSON.stringify({ project_type: 'NEXUS Code workspace', repo_context: agentInstruction }),
         });
         outputs.push(`Deployment analysis:\n${JSON.stringify(result, null, 2)}`);
         addEvent({ kind: 'done', message: 'Deploy analysis ready' });
@@ -835,7 +944,7 @@ export default function WorkspacePage() {
         addEvent({ kind: 'code', message: 'Planning code changes', detail: 'Generating a concise implementation plan.' });
         const plan = await apiRequest(`/api/v1/code/sessions/${sid}/plan`, {
           method: 'POST',
-          body: JSON.stringify({ instruction, ...model }),
+          body: JSON.stringify({ instruction: agentInstruction, ...model }),
         });
         if (plan.job) setJobs((current) => [plan.job, ...current.filter((job) => job.id !== plan.job.id)].slice(0, 20));
         outputs.push(`Implementation plan:\n${plan.plan}`);
@@ -843,12 +952,13 @@ export default function WorkspacePage() {
           addEvent({ kind: 'edit', message: 'Preparing patch', detail: 'Patch is generated but not applied until you approve it.' });
           const patch = await apiRequest(`/api/v1/code/sessions/${sid}/patch`, {
             method: 'POST',
-            body: JSON.stringify({ instruction, ...model }),
+            body: JSON.stringify({ instruction: agentInstruction, ...model }),
           });
           if (patch.job) setJobs((current) => [patch.job, ...current.filter((job) => job.id !== patch.job.id)].slice(0, 20));
           const preview = patch.patch_preview || [];
           setPatchPreview(preview);
           setPatchReady(true);
+          producedPatch = true;
           if (preview.length) {
             preview.forEach((item: any) => {
               addEvent({
@@ -868,12 +978,38 @@ export default function WorkspacePage() {
 
       addMessage('assistant', outputs.join('\n\n---\n\n') || 'Done.');
       addEvent({ kind: 'done', message: 'NEXUS Code finished', detail: modes.join(', ') });
+      if (activeTask?.id) {
+        try {
+          const nextStatus = producedPatch ? 'waiting_approval' : 'done';
+          const updated = await apiRequest(`/api/v1/code/tasks/${activeTask.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: nextStatus }),
+          });
+          const normalized = normalizeWorkspaceSuggestion(updated);
+          setWorkspaceTasks((current) => [normalized, ...current.filter((task) => task.id !== normalized.id)].slice(0, 20));
+        } catch {
+          // Task status is best-effort; the agent result remains visible in chat/activity.
+        }
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Workspace run failed.';
       addEvent({ kind: 'error', message: 'Run failed', detail });
       addMessage('assistant', `I hit an error while running the workspace agents:\n\n${detail}`);
+      if (activeTask?.id) {
+        try {
+          const updated = await apiRequest(`/api/v1/code/tasks/${activeTask.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'failed' }),
+          });
+          const normalized = normalizeWorkspaceSuggestion(updated);
+          setWorkspaceTasks((current) => [normalized, ...current.filter((task) => task.id !== normalized.id)].slice(0, 20));
+        } catch {
+          // Task status is best-effort.
+        }
+      }
     } finally {
       setBusy(false);
+      setTypedSuggestionId('');
     }
   };
 
@@ -1674,7 +1810,7 @@ export default function WorkspacePage() {
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (
           <WorkspaceTaskPanel
-            suggestions={suggestions}
+            suggestions={taskRailItems}
             activeSuggestionId={typedSuggestionId}
             onTypeSuggestion={typeSuggestion}
             busy={busy}
