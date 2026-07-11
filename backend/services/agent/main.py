@@ -253,6 +253,13 @@ class CodeWorkspaceTaskUpdate(BaseModel):
     check_hint: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
+class CodeAgentLoopRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=10000)
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    max_steps: int = Field(default=8, ge=1, le=20)
+    approved_tools: List[str] = Field(default_factory=list)
+
 class CodeRuntimeInstallRequest(BaseModel):
     command: Optional[str] = None
     timeout_seconds: int = 300
@@ -2200,6 +2207,33 @@ def run_code_session_background(
         metadata_json={"llm_provider": provider, "llm_model": model}
     )
     return {"status": "queued", "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/agent-loop")
+async def run_code_session_agent_loop(
+    session_id: UUID,
+    request: CodeAgentLoopRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .agent_orchestrator import run_controlled_workspace_agent
+    from .code_workspace import get_code_session
+
+    provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
+    session = get_code_session(db, user_id, session_id)
+    job = create_agent_job(db, user_id, session.id, "agent_loop", request.task)
+    result = await run_controlled_workspace_agent(
+        db,
+        user_id,
+        session,
+        task=request.task,
+        provider_name=provider,
+        model_name=model,
+        max_steps=request.max_steps,
+        approved_tools=request.approved_tools,
+        job=job,
+    )
+    return {**result, "job": serialize_job(job)}
 
 @app.get("/api/v1/code/sessions/{session_id}/patch-preview")
 def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
