@@ -1682,6 +1682,13 @@ def _serialize_workspace_task(task: dict) -> dict:
         "impact": task.get("impact") or "",
         "file_hint": task.get("file_hint") or "",
         "check_hint": task.get("check_hint") or "",
+        "confidence": task.get("confidence"),
+        "decision_reason": task.get("decision_reason") or "",
+        "tradeoffs": task.get("tradeoffs") or [],
+        "thinking_prompt": task.get("thinking_prompt") or "",
+        "coach_lens": task.get("coach_lens") or [],
+        "alternatives": task.get("alternatives") or [],
+        "next_after_done": task.get("next_after_done") or "",
         "metadata": task.get("metadata") or {},
         "created_at": task.get("created_at"),
         "updated_at": task.get("updated_at"),
@@ -1740,6 +1747,13 @@ def upsert_workspace_task(
         "impact": payload.get("impact") or task.get("impact") or "",
         "file_hint": payload.get("file_hint") or payload.get("fileHint") or task.get("file_hint") or "",
         "check_hint": payload.get("check_hint") or payload.get("checkHint") or task.get("check_hint") or "",
+        "confidence": payload.get("confidence", task.get("confidence")),
+        "decision_reason": payload.get("decision_reason") or payload.get("decisionReason") or task.get("decision_reason") or "",
+        "tradeoffs": payload.get("tradeoffs") or task.get("tradeoffs") or [],
+        "thinking_prompt": payload.get("thinking_prompt") or payload.get("thinkingPrompt") or task.get("thinking_prompt") or "",
+        "coach_lens": payload.get("coach_lens") or payload.get("coachLens") or task.get("coach_lens") or [],
+        "alternatives": payload.get("alternatives") or task.get("alternatives") or [],
+        "next_after_done": payload.get("next_after_done") or payload.get("nextAfterDone") or task.get("next_after_done") or "",
         "metadata": {
             **(task.get("metadata") or {}),
             **(payload.get("metadata") or {}),
@@ -1914,6 +1928,26 @@ def _infer_suggestion_mode(text: str, selected_mode: str) -> str:
     return "code"
 
 
+def _coach_lenses(text: str, mode: str) -> list[str]:
+    lowered = f"{text} {mode}".lower()
+    lenses: list[str] = []
+    if re.search(r"\b(auth|login|jwt|token|password|permission|role|privacy|secret)\b", lowered):
+        lenses.extend(["security", "maintainability"])
+    if re.search(r"\b(scale|architecture|database|api|realtime|queue|payment|cache|microservice)\b", lowered):
+        lenses.extend(["architecture", "performance", "cost"])
+    if re.search(r"\b(ui|ux|design|screen|layout|mobile|responsive|component)\b", lowered):
+        lenses.extend(["user experience", "accessibility"])
+    if re.search(r"\b(deploy|production|release|monitor|log|error|preview|build|test)\b", lowered):
+        lenses.extend(["reliability", "operability"])
+    if not lenses:
+        lenses.extend(["architecture", "maintainability"])
+    unique: list[str] = []
+    for lens in lenses:
+        if lens not in unique:
+            unique.append(lens)
+    return unique[:4]
+
+
 def _suggestion_payload(
     *,
     session: CodeSession,
@@ -1931,6 +1965,13 @@ def _suggestion_payload(
     file_hint: str,
     check_hint: str,
     source: str,
+    confidence: float,
+    decision_reason: str,
+    tradeoffs: list[str],
+    thinking_prompt: str,
+    coach_lens: list[str],
+    alternatives: list[str] | None = None,
+    next_after_done: str = "",
 ) -> dict:
     now = _now()
     return _serialize_workspace_task({
@@ -1952,6 +1993,13 @@ def _suggestion_payload(
         "impact": impact,
         "file_hint": file_hint,
         "check_hint": check_hint,
+        "confidence": confidence,
+        "decision_reason": decision_reason,
+        "tradeoffs": tradeoffs,
+        "thinking_prompt": thinking_prompt,
+        "coach_lens": coach_lens,
+        "alternatives": alternatives or [],
+        "next_after_done": next_after_done,
         "metadata": {"source": source},
         "created_at": now,
         "updated_at": now,
@@ -1982,6 +2030,7 @@ def suggest_next_actions(
 
     folders = sorted({str(Path(path).parent).replace("\\", "/") for path in target_files if str(Path(path).parent) not in {".", ""}})[:5]
     commands = context["commands"]
+    coach_lens = _coach_lenses(description, mode)
     suggestions: list[dict] = []
 
     if context["file_count"] == 0:
@@ -2001,6 +2050,13 @@ def suggest_next_actions(
             file_hint="No files are available yet.",
             check_hint="Checks are suggested after import.",
             source="no_files",
+            confidence=0.94,
+            decision_reason="Without repo files, any code answer would be guesswork. The highest-value move is to establish real project context first.",
+            tradeoffs=["Slower than asking for code immediately.", "Prevents wrong architecture and file guesses later."],
+            thinking_prompt="What project should NEXUS understand before it writes or reviews anything?",
+            coach_lens=["project context", "architecture", "maintainability"],
+            alternatives=["Paste a small snippet for one-off help.", "Connect GitHub if this is an existing repo."],
+            next_after_done="Generate a project roadmap and first safe check command.",
         ))
     if context["pending_patch"]["exists"]:
         files = [item["filename"] for item in context["pending_patch"]["files"] if item.get("filename")]
@@ -2020,6 +2076,13 @@ def suggest_next_actions(
             file_hint=", ".join(files[:4]) or "Pending patch files",
             check_hint=", ".join(commands[:2]) or "Run checks after review.",
             source="pending_patch",
+            confidence=0.91,
+            decision_reason="Stacking new work on an unreviewed patch increases confusion. Reviewing the pending diff protects the current task boundary.",
+            tradeoffs=["Pauses new feature work briefly.", "Reduces accidental unrelated changes and rollback risk."],
+            thinking_prompt="Do these changes match the intended task, or should the patch be split smaller?",
+            coach_lens=["maintainability", "reliability"],
+            alternatives=["Reject the patch and regenerate smaller.", "Approve first, then continue with a new task."],
+            next_after_done="Run checks or continue with the next milestone.",
         ))
     if context["failed_jobs"]:
         failed = context["failed_jobs"][0]
@@ -2039,6 +2102,13 @@ def suggest_next_actions(
             file_hint=", ".join(target_files[:4]) or "Relevant files from failure context.",
             check_hint=", ".join(commands[:3]) or "Rerun the failed command.",
             source="failed_job",
+            confidence=0.88,
+            decision_reason="A known failure is stronger evidence than a fresh guess. Fixing it first improves the workspace baseline.",
+            tradeoffs=["May delay the original feature.", "Usually saves time because future patches start from a healthier build."],
+            thinking_prompt="What changed right before this failure, and can the fix be isolated to that area?",
+            coach_lens=["reliability", "debugging", "maintainability"],
+            alternatives=["Open logs only and decide manually.", "Rollback the latest applied patch if the failure came from it."],
+            next_after_done="Rerun the failed check and summarize root cause.",
         ))
     if context.get("preview_error"):
         suggestions.append(_suggestion_payload(
@@ -2057,6 +2127,13 @@ def suggest_next_actions(
             file_hint=", ".join(target_files[:4]) or "Preview-related source files.",
             check_hint="Run preview check after patch.",
             source="preview_error",
+            confidence=0.86,
+            decision_reason="Preview evidence tells us what the user actually sees. That makes this more actionable than a broad refactor.",
+            tradeoffs=["Focuses on the visible/runtime issue, not every underlying design concern.", "May require another pass after the first visual fix."],
+            thinking_prompt="Is this a source-code bug, a missing asset, or a runtime/config problem?",
+            coach_lens=["user experience", "reliability", "debugging"],
+            alternatives=["Inspect screenshot and logs without patching.", "Run build checks before fixing UI."],
+            next_after_done="Recheck the preview and inspect remaining console/network errors.",
         ))
 
     base_files = target_files[:6]
@@ -2077,6 +2154,13 @@ def suggest_next_actions(
             file_hint=", ".join(base_files[:4]) or "Inspect project file tree first.",
             check_hint=", ".join(commands[:3]) or "Recommend checks from project scripts.",
             source="general_plan",
+            confidence=0.84,
+            decision_reason="The request has enough ambiguity that planning first will reduce rework and produce clearer task boundaries.",
+            tradeoffs=["No immediate code output.", "Creates a sharper implementation path with fewer blind edits."],
+            thinking_prompt="What should be true when this task is complete, and what files prove it?",
+            coach_lens=coach_lens,
+            alternatives=["Implement a small patch immediately.", "Verify current state before planning."],
+            next_after_done="Pick one planned step and convert it into a reviewed patch.",
         ),
         _suggestion_payload(
             session=session,
@@ -2094,6 +2178,13 @@ def suggest_next_actions(
             file_hint=", ".join(base_files[:4]) or "Relevant files selected by workspace analysis.",
             check_hint=", ".join(commands[:3]) or "Run build/test/lint if available.",
             source="general_patch",
+            confidence=0.78,
+            decision_reason="There is enough workspace context to attempt a narrow implementation while keeping approval and diff review in place.",
+            tradeoffs=["Faster than planning, but may miss broader architecture questions.", "Approval gate keeps the edit reversible."],
+            thinking_prompt="What is the smallest useful change that proves progress without touching unrelated files?",
+            coach_lens=coach_lens,
+            alternatives=["Plan first if the goal is broad.", "Verify current errors before changing code."],
+            next_after_done="Review the diff, then run the most relevant check.",
         ),
         _suggestion_payload(
             session=session,
@@ -2111,6 +2202,13 @@ def suggest_next_actions(
             file_hint=", ".join(base_files[:4]) or "Uses current workspace state.",
             check_hint=", ".join(commands[:3]) or "Suggest available checks.",
             source="general_verify",
+            confidence=0.8,
+            decision_reason="A verification pass turns the workspace state into evidence: pending changes, failed jobs, risky files, and next best fix.",
+            tradeoffs=["Does not build new features directly.", "Improves confidence before committing more work."],
+            thinking_prompt="What signal would prove this workspace is ready for the next task?",
+            coach_lens=["reliability", "maintainability", *coach_lens[:2]],
+            alternatives=["Run a specific build/test command.", "Review pending changes first if a patch exists."],
+            next_after_done="Use the verification result to choose fix, test, or PR.",
         ),
     ])
 

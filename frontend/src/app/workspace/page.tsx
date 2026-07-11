@@ -395,6 +395,13 @@ export default function WorkspacePage() {
           impact: suggestion.impact,
           file_hint: suggestion.fileHint,
           check_hint: suggestion.checkHint,
+          confidence: suggestion.confidence,
+          decision_reason: suggestion.decisionReason,
+          tradeoffs: suggestion.tradeoffs || [],
+          thinking_prompt: suggestion.thinkingPrompt,
+          coach_lens: suggestion.coachLens || [],
+          alternatives: suggestion.alternatives || [],
+          next_after_done: suggestion.nextAfterDone,
         }),
       });
       const normalized = normalizeWorkspaceSuggestion(task);

@@ -964,6 +964,54 @@
   line-height: 1.45;
 }
 
+.taskLensRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.taskLensRow span {
+  border: 1px solid #2c2e35;
+  background: #101116;
+  color: #b8bac2;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: capitalize;
+}
+
+.taskCoach,
+.taskTradeoffs {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  border: 1px solid rgba(139, 92, 246, 0.18);
+  background: rgba(139, 92, 246, 0.06);
+  border-radius: 9px;
+  padding: 8px;
+  color: #d7d3f5;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.taskTradeoffs {
+  border-color: rgba(245, 158, 11, 0.18);
+  background: rgba(245, 158, 11, 0.05);
+  color: #d6c7a3;
+}
+
+.taskCoach svg,
+.taskTradeoffs svg {
+  margin-top: 2px;
+  color: #c4b5fd;
+}
+
+.taskTradeoffs svg {
+  color: #fbbf24;
+}
+
 .taskSteps {
   margin: 0;
   padding-left: 16px;
@@ -998,6 +1046,21 @@
   color: #8b8f98;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.taskThinking,
+.taskNext {
+  color: #a0a4ab;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.taskThinking {
+  font-style: italic;
+}
+
+.taskNext {
+  color: #c4b5fd;
 }
 
 .taskCard button,

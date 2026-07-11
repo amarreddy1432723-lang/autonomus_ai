@@ -231,6 +231,13 @@ class CodeWorkspaceTaskRequest(BaseModel):
     impact: str = ""
     file_hint: str = ""
     check_hint: str = ""
+    confidence: Optional[float] = None
+    decision_reason: str = ""
+    tradeoffs: List[str] = Field(default_factory=list)
+    thinking_prompt: str = ""
+    coach_lens: List[str] = Field(default_factory=list)
+    alternatives: List[str] = Field(default_factory=list)
+    next_after_done: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 class CodeWorkspaceTaskUpdate(BaseModel):
@@ -251,6 +258,13 @@ class CodeWorkspaceTaskUpdate(BaseModel):
     impact: Optional[str] = None
     file_hint: Optional[str] = None
     check_hint: Optional[str] = None
+    confidence: Optional[float] = None
+    decision_reason: Optional[str] = None
+    tradeoffs: Optional[List[str]] = None
+    thinking_prompt: Optional[str] = None
+    coach_lens: Optional[List[str]] = None
+    alternatives: Optional[List[str]] = None
+    next_after_done: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
 class CodeAgentLoopRequest(BaseModel):
