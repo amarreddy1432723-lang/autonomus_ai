@@ -2,6 +2,18 @@
 
 This checklist turns local Arceus into a production deployment. The app now exposes the same gates in `/admin` through release readiness and billing health.
 
+Start by copying provider requirements from:
+
+```text
+.env.production.example
+```
+
+Then verify the external provider bundle:
+
+```powershell
+.\scripts\verify-provider-config.ps1 -Environment production -Strict
+```
+
 ## Required Production Auth
 
 Set production auth to Clerk-only:
@@ -72,7 +84,7 @@ The dashboard shows whether the limiter is enforced, fail-open because Redis is 
 Use GitHub Actions release workflow or locally:
 
 ```powershell
-.\scripts\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -StrictSmoke
+.\scripts\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -CheckProviders -StrictSmoke
 ```
 
 `full-verify.ps1` writes a release summary to:

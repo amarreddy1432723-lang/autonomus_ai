@@ -14,6 +14,12 @@
 - GitHub App for repo/PR operations.
 - LLM provider keys stored in environment secrets.
 
+Run this before a production release to confirm external provider secrets are present:
+
+```powershell
+.\scripts\verify-provider-config.ps1 -Environment production -Strict
+```
+
 ## Health And Readiness
 - `/api/v1/health`: process is alive.
 - `/api/v1/ready`: database and Redis dependency status.

@@ -6,6 +6,7 @@ param(
   [switch]$SkipFrontendBuild,
   [switch]$SkipPytest,
   [switch]$SkipMigrationCheck,
+  [switch]$CheckProviders,
   [switch]$RunAudit,
   [switch]$StrictSmoke
 )
@@ -154,6 +155,14 @@ Step "Database operations surface" {
   Pop-Location
 }
 
+if ($CheckProviders) {
+  Step "External provider configuration" {
+    Push-Location $repoRoot
+    .\scripts\verify-provider-config.ps1 -Environment $(if ($env:APP_ENV) { $env:APP_ENV } else { "local" }) -Strict:$StrictSmoke
+    Pop-Location
+  } -Optional
+}
+
 if (-not $SkipFrontendBuild) {
   Step "Frontend production build" {
     Push-Location (Join-Path $repoRoot "frontend")
@@ -259,6 +268,8 @@ Step "Acceptance surface files exist" {
     "ops/grafana/arceus-code-overview.json",
     "scripts/verify-desktop-release.ps1",
     "scripts/verify-database-operations.ps1",
+    "scripts/verify-provider-config.ps1",
+    ".env.production.example",
     "scripts/backup-postgres.ps1",
     "scripts/restore-postgres.ps1",
     "manifests/a/Arceus/Code/1.0.0/Arceus.Code.yaml",
