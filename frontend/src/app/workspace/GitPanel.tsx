@@ -1,9 +1,27 @@
 'use client';
 
-import { CheckCircle2, GitBranch, GitPullRequest, Lock, RefreshCw, Rocket, XCircle } from 'lucide-react';
+import { CheckCircle2, ClipboardList, GitBranch, GitPullRequest, Lock, RefreshCw, Rocket, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import styles from './Workspace.module.css';
 import type { GitHubBranch, GitHubRepository, GitHubStatus, PatchPreviewItem } from './ActivityPanel';
+
+export type GitDeliveryPackage = {
+  title?: string;
+  commit_message?: string;
+  body?: string;
+  release_notes?: string;
+  ready?: boolean;
+  created_at?: string;
+  risk_summary?: string[];
+  checklist?: Array<{ label?: string; done?: boolean }>;
+  impact?: {
+    files_changed?: number;
+    additions?: number;
+    deletions?: number;
+    commands?: number;
+    checks?: number;
+  };
+};
 
 type Props = {
   githubStatus: GitHubStatus | null;
@@ -13,6 +31,7 @@ type Props = {
   githubBaseBranch: string;
   githubBranchName: string;
   patchPreview: PatchPreviewItem[];
+  deliveryPackage?: GitDeliveryPackage | null;
   canUseGit: boolean;
   busy: boolean;
   onGithubRepoChange: (value: string) => void;
@@ -42,6 +61,7 @@ export default function GitPanel({
   githubBaseBranch,
   githubBranchName,
   patchPreview,
+  deliveryPackage,
   canUseGit,
   busy,
   onGithubRepoChange,
@@ -88,6 +108,8 @@ export default function GitPanel({
   const checks = githubStatus?.checks || [];
   const checkSummary = githubStatus?.check_summary;
   const hasRunningChecks = checks.some((check) => ['queued', 'in_progress', 'requested'].includes(check.status || ''));
+  const defaultCommitMessage = 'Arceus Code workspace changes';
+  const defaultPrTitle = 'Arceus Code workspace changes';
 
   useEffect(() => {
     refreshGithubRef.current = onRefreshGithub;
@@ -138,6 +160,20 @@ export default function GitPanel({
     return () => window.clearInterval(timer);
   }, [checkPollUrl, checks.length, hasRunningChecks]);
 
+  const applyDeliveryPackage = (force = false) => {
+    if (!deliveryPackage) return;
+    const nextCommitMessage = deliveryPackage.commit_message || deliveryPackage.title || defaultCommitMessage;
+    const nextPrTitle = deliveryPackage.title || nextCommitMessage || defaultPrTitle;
+    const nextPrBody = deliveryPackage.body || deliveryPackage.release_notes || '';
+    setCommitMessage((current) => (force || !current.trim() || current === defaultCommitMessage ? nextCommitMessage : current));
+    setPrTitle((current) => (force || !current.trim() || current === defaultPrTitle ? nextPrTitle : current));
+    setPrBody((current) => (force || !current.trim() ? nextPrBody : current));
+  };
+
+  useEffect(() => {
+    applyDeliveryPackage(false);
+  }, [deliveryPackage?.created_at, deliveryPackage?.title, deliveryPackage?.commit_message, deliveryPackage?.body]);
+
   const handleConnect = () => {
     onConnectGithubApp();
     setConnectPolling(true);
@@ -161,6 +197,34 @@ export default function GitPanel({
           <RefreshCw size={13} /> Refresh
         </button>
       </div>
+
+      {deliveryPackage && (
+        <div className={styles.gitDeliveryPackage}>
+          <div>
+            <span><ClipboardList size={13} /> Engineering Org package</span>
+            <strong data-ready={deliveryPackage.ready ? 'true' : 'false'}>{deliveryPackage.ready ? 'ready' : 'needs review'}</strong>
+          </div>
+          <p>{deliveryPackage.title || 'Prepared delivery package'}</p>
+          <div className={styles.gitDeliveryImpact}>
+            <small>{deliveryPackage.impact?.files_changed || 0} files</small>
+            <small>+{deliveryPackage.impact?.additions || 0} / -{deliveryPackage.impact?.deletions || 0}</small>
+            <small>{deliveryPackage.impact?.commands || 0} commands</small>
+            <small>{deliveryPackage.impact?.checks || 0} checks</small>
+          </div>
+          {Boolean(deliveryPackage.checklist?.length) && (
+            <div className={styles.gitDeliveryChecklist}>
+              {deliveryPackage.checklist?.slice(0, 4).map((item, index) => (
+                <small key={`${item.label || 'check'}-${index}`} data-done={item.done ? 'true' : 'false'}>
+                  {item.done ? '✓' : '•'} {item.label || 'Review item'}
+                </small>
+              ))}
+            </div>
+          )}
+          <button className={styles.fullWidthButton} type="button" onClick={() => applyDeliveryPackage(true)} disabled={busy}>
+            Use package for commit and PR
+          </button>
+        </div>
+      )}
 
       <label className={styles.gitField}>
         <span>Find repository</span>

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Check, CircleDot, Eye, FileCode2, FilePenLine, Rocket, Search, Sparkles, Terminal, X } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 import PreviewPanel from './PreviewPanel';
-import GitPanel from './GitPanel';
+import GitPanel, { type GitDeliveryPackage } from './GitPanel';
 import styles from './Workspace.module.css';
 
 export type ActivityEvent = {
@@ -240,6 +240,7 @@ type Props = {
   githubRepositories: GitHubRepository[];
   githubBranches?: GitHubBranch[];
   selectedGithubRepo: string;
+  deliveryPackage?: GitDeliveryPackage | null;
   analysis: WorkspaceAnalysis | null;
   rollbackSnapshots: RollbackSnapshot[];
   hasPatch: boolean;
@@ -406,6 +407,7 @@ export default function ActivityPanel({
   githubRepositories,
   githubBranches,
   selectedGithubRepo,
+  deliveryPackage,
   analysis,
   rollbackSnapshots,
   hasPatch,
@@ -764,6 +766,7 @@ export default function ActivityPanel({
             githubBaseBranch={githubBaseBranch}
             githubBranchName={githubBranchName}
             patchPreview={patchPreview}
+            deliveryPackage={deliveryPackage}
             canUseGit={canUseGit}
             busy={false}
             onGithubRepoChange={onGithubRepoChange}

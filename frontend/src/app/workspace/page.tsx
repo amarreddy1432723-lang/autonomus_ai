@@ -147,6 +147,7 @@ export default function WorkspacePage() {
 
   const trustedLocalPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
   const normalizedTrustedLocalPath = trustedLocalPath.trim().toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+  const engineeringDeliveryPackage = engineeringOrgState?.implementation_plan?.delivery_package || null;
 
   useEffect(() => {
     localWorkspacePathRef.current = trustedLocalPath;
@@ -419,6 +420,7 @@ export default function WorkspacePage() {
         message: 'Delivery package prepared',
         detail: `${data.delivery_package?.title || 'PR package'} · ${data.delivery_package?.impact?.files_changed || 0} file(s).`,
       });
+      setRightPanelOpen(true);
       setRightPanelView('git');
     } catch (error) {
       reportWorkspaceError(error, 'Delivery package preparation failed');
@@ -3764,6 +3766,7 @@ export default function WorkspacePage() {
             githubRepositories={githubRepositories}
             githubBranches={githubBranches}
             selectedGithubRepo={selectedGithubRepo}
+            deliveryPackage={engineeringDeliveryPackage}
             analysis={analysis}
             rollbackSnapshots={rollbackSnapshots}
             hasPatch={patchReady}
