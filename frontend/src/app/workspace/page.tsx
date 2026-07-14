@@ -1,6 +1,6 @@
 'use client';
 
-import { AppWindow, ChevronLeft, ChevronRight, Circle, FileDiff, FolderTree, GitPullRequest, ListChecks, MoreHorizontal, Play, Settings, Terminal, UserCircle, Workflow } from 'lucide-react';
+import { Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import { ApiError, apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -12,219 +12,33 @@ import OnboardingWizard from './OnboardingWizard';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
 import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
+import WorkspaceRightRail from './WorkspaceRightRail';
 import WorkspaceTerminalPanel, { TerminalPanelSize } from './WorkspaceTerminalPanel';
+import WorkspaceUpgradeDialog from './WorkspaceUpgradeDialog';
 import { classifyError, type ClassifiedError } from './errorClassifier';
 import type { WorkspaceWorkReceipt } from './WorkReceipt';
 import styles from './Workspace.module.css';
 import { buildWorkspaceSuggestions, normalizeWorkspaceSuggestion, WorkspaceSuggestion } from './workspaceSuggestions';
-
-const model = { llm_provider: 'nexus', llm_model: 'Arceus-Code' };
-const OPEN_PROJECTS_KEY = 'nexus.code.open_projects';
-const ACTIVE_PROJECT_KEY = 'nexus.code.active_project';
-const TERMINAL_PREFS_KEY = 'nexus.code.terminal_preferences';
-const MAX_OPEN_PROJECTS = 3;
-
-type CodeProject = {
-  id: string;
-  name: string;
-  description?: string;
-  repo_url?: string;
-  status?: string;
-  file_ids?: string[];
-  file_count?: number;
-  metadata?: Record<string, any>;
-  local_workspace_path?: string;
-  openable?: boolean;
-  active_session_id?: string | null;
-  last_opened_at?: string | null;
-};
-
-type PendingProjectOpen = { kind: 'project'; projectId: string } | { kind: 'local'; localPath: string } | null;
-
-type WorkspaceCommandAction = {
-  id: string;
-  title: string;
-  detail: string;
-  keywords: string;
-  rank: number;
-  run: () => void | Promise<void>;
-};
-
-function id(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function inferModes(prompt: string, selected: WorkspaceMode): WorkspaceMode[] {
-  if (selected !== 'auto') return [selected];
-  const text = prompt.toLowerCase();
-  const modes: WorkspaceMode[] = [];
-  if (/(research|latest|best practice|compare|search|find)/.test(text)) modes.push('research');
-  if (/(design|ui|ux|screen|layout|component|page)/.test(text)) modes.push('design');
-  if (/(deploy|railway|vercel|render|production|release)/.test(text)) modes.push('deploy');
-  if (/(code|build|fix|bug|api|endpoint|implement|refactor|test)/.test(text)) modes.push('code');
-  return modes.length ? modes : ['code'];
-}
-
-function inferReceiptIntent(prompt: string) {
-  const text = prompt.toLowerCase();
-  if (/(fix|bug|error|broken|not working|issue)/.test(text)) return 'Fix';
-  if (/(design|ui|ux|layout|screen|component|style)/.test(text)) return 'Design';
-  if (/(deploy|railway|vercel|production|release)/.test(text)) return 'Deploy';
-  if (/(test|lint|typecheck|build|compile)/.test(text)) return 'Check';
-  if (/(research|compare|latest|find|search)/.test(text)) return 'Research';
-  return 'Build';
-}
-
-function summarizePatch(raw: string) {
-  try {
-    const payload = JSON.parse(raw);
-    const files = Array.isArray(payload.files) ? payload.files : [];
-    return files.map((file: any) => `✏️ ${file.filename || file.file_id || 'file'}\nFull replacement prepared.`).join('\n\n') || raw;
-  } catch {
-    return raw;
-  }
-}
-
-function summarizePreview(preview: Array<{ filename: string; additions?: number; deletions?: number }>) {
-  if (!preview.length) return 'Patch prepared for review.';
-  return preview
-    .map((file) => `Edited ${file.filename}: +${file.additions || 0} / -${file.deletions || 0}`)
-    .join('\n');
-}
-
-function buildPreviewReceipt(check: PreviewCheck, project?: string): WorkspaceWorkReceipt {
-  const consoleCount = check.console_errors?.length || 0;
-  const pageCount = check.page_errors?.length || 0;
-  const networkCount = check.network_failures?.length || 0;
-  const failed = check.status !== 'passed';
-  const issues = [
-    ...(check.issues || []),
-    check.blank_page ? 'Blank page detected' : '',
-    check.playwright_error ? `Browser check error: ${check.playwright_error}` : '',
-  ].filter(Boolean);
-  const evidence = [
-    check.screenshot_base64 || check.screenshot_url ? 'Screenshot captured' : 'No screenshot captured',
-    `${consoleCount} console error${consoleCount === 1 ? '' : 's'}`,
-    `${pageCount} page error${pageCount === 1 ? '' : 's'}`,
-    `${networkCount} network failure${networkCount === 1 ? '' : 's'}`,
-    check.first_contentful_paint_ms ? `FCP ${Math.round(check.first_contentful_paint_ms)}ms` : '',
-  ].filter(Boolean).join(' · ');
-
-  return {
-    summary: failed ? 'Preview verification found an issue.' : 'Preview verification passed.',
-    mode: 'deploy',
-    intent: 'Verify',
-    project,
-    plan: [
-      `URL: ${check.url}`,
-      check.status_code ? `HTTP: ${check.status_code}` : '',
-      check.title ? `Title: ${check.title}` : '',
-      evidence,
-      issues.length ? `Issues: ${issues.join(', ')}` : 'No browser, console, network, or blank-page issue detected.',
-    ].filter(Boolean).join('\n'),
-    checks: [
-      { label: 'Browser preview', status: check.status },
-      { label: 'Screenshot', status: check.screenshot_base64 || check.screenshot_url ? 'captured' : 'missing' },
-      { label: 'Console errors', status: consoleCount ? `${consoleCount} failed` : 'passed' },
-      { label: 'Network requests', status: networkCount ? `${networkCount} failed` : 'passed' },
-      { label: 'Blank-page detection', status: check.blank_page ? 'failed' : 'passed' },
-    ],
-    checksPassed: failed ? 0 : 1,
-    checksFailed: failed ? 1 : 0,
-    approvalState: failed ? 'needs fix' : 'verified',
-    nextActions: failed ? [
-      normalizeWorkspaceSuggestion({
-        id: 'fix-preview-issue',
-        title: 'Fix preview issue',
-        summary: 'Use screenshot, console, and network evidence to prepare the smallest safe patch.',
-        prompt: check.fix_suggestion_prompt || `Fix the latest preview issue for ${check.url}. Use the captured browser evidence and avoid unrelated changes.`,
-        mode: 'code',
-        risk: 'medium',
-        requires_approval: true,
-      }),
-      normalizeWorkspaceSuggestion({
-        id: 'open-preview-evidence',
-        title: 'Inspect preview evidence',
-        summary: 'Open the Preview drawer and compare screenshot, console errors, and network failures.',
-        prompt: 'Summarize the latest preview evidence and identify the most likely source file to inspect next.',
-        mode: 'plan',
-        risk: 'low',
-      }),
-      normalizeWorkspaceSuggestion({
-        id: 'run-local-checks-after-preview',
-        title: 'Run checks after fix',
-        summary: 'Run the detected build, lint, or test command after the preview fix is reviewed.',
-        prompt: 'Run the safest available project checks and summarize failures with exact commands and files.',
-        mode: 'code',
-        risk: 'low',
-      }),
-    ] : [
-      normalizeWorkspaceSuggestion({
-        id: 'prepare-github-pr',
-        title: 'Prepare PR',
-        summary: 'Turn approved changes and verified preview evidence into a pull request summary.',
-        prompt: 'Prepare a concise PR title and body from the latest work receipt and preview verification.',
-        mode: 'deploy',
-        risk: 'low',
-      }),
-      normalizeWorkspaceSuggestion({
-        id: 'run-regression-checks',
-        title: 'Run regression checks',
-        summary: 'Run build, lint, and test commands before committing the work.',
-        prompt: 'Run the detected build, lint, and test commands and report pass/fail evidence.',
-        mode: 'code',
-        risk: 'low',
-      }),
-      normalizeWorkspaceSuggestion({
-        id: 'document-next-step',
-        title: 'Choose next task',
-        summary: 'Use Arceus next-action guidance to decide what should happen after the verified preview.',
-        prompt: 'Suggest the next 3 project actions using current files, preview status, jobs, and pending changes.',
-        mode: 'plan',
-        risk: 'low',
-      }),
-    ],
-  };
-}
-
-function buildWorkReceiptFromPayload(payload: any, fallback: WorkspaceWorkReceipt): WorkspaceWorkReceipt {
-  const receipt = payload?.work_receipt || payload?.workReceipt;
-  if (!receipt || typeof receipt !== 'object') return fallback;
-  return {
-    ...fallback,
-    summary: receipt.summary || fallback.summary,
-    mode: receipt.mode || fallback.mode,
-    intent: receipt.intent || fallback.intent,
-    project: receipt.project || fallback.project,
-    session: receipt.session || fallback.session,
-    plan: receipt.plan || fallback.plan,
-    filesInspected: receipt.files_inspected || receipt.filesInspected || fallback.filesInspected,
-    filesChanged: receipt.files_changed || receipt.filesChanged || fallback.filesChanged,
-    foldersCreated: receipt.folders_created || receipt.foldersCreated || fallback.foldersCreated,
-    commands: receipt.commands_run || receipt.commands || fallback.commands,
-    checks: receipt.checks || fallback.checks,
-    checksPassed: receipt.checks_passed ?? receipt.checksPassed ?? fallback.checksPassed,
-    checksFailed: receipt.checks_failed ?? receipt.checksFailed ?? fallback.checksFailed,
-    approvalState: receipt.approval_state || receipt.approvalState || fallback.approvalState,
-    lineImpact: receipt.line_impact || receipt.lineImpact || fallback.lineImpact,
-    nextActions: receipt.next_actions || receipt.nextActions || fallback.nextActions,
-    rollbackAvailable: receipt.rollback_available ?? receipt.rollbackAvailable ?? fallback.rollbackAvailable,
-  };
-}
-
-function promptTargetsActiveFile(value: string) {
-  return /\b(this file|current file|active file|the file|opened file|selected file|analyze the file|analyse the file|explain this|explain the file|review this|fix this|refactor this|test this|debug this)\b/i.test(value);
-}
-
-function normalizeEvents(events: any[]): ActivityEvent[] {
-  return [...(events || [])].reverse().map((event, index) => ({
-    id: event.id || `stored-${index}`,
-    kind: event.kind || 'start',
-    message: event.message || 'Workspace activity',
-    detail: event.detail,
-    diff: event.diff,
-  }));
-}
+import {
+  ACTIVE_PROJECT_KEY,
+  CodeProject,
+  MAX_OPEN_PROJECTS,
+  OPEN_PROJECTS_KEY,
+  PendingProjectOpen,
+  TERMINAL_PREFS_KEY,
+  WorkspaceCommandAction,
+  WorkspaceRightPanelView,
+  buildPreviewReceipt,
+  buildWorkReceiptFromPayload,
+  id,
+  inferModes,
+  inferReceiptIntent,
+  model,
+  normalizeEvents,
+  promptTargetsActiveFile,
+  summarizePatch,
+  summarizePreview,
+} from './workspacePageUtils';
 
 export default function WorkspacePage() {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -264,7 +78,7 @@ export default function WorkspacePage() {
   const [filesOpen, setFilesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
-  const [rightPanelView, setRightPanelView] = useState<'explorer' | 'changes' | 'jobs' | 'preview' | 'git' | 'apps' | 'tasks'>('explorer');
+  const [rightPanelView, setRightPanelView] = useState<WorkspaceRightPanelView>('explorer');
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [terminalPanelOpen, setTerminalPanelOpen] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -3773,86 +3587,20 @@ export default function WorkspacePage() {
           onRestart={restartTerminal}
           onClear={clearTerminal}
         />
-        <div className={styles.rightRail}>
-          <button
-            className={rightPanelOpen && rightPanelView === 'explorer' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Folder structure"
-            onClick={() => openRightTool('explorer')}
-          >
-            <FolderTree size={14} />
-            {visibleFiles.length > 0 && <span className={styles.railBadge}>{Math.min(visibleFiles.length, 99)}</span>}
-          </button>
-          <button
-            className={terminalPanelOpen ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title={terminalPanelOpen ? 'Hide terminal' : 'Open terminal'}
-            onClick={() => setTerminalPanelOpen((current) => !current)}
-          >
-            <Terminal size={14} />
-            {Object.keys(terminalSessions).length > 0 && <span className={styles.railBadge}>{Object.keys(terminalSessions).length}</span>}
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'changes' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Changes"
-            onClick={() => openRightTool('changes')}
-          >
-            <FileDiff size={14} />
-            {patchPreview.length > 0 && <span className={styles.railBadge}>{Math.min(patchPreview.length, 9)}</span>}
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'jobs' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Jobs"
-            onClick={() => openRightTool('jobs')}
-          >
-            <Workflow size={14} />
-            {jobs.some((job) => ['running', 'queued', 'failed', 'timeout'].includes(job.status || '')) && <span className={styles.railDot} />}
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'preview' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Preview"
-            onClick={() => openRightTool('preview')}
-          >
-            <Play size={14} />
-            {previewChecks.some((check) => check.status !== 'passed') && <span className={styles.railDot} />}
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'git' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Git / PR"
-            onClick={() => openRightTool('git')}
-          >
-            <GitPullRequest size={14} />
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'apps' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Apps / Connectors"
-            onClick={() => openRightTool('apps')}
-          >
-            <AppWindow size={14} />
-          </button>
-          <button
-            className={rightPanelOpen && rightPanelView === 'tasks' ? styles.rightRailButtonActive : styles.rightRailButton}
-            type="button"
-            title="Suggested Tasks"
-            onClick={() => openRightTool('tasks')}
-          >
-            <ListChecks size={14} />
-            {workspaceTasks.length > 0 && <span className={styles.railBadge}>{Math.min(workspaceTasks.length, 9)}</span>}
-          </button>
-          <button
-            className={styles.rightRailButton}
-            type="button"
-            title={rightPanelOpen ? 'Hide right panel' : 'Show right panel'}
-            onClick={() => setRightPanelOpen((current) => !current)}
-          >
-            {rightPanelOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-          </button>
-        </div>
+        <WorkspaceRightRail
+          rightPanelOpen={rightPanelOpen}
+          rightPanelView={rightPanelView}
+          terminalPanelOpen={terminalPanelOpen}
+          visibleFileCount={visibleFiles.length}
+          terminalSessions={terminalSessions}
+          patchPreviewCount={patchPreview.length}
+          jobs={jobs}
+          previewChecks={previewChecks}
+          workspaceTasks={workspaceTasks}
+          onOpenRightTool={openRightTool}
+          onToggleTerminal={() => setTerminalPanelOpen((current) => !current)}
+          onToggleRightPanel={() => setRightPanelOpen((current) => !current)}
+        />
       </div>
       {folderWatchError && (
         <div className={styles.watchErrorToast} role="status">
@@ -3917,25 +3665,7 @@ export default function WorkspacePage() {
           </div>
         </div>
       )}
-      {upgradePrompt && (
-        <div className={styles.replaceDialogBackdrop} role="presentation" onMouseDown={() => setUpgradePrompt(null)}>
-          <div className={styles.upgradeDialog} role="dialog" aria-label="Upgrade required" onMouseDown={(event) => event.stopPropagation()}>
-            <span className={styles.upgradeEyebrow}>{upgradePrompt.code || 'LIMIT_REACHED'}</span>
-            <strong>{upgradePrompt.upgrade_prompt || upgradePrompt.message || 'Upgrade required to continue.'}</strong>
-            <p>{upgradePrompt.message || 'This action is protected by your current Arceus plan limits.'}</p>
-            <div className={styles.upgradeUsageGrid}>
-              <div><span>Plan</span><em>{upgradePrompt.plan || 'free'}</em></div>
-              <div><span>Action</span><em>{upgradePrompt.action || upgradePrompt.feature || 'workspace action'}</em></div>
-              <div><span>Used</span><em>{upgradePrompt.used ?? '-'}</em></div>
-              <div><span>Limit</span><em>{upgradePrompt.limit ?? 'locked'}</em></div>
-            </div>
-            <div className={styles.upgradeActions}>
-              <button type="button" onClick={() => setUpgradePrompt(null)}>Not now</button>
-              <button type="button" onClick={() => { window.location.href = upgradePrompt.upgrade_url || '/settings?tab=billing'; }}>Upgrade Now</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <WorkspaceUpgradeDialog upgradePrompt={upgradePrompt} onClose={() => setUpgradePrompt(null)} />
       {onboardingOpen && (
         <OnboardingWizard
           onComplete={handleOnboardingComplete}
