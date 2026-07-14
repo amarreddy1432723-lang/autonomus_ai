@@ -4469,7 +4469,7 @@ class JobsResponse(BaseModel):
     items: List[JobItem]
 
 @app.post("/api/v1/memories/compress")
-def trigger_memory_compression(request: CompressRequest):
+def trigger_memory_compression(request: CompressRequest, user_id: UUID = Depends(get_current_user_id)):
     from uuid import UUID
     from services.shared.database import SessionLocal
     from .memory_agent import compress_memories
@@ -4477,8 +4477,12 @@ def trigger_memory_compression(request: CompressRequest):
     db = SessionLocal()
     try:
         user_uuid = UUID(request.user_id)
+        if user_uuid != user_id:
+            raise HTTPException(status_code=403, detail="Cannot compress memories for another user.")
         count = compress_memories(db, user_uuid)
         return {"compressed_clusters_count": count}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:

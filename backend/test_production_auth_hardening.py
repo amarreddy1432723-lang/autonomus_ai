@@ -4,7 +4,9 @@ import pytest
 from fastapi import HTTPException
 
 from services.shared.production import enforce_production_startup, production_readiness
-from services.shared.security import dev_auth_fallback_enabled, resolve_user_id_from_auth
+import jwt
+
+from services.shared.security import dev_auth_fallback_enabled, resolve_user_id_from_auth, resolve_user_id_from_auth_or_clerk
 
 
 DEV_USER_ID = "00000000-0000-0000-0000-000000000000"
@@ -45,6 +47,48 @@ def test_staging_startup_refuses_dev_auth_and_demo_user(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         enforce_production_startup("agent-service")
     assert "refused unsafe production startup" in str(exc.value)
+
+
+def test_production_requires_clerk_even_when_clerk_env_is_missing(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOW_DEV_AUTH_FALLBACK", "true")
+    monkeypatch.delenv("CLERK_ISSUER", raising=False)
+    monkeypatch.delenv("CLERK_JWKS_URL", raising=False)
+    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_user_id_from_auth_or_clerk(
+            db=None,
+            authorization=None,
+            x_user_id=DEV_USER_ID,
+            jwt_secret="production-jwt-secret",
+        )
+    assert exc.value.status_code == 401
+    assert "Clerk session token" in str(exc.value.detail)
+
+
+def test_production_rejects_legacy_jwt_when_clerk_env_is_missing(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOW_DEV_AUTH_FALLBACK", "false")
+    monkeypatch.delenv("CLERK_ISSUER", raising=False)
+    monkeypatch.delenv("CLERK_JWKS_URL", raising=False)
+    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+
+    legacy_token = jwt.encode(
+        {"type": "access", "sub": DEV_USER_ID},
+        "production-jwt-secret",
+        algorithm="HS256",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_user_id_from_auth_or_clerk(
+            db=None,
+            authorization=f"Bearer {legacy_token}",
+            x_user_id=None,
+            jwt_secret="production-jwt-secret",
+        )
+    assert exc.value.status_code == 401
+    assert "Clerk session token" in str(exc.value.detail)
 
 
 def test_strict_startup_can_be_disabled_for_recovery_only(monkeypatch):

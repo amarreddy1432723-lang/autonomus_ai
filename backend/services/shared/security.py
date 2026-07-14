@@ -137,7 +137,7 @@ def production_auth_locked() -> bool:
     return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"staging", "prod", "production"}
 
 def clerk_only_auth_required() -> bool:
-    return production_auth_locked() and clerk_auth_enabled()
+    return production_auth_locked()
 
 def clerk_auth_enabled() -> bool:
     return bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY"))

@@ -32,7 +32,7 @@ NEXT_PUBLIC_REQUIRE_AUTH=true
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_...
 ```
 
-With `APP_ENV=production`, the backend refuses startup if critical auth/secrets are unsafe. In production Clerk mode, backend APIs reject both `x-user-id` development fallback and legacy local JWT tokens; only verified Clerk session tokens are accepted.
+With `APP_ENV=staging` or `APP_ENV=production`, the backend refuses startup if critical auth/secrets are unsafe. Live backend APIs fail closed to Clerk sessions: `x-user-id` development fallback and legacy local JWT tokens are rejected, and missing Clerk configuration blocks authentication instead of silently falling back.
 
 ## Stripe Billing
 
