@@ -13,6 +13,10 @@ from fastapi import HTTPException
 from services.shared.models import AuditLog, FileReference, Memory, Subscription, UsageEvent
 
 
+def _live_billing_environment() -> bool:
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"staging", "prod", "production"}
+
+
 PLAN_CATALOG = {
     "free": {
         "name": "Free",
@@ -414,6 +418,11 @@ def billing_configuration_status() -> dict:
     stripe_secret = bool(os.getenv("STRIPE_SECRET_KEY"))
     webhook_secret = bool(os.getenv("STRIPE_WEBHOOK_SECRET"))
     stripe_sdk = importlib.util.find_spec("stripe") is not None
+    live_environment = _live_billing_environment()
+    require_all_prices = os.getenv(
+        "STRIPE_REQUIRE_ALL_PRICES",
+        "true" if live_environment else "false",
+    ).lower() in {"1", "true", "yes", "on"}
     blockers = []
     warnings = []
     if not stripe_secret:
@@ -423,11 +432,17 @@ def billing_configuration_status() -> dict:
     if not stripe_sdk:
         blockers.append("stripe Python package is not installed")
     if missing_prices:
-        warnings.append(f"Missing Stripe price ids: {', '.join(missing_prices)}")
+        message = f"Missing Stripe price ids: {', '.join(missing_prices)}"
+        if require_all_prices:
+            blockers.append(message)
+        else:
+            warnings.append(message)
     key_mode = "live" if (os.getenv("STRIPE_SECRET_KEY") or "").startswith("sk_live_") else "test" if stripe_secret else "not_configured"
     return {
         "ready": not blockers,
         "mode": key_mode,
+        "live_environment": live_environment,
+        "require_all_prices": require_all_prices,
         "stripe_secret_configured": stripe_secret,
         "webhook_secret_configured": webhook_secret,
         "stripe_sdk_available": stripe_sdk,
@@ -447,6 +462,10 @@ def billing_configuration_status() -> dict:
 
 
 def create_checkout_session(db: Session, user_id: UUID, plan: str, billing_cycle: str) -> dict:
+    if plan not in {"starter", "pro", "enterprise"}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_plan", "message": "Unsupported billing plan."})
+    if billing_cycle not in {"monthly", "annual"}:
+        raise HTTPException(status_code=400, detail={"code": "unsupported_billing_cycle", "message": "Unsupported billing cycle."})
     subscription = get_or_create_subscription(db, user_id)
     price_id = _stripe_price_id(plan, billing_cycle)
     if not os.getenv("STRIPE_SECRET_KEY") or not price_id:
