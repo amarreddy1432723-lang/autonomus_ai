@@ -305,7 +305,8 @@ def check_entitlement(db: Session, user_id: UUID, feature: str) -> dict:
     if limit is None:
         return {"allowed": True, "reason": "paid_plan", "plan": plan_key, "remaining": None}
     if limit == 0:
-        return {"allowed": False, "reason": "plan_locked", "plan": plan_key, "upgrade_target": "pro" if feature == "interview_session" else "starter"}
+        upgrade_target = "pro" if feature == "interview_session" or feature.startswith("pa_") or feature == "nexus_pa" else "starter"
+        return {"allowed": False, "reason": "plan_locked", "plan": plan_key, "upgrade_target": upgrade_target}
     used = item["used"] if item else 0
     return {
         "allowed": used < limit,
@@ -314,7 +315,7 @@ def check_entitlement(db: Session, user_id: UUID, feature: str) -> dict:
         "used": used,
         "limit": limit,
         "remaining": max(limit - used, 0),
-        "upgrade_target": "pro" if feature == "interview_session" else "starter",
+        "upgrade_target": "pro" if feature == "interview_session" or feature.startswith("pa_") or feature == "nexus_pa" else "starter",
     }
 
 

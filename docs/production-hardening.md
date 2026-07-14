@@ -57,6 +57,8 @@ Webhook events to enable:
 - `customer.subscription.deleted`
 - `invoice.payment_failed`
 
+In staging and production, Stripe webhooks fail closed unless `STRIPE_WEBHOOK_SECRET` is configured and the Stripe SDK is available for signature verification. Local development may use unsigned JSON fallback for fixture testing only.
+
 ## Rate Limits
 
 Keep `RATE_LIMIT_ENABLED=true`. Tune route classes with:

@@ -87,12 +87,29 @@ async def post_billing_webhook(request: Request, stripe_signature: str | None = 
 
     body = await request.body()
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    live_environment = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"staging", "prod", "production"}
     if not webhook_secret:
+        if live_environment:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "stripe_webhook_not_configured",
+                    "message": "STRIPE_WEBHOOK_SECRET is required before live Stripe webhooks can be accepted.",
+                },
+            )
         return {"status": "not_configured", "message": "Stripe webhook secret is not configured."}
     try:
         import stripe  # type: ignore
         event = stripe.Webhook.construct_event(body, stripe_signature or "", webhook_secret)
     except ImportError:
+        if live_environment:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "stripe_sdk_required",
+                    "message": "The stripe Python package is required to verify live webhook signatures.",
+                },
+            )
         try:
             event = json.loads(body.decode("utf-8") or "{}")
         except json.JSONDecodeError:

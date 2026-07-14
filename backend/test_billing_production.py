@@ -1,10 +1,12 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
+from services.agent.main import app
 from services.shared.database import SessionLocal, verify_default_user
-from services.shared.models import AuditLog, Subscription
+from services.shared.models import Subscription
 
 
 USER_ID = UUID("00000000-0000-0000-0000-000000000000")
@@ -14,13 +16,11 @@ USER_ID = UUID("00000000-0000-0000-0000-000000000000")
 def db():
     session = SessionLocal()
     verify_default_user(session)
-    session.query(AuditLog).filter(AuditLog.event_type == "billing-test").delete()
     session.query(Subscription).filter(Subscription.user_id == USER_ID).delete()
     session.commit()
     try:
         yield session
     finally:
-        session.query(AuditLog).filter(AuditLog.event_type == "billing-test").delete()
         session.query(Subscription).filter(Subscription.user_id == USER_ID).delete()
         session.commit()
         session.close()
@@ -159,3 +159,95 @@ def test_stripe_payment_failure_downgrades_to_free(db):
     assert subscription.plan_type == "free"
     assert subscription.status == "past_due"
     assert "payment_failure_at" in (subscription.entitlements or {})
+
+
+def test_live_webhook_fails_closed_when_secret_missing(monkeypatch):
+    _clear_stripe_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = TestClient(app).post("/api/v1/billing/webhook", json={"id": "evt_missing_secret"})
+
+    assert response.status_code == 503
+    assert "stripe_webhook_not_configured" in response.text
+
+
+def test_live_webhook_fails_closed_without_stripe_sdk(monkeypatch):
+    import builtins
+
+    _clear_stripe_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_live")
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "stripe":
+            raise ImportError("stripe unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    response = TestClient(app).post(
+        "/api/v1/billing/webhook",
+        headers={"stripe-signature": "test"},
+        json={"id": "evt_without_sdk"},
+    )
+
+    assert response.status_code == 503
+    assert "stripe_sdk_required" in response.text
+
+
+def test_local_webhook_can_use_json_fallback_when_sdk_missing(monkeypatch, db):
+    import builtins
+
+    _clear_stripe_env(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_local")
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "stripe":
+            raise ImportError("stripe unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    response = TestClient(app).post(
+        "/api/v1/billing/webhook",
+        json={
+            "id": f"evt_billing_test_local_json_fallback_{uuid4().hex}",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "customer": "cus_local_json",
+                    "subscription": "sub_local_json",
+                    "metadata": {"user_id": str(USER_ID), "plan": "starter", "billing_cycle": "monthly"},
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["synced"] is True
+
+
+def test_code_pa_and_interview_expensive_actions_return_402_payloads(db):
+    from services.agent.billing import require_feature_entitlement, record_interview_session
+
+    github_denial = None
+    with pytest.raises(HTTPException) as exc:
+        require_feature_entitlement(db, USER_ID, "code_github_operation")
+    github_denial = exc.value.detail
+
+    pa_denial = None
+    with pytest.raises(HTTPException) as exc:
+        require_feature_entitlement(db, USER_ID, "pa_command")
+    pa_denial = exc.value.detail
+
+    record_interview_session(db, USER_ID)
+    record_interview_session(db, USER_ID)
+    third_interview = record_interview_session(db, USER_ID)
+
+    assert github_denial["code"] == "PLAN_LOCKED"
+    assert github_denial["upgrade_url"] == "/settings?tab=billing"
+    assert pa_denial["code"] == "PLAN_LOCKED"
+    assert pa_denial["upgrade_target"] == "pro"
+    assert third_interview["recorded"] is False
+    assert third_interview["allowed"] is False
