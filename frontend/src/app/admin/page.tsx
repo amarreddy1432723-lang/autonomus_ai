@@ -62,6 +62,22 @@ type AbuseFlag = {
   failed_jobs_24h: number;
 };
 
+type RateLimitHealth = {
+  enabled: boolean;
+  enforcing: boolean;
+  mode: string;
+  fail_closed: boolean;
+  redis: { configured: boolean; available: boolean; error?: string | null };
+  profiles: Array<{
+    name: string;
+    burst: number;
+    rate_per_second: number;
+    refill_per_minute: number;
+    env: { burst: string; per_second: string };
+    examples: string[];
+  }>;
+};
+
 type ReadinessCheck = {
   name: string;
   ok: boolean;
@@ -187,6 +203,7 @@ export default function AdminPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [flags, setFlags] = useState<AbuseFlag[]>([]);
+  const [rateLimits, setRateLimits] = useState<RateLimitHealth | null>(null);
   const [readiness, setReadiness] = useState<ReleaseReadiness | null>(null);
   const [billingHealth, setBillingHealth] = useState<BillingHealth | null>(null);
   const [observabilityHealth, setObservabilityHealth] = useState<ObservabilityHealth | null>(null);
@@ -202,13 +219,14 @@ export default function AdminPage() {
     setLoading(true);
     setError('');
     try {
-      const [summaryData, usersData, usageData, jobsData, healthData, flagsData, readinessData, billingHealthData, observabilityData, auditData] = await Promise.all([
+      const [summaryData, usersData, usageData, jobsData, healthData, flagsData, rateLimitData, readinessData, billingHealthData, observabilityData, auditData] = await Promise.all([
         safeAdminRequest('/api/v1/admin/summary', { users: 0, active_subscriptions: 0, usage_events: 0, total_tokens: 0, estimated_cost_usd: 0, error_rate: 0, audit_events: 0, jobs: { queued: 0, running: 0, failed: 0, total: 0 }, plans: [] }),
         safeAdminRequest('/api/v1/admin/users', { users: [] }),
         safeAdminRequest('/api/v1/admin/usage', { usage_events: 0, total_tokens: 0, routes: [] }),
         safeAdminRequest('/api/v1/admin/jobs', { jobs: [] }),
         safeAdminRequest('/api/v1/admin/system-health', { database: { ok: false, error: 'Not checked' }, redis: { configured: false, ok: false }, workers: { stale_jobs: 0, configured_mode: 'unknown' }, checked_at: '' }),
         safeAdminRequest('/api/v1/admin/abuse-flags', { flags: [] }),
+        safeAdminRequest('/api/v1/admin/rate-limits', { enabled: false, enforcing: false, mode: 'unavailable', fail_closed: false, redis: { configured: false, available: false }, profiles: [] }),
         safeAdminRequest('/api/v1/admin/release-readiness', { ready: false, environment: 'unknown', release: 'backend route unavailable', blockers: [], warnings: [], checks: [], checked_at: '' }),
         safeAdminRequest('/api/v1/admin/billing-health', { ready: false, stripe_secret_configured: false, webhook_secret_configured: false, stripe_sdk_available: false, missing_prices: [], blockers: [], warnings: [] }),
         safeAdminRequest('/api/v1/admin/observability-health', { ready: false, release: 'local', environment: 'unknown', metrics_endpoint: null, logging: { format: 'json', request_id_header: 'X-Request-Id', trace_id_header: 'X-Trace-Id', response_time_header: 'X-Response-Time-Ms' }, checks: [], warnings: [], checked_at: '' }),
@@ -223,11 +241,12 @@ export default function AdminPage() {
       setJobs(jobsData.jobs || []);
       setHealth(healthData);
       setFlags(flagsData.flags || []);
+      setRateLimits(rateLimitData);
       setReadiness(readinessData);
       setBillingHealth(billingHealthData);
       setObservabilityHealth(observabilityData);
       setAuditLogs(auditData.audit_logs || []);
-      const unavailable = [summaryData, usersData, usageData, jobsData, healthData, flagsData, readinessData, billingHealthData, observabilityData, auditData]
+      const unavailable = [summaryData, usersData, usageData, jobsData, healthData, flagsData, rateLimitData, readinessData, billingHealthData, observabilityData, auditData]
         .filter((item) => item?.unavailable)
         .map((item) => item.unavailable_reason);
       if (unavailable.length) {
@@ -321,6 +340,11 @@ export default function AdminPage() {
             <span><ShieldAlert size={13} /> Abuse flags</span>
             <strong>{flags.length}</strong>
             <em>{summary?.error_rate || 0}% job error rate</em>
+          </div>
+          <div className={styles.card}>
+            <span><ShieldAlert size={13} /> Rate limits</span>
+            <strong>{rateLimits?.enforcing ? 'Enforced' : rateLimits?.enabled ? 'Fail-open' : 'Off'}</strong>
+            <em>{rateLimits?.mode || 'unknown'} · {rateLimits?.profiles?.length || 0} classes</em>
           </div>
           <div className={styles.card}>
             <span><Rocket size={13} /> Release readiness</span>
@@ -607,6 +631,35 @@ export default function AdminPage() {
                   </div>
                 ))}
                 {!flags.length && <span className={styles.muted}>No abuse flags in the last 24 hours.</span>}
+              </div>
+            </div>
+
+            <div className={styles.panel}>
+              <div className={styles.panelHeader}>
+                <h2>Rate Limit Enforcement</h2>
+                <span>{rateLimits?.mode || 'unknown'}</span>
+              </div>
+              <div className={styles.list}>
+                <div className={styles.row}>
+                  <div><strong>Redis enforcement</strong><small>{rateLimits?.redis?.error || 'Token bucket storage'}</small></div>
+                  <StatusPill value={rateLimits?.enforcing ? 'enforced' : rateLimits?.enabled ? 'fail open' : 'disabled'} />
+                </div>
+                <div className={styles.row}>
+                  <div><strong>Fail closed</strong><small>Blocks requests if Redis is unavailable</small></div>
+                  <StatusPill value={rateLimits?.fail_closed ? 'enabled' : 'off'} />
+                </div>
+                {(rateLimits?.profiles || []).map((profile) => (
+                  <div className={styles.rateLimitRow} key={profile.name}>
+                    <div>
+                      <strong>{profile.name}</strong>
+                      <small>{profile.examples.slice(0, 2).join(' · ')}</small>
+                    </div>
+                    <div>
+                      <span className={styles.pill}>{profile.burst} burst</span>
+                      <span className={styles.muted}>{profile.refill_per_minute}/min</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 

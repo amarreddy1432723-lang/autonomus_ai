@@ -366,6 +366,14 @@ def get_admin_abuse_flags(user_id: UUID = Depends(get_current_user_id), db: Sess
     return {"flags": flags, "window": "24h"}
 
 
+@router.get("/api/v1/admin/rate-limits")
+def get_admin_rate_limits(user_id: UUID = Depends(get_current_user_id)):
+    from services.shared.rate_limiter import rate_limit_policy_report
+
+    _require_admin(user_id)
+    return rate_limit_policy_report()
+
+
 @router.get("/api/v1/admin/billing-health")
 def get_admin_billing_health(user_id: UUID = Depends(get_current_user_id)):
     from .billing import billing_configuration_status

@@ -204,6 +204,23 @@
   padding: 10px;
 }
 
+.rateLimitRow {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: #111217;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+}
+
+.rateLimitRow > div:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .readinessRow {
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 10px;

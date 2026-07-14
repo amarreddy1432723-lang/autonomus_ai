@@ -130,6 +130,55 @@ ROUTE_LIMITS = {
     "default": RouteLimitProfile("default", float(os.getenv("RATE_LIMIT_DEFAULT_BURST", "120")), float(os.getenv("RATE_LIMIT_DEFAULT_PER_SEC", "1.0"))),
 }
 
+ROUTE_LIMIT_EXAMPLES = {
+    "auth": ["/api/v1/auth/login", "/sign-in"],
+    "model": ["/api/v1/agents/chat", "/api/v1/code/sessions/{id}/stream", "/api/v1/code/sessions/{id}/suggest-next"],
+    "upload": ["/api/v1/files", "/api/v1/files/upload"],
+    "code_runtime": ["/api/v1/code/terminal/{id}/input", "/api/v1/jobs/{id}/stream", "/api/v1/github/sessions/{id}/create-pr"],
+    "pa": ["/api/v1/pa/command", "/api/v1/pa/reminders"],
+    "interview": ["/api/v1/interview/answer", "/api/v1/billing/interview/access"],
+    "admin": ["/api/v1/admin/summary", "/api/v1/admin/rate-limits"],
+    "default": ["/api/v1/health", "/api/v1/settings"],
+}
+
+
+def rate_limit_policy_report() -> dict:
+    redis_ok = False
+    redis_error = None
+    if redis_client is not None:
+        try:
+            redis_client.ping()
+            redis_ok = True
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            redis_error = str(exc)
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"}
+    fail_closed = os.getenv("RATE_LIMIT_FAIL_CLOSED", "false").lower() in {"1", "true", "yes"}
+    return {
+        "enabled": enabled,
+        "enforcing": enabled and redis_ok,
+        "mode": "enforced" if enabled and redis_ok else "disabled" if not enabled else "fail_open_no_redis",
+        "fail_closed": fail_closed,
+        "redis": {
+            "configured": bool(os.getenv("REDIS_URL") or os.getenv("REDIS_HOST")),
+            "available": redis_ok,
+            "error": redis_error,
+        },
+        "profiles": [
+            {
+                "name": name,
+                "burst": int(profile.capacity),
+                "rate_per_second": profile.rate,
+                "refill_per_minute": round(profile.rate * 60, 2),
+                "env": {
+                    "burst": f"RATE_LIMIT_{name.upper()}_BURST",
+                    "per_second": f"RATE_LIMIT_{name.upper()}_PER_SEC",
+                },
+                "examples": ROUTE_LIMIT_EXAMPLES.get(name, []),
+            }
+            for name, profile in ROUTE_LIMITS.items()
+        ],
+    }
+
 
 def route_limit_profile(path: str) -> RouteLimitProfile:
     if path.startswith("/api/v1/auth") or path.startswith("/sign-in") or path.startswith("/sign-up"):

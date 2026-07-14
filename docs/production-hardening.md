@@ -59,6 +59,14 @@ RATE_LIMIT_DEFAULT_BURST=120
 
 Redis is required for production rate-limit enforcement.
 
+Admins can inspect the live policy and enforcement mode at:
+
+```text
+GET /api/v1/admin/rate-limits
+```
+
+The dashboard shows whether the limiter is enforced, fail-open because Redis is unavailable, or disabled.
+
 ## Deploy
 
 Use GitHub Actions release workflow or locally:
