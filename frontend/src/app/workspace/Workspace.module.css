@@ -1473,6 +1473,16 @@
   line-height: 1.35;
 }
 
+.gitInlineError strong,
+.gitInlineError span {
+  display: block;
+}
+
+.gitInlineError span {
+  margin-top: 3px;
+  color: #d6c6a1;
+}
+
 .gitPrLink {
   display: flex;
   align-items: center;

@@ -86,3 +86,29 @@ def test_commit_readiness_blocks_pending_review_for_commit_all():
 
     assert exc.value.status_code == 409
     assert exc.value.detail["message"] == "Patch review is still pending"
+
+
+def test_staged_changes_exposes_commit_blockers_without_throwing():
+    session = SimpleNamespace(metadata_json={
+        "last_applied_files": [{"filename": "src/app.ts", "operation": "modify", "additions": 2, "deletions": 1}],
+        "patch_preview": [{"filename": "src/pending.ts", "operation": "modify"}],
+    })
+
+    staged = github_service.staged_approved_changes(session)
+
+    assert staged["approval_state"] == "blocked"
+    assert staged["commit_ready"] is False
+    assert staged["commit_blockers"][0]["code"] == "pending_review"
+    assert staged["staged"][0]["filename"] == "src/app.ts"
+
+
+def test_staged_changes_marks_approved_files_ready():
+    session = SimpleNamespace(metadata_json={
+        "last_applied_files": [{"filename": "src/app.ts", "operation": "modify", "additions": 2, "deletions": 1}],
+    })
+
+    staged = github_service.staged_approved_changes(session)
+
+    assert staged["approval_state"] == "approved"
+    assert staged["commit_ready"] is True
+    assert staged["commit_blockers"] == []

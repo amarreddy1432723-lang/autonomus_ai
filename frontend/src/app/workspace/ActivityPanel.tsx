@@ -116,6 +116,8 @@ export type GitHubStatus = {
     staged?: Array<{ filename?: string; operation?: string; additions?: number; deletions?: number }>;
     count?: number;
     approval_state?: string;
+    commit_ready?: boolean;
+    commit_blockers?: Array<{ code?: string; message?: string; cause?: string; files?: string[]; pending_files?: string[] }>;
     line_impact?: { additions?: number; deletions?: number };
     last_applied_at?: string;
   };

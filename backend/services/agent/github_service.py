@@ -495,52 +495,57 @@ def staged_approved_changes(session: CodeSession) -> dict:
     metadata = session.metadata_json or {}
     files = _commit_files_from_metadata(session)
     summary = _summarize_file_items(files)
+    blockers = _commit_readiness_blockers(session)
     return {
         **summary,
-        "approval_state": "approved" if summary["staged"] else "none",
+        "approval_state": "blocked" if blockers else "approved" if summary["staged"] else "none",
+        "commit_ready": bool(summary["staged"]) and not blockers,
+        "commit_blockers": blockers,
         "last_applied_at": metadata.get("last_applied_at"),
     }
 
 
-def validate_commit_readiness(session: CodeSession, filenames: list[str] | None = None) -> dict:
+def _commit_readiness_blockers(session: CodeSession, filenames: list[str] | None = None) -> list[dict]:
     metadata = session.metadata_json or {}
-    staged = staged_approved_changes(session)
+    files = _commit_files_from_metadata(session)
+    summary = _summarize_file_items(files)
     selected = {name for name in (filenames or []) if name}
-    staged_names = {item.get("filename") for item in staged.get("staged") or [] if item.get("filename")}
+    staged_names = {item.get("filename") for item in summary.get("staged") or [] if item.get("filename")}
+    blockers: list[dict] = []
     if selected and not selected.issubset(staged_names):
         missing = sorted(selected - staged_names)
-        raise HTTPException(status_code=409, detail={
-            "error_class": "patch_conflict",
+        blockers.append({
+            "code": "unapproved_selection",
             "message": "Selected files are not approved for commit",
             "cause": "Commit can only include files from the latest applied, reviewed patch.",
             "files": missing,
         })
     pending_preview = metadata.get("patch_preview") or []
-    if pending_preview and not selected:
-        raise HTTPException(status_code=409, detail={
-            "error_class": "patch_conflict",
-            "message": "Patch review is still pending",
-            "cause": "Apply or reject pending patch hunks before committing all approved changes.",
-            "pending_files": [item.get("new_filename") or item.get("filename") for item in pending_preview],
-        })
     selected_pending = [
         item for item in pending_preview
         if (item.get("new_filename") or item.get("filename")) in selected or item.get("filename") in selected
     ]
-    if selected_pending:
-        raise HTTPException(status_code=409, detail={
-            "error_class": "patch_conflict",
-            "message": "Selected files still have pending review",
-            "cause": "Apply the accepted hunks before committing these files.",
-            "pending_files": [item.get("new_filename") or item.get("filename") for item in selected_pending],
-        })
     conflicted = [
         item for item in pending_preview
         if item.get("conflict") and (not selected or (item.get("new_filename") or item.get("filename")) in selected or item.get("filename") in selected)
     ]
+    if pending_preview and not selected:
+        blockers.append({
+            "code": "pending_review",
+            "message": "Patch review is still pending",
+            "cause": "Apply or reject pending patch hunks before committing all approved changes.",
+            "pending_files": [item.get("new_filename") or item.get("filename") for item in pending_preview],
+        })
+    if selected_pending:
+        blockers.append({
+            "code": "selected_pending_review",
+            "message": "Selected files still have pending review",
+            "cause": "Apply the accepted hunks before committing these files.",
+            "pending_files": [item.get("new_filename") or item.get("filename") for item in selected_pending],
+        })
     if conflicted:
-        raise HTTPException(status_code=409, detail={
-            "error_class": "patch_conflict",
+        blockers.append({
+            "code": "patch_conflict",
             "message": "Patch conflict detected",
             "cause": "Resolve or reset conflicted patch review before committing.",
             "conflicts": [
@@ -554,7 +559,25 @@ def validate_commit_readiness(session: CodeSession, filenames: list[str] | None 
             ],
         })
     if not staged_names:
-        raise HTTPException(status_code=400, detail="No approved files are available to commit. Apply a reviewed patch first.")
+        blockers.append({
+            "code": "no_approved_files",
+            "message": "No approved files are available to commit",
+            "cause": "Apply a reviewed patch first.",
+        })
+    return blockers
+
+
+def validate_commit_readiness(session: CodeSession, filenames: list[str] | None = None) -> dict:
+    staged = staged_approved_changes(session)
+    blockers = _commit_readiness_blockers(session, filenames)
+    if blockers:
+        first = blockers[0]
+        if first["code"] == "no_approved_files":
+            raise HTTPException(status_code=400, detail=f"{first['message']}. {first['cause']}")
+        raise HTTPException(status_code=409, detail={
+            "error_class": "patch_conflict",
+            **first,
+        })
     return staged
 
 

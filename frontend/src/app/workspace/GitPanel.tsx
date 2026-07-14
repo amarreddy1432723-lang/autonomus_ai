@@ -104,6 +104,8 @@ export default function GitPanel({
     }));
   }, [githubStatus?.staged?.staged, patchPreview]);
   const usingAppliedStagedFiles = Boolean(githubStatus?.staged?.staged?.length);
+  const commitBlockers = githubStatus?.staged?.commit_blockers || [];
+  const commitReady = Boolean(githubStatus?.staged?.commit_ready);
 
   const stagedFilenames = useMemo(() => staged.map((file) => file.filename).filter(Boolean), [staged]);
   const effectiveStageFiles = selectedStageFiles.filter((filename) => stagedFilenames.includes(filename));
@@ -312,8 +314,14 @@ export default function GitPanel({
       <div className={styles.gitStageBox}>
         <div className={styles.previewSectionTitle}>
           <span>{usingAppliedStagedFiles ? 'Approved files ready to commit' : 'Pending review files'}</span>
-          <em>{staged.length}</em>
+          <em>{commitReady ? `${staged.length} ready` : `${staged.length} blocked`}</em>
         </div>
+        {commitBlockers.length > 0 && (
+          <div className={styles.gitInlineError}>
+            <strong>{commitBlockers[0].message || 'Commit is blocked'}</strong>
+            <span>{commitBlockers[0].cause || 'Review and apply pending changes before committing.'}</span>
+          </div>
+        )}
         {staged.length ? staged.slice(0, 12).map((file) => {
           const checked = !effectiveStageFiles.length || effectiveStageFiles.includes(file.filename);
           return (
@@ -346,7 +354,7 @@ export default function GitPanel({
         <span>Commit message</span>
         <input className={styles.previewInput} value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
       </label>
-      <button className={styles.fullWidthButton} type="button" onClick={() => onCommitGithubChanges(commitMessage, commitFilenames)} disabled={!canUseGit || !commitFilenames.length}>
+      <button className={styles.fullWidthButton} type="button" onClick={() => onCommitGithubChanges(commitMessage, commitFilenames)} disabled={!canUseGit || !commitFilenames.length || !commitReady}>
         Commit selected changes
       </button>
 
@@ -367,7 +375,7 @@ export default function GitPanel({
           className={styles.fullWidthButton}
           type="button"
           onClick={() => onCommitAndOpenPr({ commit_message: commitMessage, title: prTitle, body: prBody, branch_name: githubBranchName, filenames: commitFilenames })}
-          disabled={!canUseGit || !commitFilenames.length || invalidBranch}
+          disabled={!canUseGit || !commitFilenames.length || invalidBranch || !commitReady}
         >
           <Rocket size={13} /> Commit → PR
         </button>
