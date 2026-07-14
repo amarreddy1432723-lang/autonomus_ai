@@ -9,6 +9,7 @@ def test_release_readiness_includes_runbook_commands(monkeypatch):
 
     assert "runbook" in report
     assert report["runbook"]["verify_command"].startswith(".\\scripts\\full-verify.ps1")
+    assert report["runbook"]["release_gate_command"].startswith(".\\scripts\\verify-release-gate.ps1")
     assert report["runbook"]["deploy_command"].startswith(".\\scripts\\deploy-railway.ps1")
     assert report["summary"]["checks"] == len(report["checks"])
     assert all("action" in item for item in report["checks"])

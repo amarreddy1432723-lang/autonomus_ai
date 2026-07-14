@@ -20,6 +20,12 @@ Run this before a production release to confirm external provider secrets are pr
 .\scripts\verify-provider-config.ps1 -Environment production -Strict
 ```
 
+Run this immediately before deployment. It combines provider readiness, deploy target variables, smoke targets, backup/restore tooling, and rollback notes into a single go/no-go decision:
+
+```powershell
+.\scripts\verify-release-gate.ps1 -Environment production -Phase predeploy -ReleaseVersion $env:RELEASE_VERSION
+```
+
 ## Health And Readiness
 - `/api/v1/health`: process is alive.
 - `/api/v1/ready`: database and Redis dependency status.

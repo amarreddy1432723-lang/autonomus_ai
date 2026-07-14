@@ -63,10 +63,53 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - name: Deployment gate
+      - name: Pre-deploy release gate
+        shell: pwsh
+        env:
+          APP_ENV: ${{ inputs.environment || 'production' }}
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          RAILWAY_PROJECT: ${{ vars.RAILWAY_PROJECT }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+          SMOKE_BACKEND_URL: ${{ vars.SMOKE_BACKEND_URL }}
+          SMOKE_FRONTEND_URL: ${{ vars.SMOKE_FRONTEND_URL }}
+          SMOKE_ADMIN_USER_ID: ${{ secrets.SMOKE_ADMIN_USER_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          APP_ENCRYPTION_KEY: ${{ secrets.APP_ENCRYPTION_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          NEXT_PUBLIC_REQUIRE_AUTH: ${{ vars.NEXT_PUBLIC_REQUIRE_AUTH }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_ISSUER: ${{ vars.CLERK_ISSUER }}
+          CLERK_JWKS_URL: ${{ vars.CLERK_JWKS_URL }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_PRICE_STARTER_MONTHLY: ${{ vars.STRIPE_PRICE_STARTER_MONTHLY }}
+          STRIPE_PRICE_STARTER_ANNUAL: ${{ vars.STRIPE_PRICE_STARTER_ANNUAL }}
+          STRIPE_PRICE_PRO_MONTHLY: ${{ vars.STRIPE_PRICE_PRO_MONTHLY }}
+          STRIPE_PRICE_PRO_ANNUAL: ${{ vars.STRIPE_PRICE_PRO_ANNUAL }}
+          STRIPE_PRICE_ENTERPRISE_MONTHLY: ${{ vars.STRIPE_PRICE_ENTERPRISE_MONTHLY }}
+          STRIPE_PRICE_ENTERPRISE_ANNUAL: ${{ vars.STRIPE_PRICE_ENTERPRISE_ANNUAL }}
+          GITHUB_APP_ID: ${{ vars.GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_NAME: ${{ vars.GITHUB_APP_NAME }}
+          GITHUB_APP_SLUG: ${{ vars.GITHUB_APP_SLUG }}
+          GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.GITHUB_APP_WEBHOOK_SECRET }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          APP_RELEASE: ${{ env.RELEASE_VERSION }}
+          NEXT_PUBLIC_APP_RELEASE: ${{ env.RELEASE_VERSION }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK || secrets.CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD || secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ARCEUS_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          ARCEUS_RELEASE_NOTES_URL: https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_VERSION }}
+          ARCEUS_UPDATE_FEED_URL: https://github.com/${{ github.repository }}/releases/latest
+          ALLOW_RELEASE_WARNINGS: ${{ (inputs.environment || 'production') == 'staging' }}
         run: |
-          echo "Images are built and tagged."
-          echo "Release version: ${{ env.RELEASE_VERSION }}"
+          $allowWarnings = "${env:ALLOW_RELEASE_WARNINGS}" -eq "true"
+          ./scripts/verify-release-gate.ps1 -Environment "${{ inputs.environment || 'production' }}" -Phase predeploy -ReleaseVersion "${{ env.RELEASE_VERSION }}" -AllowWarnings:$allowWarnings
       - name: Deploy Railway project
         if: ${{ env.RAILWAY_TOKEN != '' }}
         shell: pwsh

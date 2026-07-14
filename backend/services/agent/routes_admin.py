@@ -34,7 +34,8 @@ def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker",
 
 
 def _release_runbook(root: Path, ready: bool) -> dict:
-    verify = ".\\scripts\\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -StrictSmoke"
+    verify = ".\\scripts\\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -CheckProviders -StrictSmoke"
+    gate = ".\\scripts\\verify-release-gate.ps1 -Environment production -Phase predeploy -ReleaseVersion $env:RELEASE_VERSION"
     smoke = ".\\scripts\\smoke-test.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
     deploy = ".\\scripts\\deploy-railway.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
     backup = ".\\scripts\\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL"
@@ -42,6 +43,7 @@ def _release_runbook(root: Path, ready: bool) -> dict:
     return {
         "recommended_next_step": "Deploy staging" if ready else "Clear blockers before deploy",
         "verify_command": verify,
+        "release_gate_command": gate,
         "smoke_command": smoke,
         "deploy_command": deploy,
         "backup_command": backup,
@@ -52,6 +54,7 @@ def _release_runbook(root: Path, ready: bool) -> dict:
         "sequence": [
             "Run full verification locally or in CI.",
             "Create a database backup before production migrations.",
+            "Run the pre-deploy release gate.",
             "Deploy staging and run smoke tests.",
             "Manually approve production deploy.",
             "Run post-deploy smoke tests and monitor errors/jobs.",

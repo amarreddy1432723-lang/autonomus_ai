@@ -4,7 +4,9 @@ param(
   [string]$Service = $env:RAILWAY_SERVICE,
   [string]$BackendUrl = $env:SMOKE_BACKEND_URL,
   [string]$FrontendUrl = $env:SMOKE_FRONTEND_URL,
-  [string]$AdminUserId = $env:SMOKE_ADMIN_USER_ID
+  [string]$AdminUserId = $env:SMOKE_ADMIN_USER_ID,
+  [string]$ReleaseVersion = $(if ($env:RELEASE_VERSION) { $env:RELEASE_VERSION } elseif ($env:ARCEUS_RELEASE_VERSION) { $env:ARCEUS_RELEASE_VERSION } else { "" }),
+  [switch]$SkipReleaseGate
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +21,13 @@ if (-not $env:RAILWAY_TOKEN) {
 $railway = Get-Command railway -ErrorAction SilentlyContinue
 if (-not $railway) {
   throw "Railway CLI is not installed. Run: npm install -g @railway/cli"
+}
+
+if (-not $SkipReleaseGate) {
+  $targetEnvironment = if ($Environment) { $Environment } else { "production" }
+  $allowWarnings = $targetEnvironment -ne "production"
+  Write-Host "Running pre-deploy release gate for $targetEnvironment..."
+  & "$PSScriptRoot\verify-release-gate.ps1" -Environment $targetEnvironment -Phase predeploy -ReleaseVersion $ReleaseVersion -AllowWarnings:$allowWarnings
 }
 
 $args = @("up", "--detach")

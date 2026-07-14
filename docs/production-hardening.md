@@ -85,6 +85,7 @@ Use GitHub Actions release workflow or locally:
 
 ```powershell
 .\scripts\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -CheckProviders -StrictSmoke
+.\scripts\verify-release-gate.ps1 -Environment production -Phase predeploy -ReleaseVersion $env:RELEASE_VERSION
 ```
 
 `full-verify.ps1` writes a release summary to:
@@ -95,13 +96,21 @@ Use GitHub Actions release workflow or locally:
 
 In `-StrictSmoke` mode, admin release readiness, billing health, observability health, and rate-limit enforcement must all pass. Without `-StrictSmoke`, these live-service gates remain warnings so local development can still run the checks.
 
+The release gate writes:
+
+```text
+.verify/release-gate-summary.json
+```
+
+It blocks production deploys when provider configuration, Railway target variables, smoke targets, backup/restore scripts, deploy script, or rollback notes are missing.
+
 ```powershell
 $env:RAILWAY_TOKEN="..."
 $env:RAILWAY_PROJECT="..."
 $env:RAILWAY_SERVICE="..."
 $env:SMOKE_BACKEND_URL="https://api.example.com"
 $env:SMOKE_FRONTEND_URL="https://app.example.com"
-.\scripts\deploy-railway.ps1 -Environment production
+.\scripts\deploy-railway.ps1 -Environment production -ReleaseVersion $env:RELEASE_VERSION
 ```
 
 ## Smoke Test

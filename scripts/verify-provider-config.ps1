@@ -35,6 +35,12 @@ function Add-Check {
   }) | Out-Null
 }
 
+function Get-EnvString([string]$Name) {
+  $value = [Environment]::GetEnvironmentVariable($Name)
+  if ($null -eq $value) { return "" }
+  return [string]$value
+}
+
 $live = $normalizedEnvironment -in @("staging", "production")
 
 Add-Check "runtime" "Live environment flags" @("APP_ENV", "JWT_SECRET", "APP_ENCRYPTION_KEY", "DATABASE_URL", "REDIS_URL") -Severity "blocker"
@@ -51,9 +57,9 @@ Add-Check "release" "Download artifact env" @("ARCEUS_RELEASE_VERSION", "ARCEUS_
 
 if ($live) {
   $unsafeFlags = @()
-  if (([Environment]::GetEnvironmentVariable("ALLOW_DEMO_USER") -or "").ToLowerInvariant() -eq "true") { $unsafeFlags += "ALLOW_DEMO_USER" }
-  if (([Environment]::GetEnvironmentVariable("ALLOW_DEV_AUTH_FALLBACK") -or "").ToLowerInvariant() -eq "true") { $unsafeFlags += "ALLOW_DEV_AUTH_FALLBACK" }
-  if (([Environment]::GetEnvironmentVariable("NEXT_PUBLIC_REQUIRE_AUTH") -or "").ToLowerInvariant() -ne "true") { $unsafeFlags += "NEXT_PUBLIC_REQUIRE_AUTH" }
+  if ((Get-EnvString "ALLOW_DEMO_USER").ToLowerInvariant() -eq "true") { $unsafeFlags += "ALLOW_DEMO_USER" }
+  if ((Get-EnvString "ALLOW_DEV_AUTH_FALLBACK").ToLowerInvariant() -eq "true") { $unsafeFlags += "ALLOW_DEV_AUTH_FALLBACK" }
+  if ((Get-EnvString "NEXT_PUBLIC_REQUIRE_AUTH").ToLowerInvariant() -ne "true") { $unsafeFlags += "NEXT_PUBLIC_REQUIRE_AUTH" }
   $checks.Add([pscustomobject]@{
     area = "auth"
     name = "Live auth safety flags"
