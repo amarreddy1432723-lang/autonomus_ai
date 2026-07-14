@@ -33,3 +33,30 @@ groups:
         annotations:
           summary: Arceus service is down
           description: Prometheus cannot scrape {{ $labels.job }}.
+
+      - alert: ArceusWorkerQueueDepthHigh
+        expr: arceus_job_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Arceus job queue depth is high
+          description: Queue depth is above 100. Scale workers or pause new expensive jobs.
+
+      - alert: ArceusWorkerDown
+        expr: arceus_worker_count == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Arceus worker capacity is zero
+          description: No worker is available to process agent, check, install, or preview jobs.
+
+      - alert: ArceusDeadLetterJobs
+        expr: increase(arceus_dead_letter_jobs_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Arceus jobs reached dead-letter state
+          description: Inspect durable job records and recent worker logs before accepting more background work.

@@ -52,17 +52,34 @@ Key dashboards:
 - Docker container count
 - job dead-letter growth
 
+Import the starter Grafana dashboard from:
+
+```text
+ops/grafana/arceus-code-overview.json
+```
+
 ## Logs
 
 API services emit structured JSON logs with request ID, trace ID, route, duration, status, and safe user identifier.
 
 ## Alerts
 
-- Job queue depth > 100: PagerDuty
-- Error rate > 1 percent over 5 minutes: Slack
-- P99 latency > 3 seconds: Slack
-- Celery worker count = 0: PagerDuty
-- Disk usage > 80 percent: email
+Prometheus alert rules live in `ops/prometheus/arceus-alerts.yml`.
+
+Required production alerts:
+
+- `ArceusServiceDown`: service scrape failure for any Arceus API.
+- `ArceusApiHighErrorRate`: error rate > 1 percent over 5 minutes.
+- `ArceusApiP99LatencyHigh`: p99 latency > 3 seconds.
+- `ArceusWorkerQueueDepthHigh`: job queue depth > 100.
+- `ArceusWorkerDown`: worker count = 0.
+- `ArceusDeadLetterJobs`: jobs entering dead-letter state.
+
+Suggested routing:
+
+- Critical service/worker down: PagerDuty.
+- Error rate, latency, dead-letter growth: Slack.
+- Disk usage > 80 percent: email or infrastructure alerting.
 
 ## Admin Gate
 
@@ -80,5 +97,8 @@ It checks:
 - release tagging
 - Prometheus config files
 - alert rule files
+- required alert coverage
+- Grafana dashboard artifact
+- observability runbook
 
 For production, the Observability Gate should have zero warnings before a public release.

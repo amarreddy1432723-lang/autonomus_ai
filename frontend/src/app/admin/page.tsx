@@ -114,6 +114,26 @@ type ObservabilityHealth = {
     trace_id_header: string;
     response_time_header: string;
   };
+  sentry?: {
+    backend_configured: boolean;
+    frontend_configured: boolean;
+    traces_sample_rate: string;
+  };
+  prometheus?: {
+    config_path: string;
+    rules_path: string;
+    alert_coverage: Array<{ name: string; purpose: string; present: boolean }>;
+  };
+  grafana?: {
+    dashboard_path: string;
+    dashboard_ready: boolean;
+  };
+  runbook?: {
+    setup: string;
+    targets: string;
+    admin_gate: string;
+    docs: string;
+  };
   checks: ReadinessCheck[];
   warnings: ReadinessCheck[];
   checked_at: string;
@@ -505,6 +525,33 @@ export default function AdminPage() {
                 <div className={styles.notice}>
                   Logs include {observabilityHealth?.logging?.request_id_header || 'X-Request-Id'}, {observabilityHealth?.logging?.trace_id_header || 'X-Trace-Id'}, and response time headers for incident tracing.
                 </div>
+                <div className={styles.row}>
+                  <div><strong>Sentry</strong><small>Backend and frontend exception capture</small></div>
+                  <StatusPill value={observabilityHealth?.sentry?.backend_configured && observabilityHealth?.sentry?.frontend_configured ? 'ok' : 'needs setup'} />
+                </div>
+                <div className={styles.row}>
+                  <div><strong>Grafana dashboard</strong><small>{observabilityHealth?.grafana?.dashboard_path || 'ops/grafana/arceus-code-overview.json'}</small></div>
+                  <StatusPill value={observabilityHealth?.grafana?.dashboard_ready ? 'ok' : 'missing'} />
+                </div>
+                {!!observabilityHealth?.prometheus?.alert_coverage?.length && (
+                  <div className={styles.detailBox}>
+                    <strong>Required alerts</strong>
+                    {observabilityHealth.prometheus.alert_coverage.map((alert) => (
+                      <div className={styles.row} key={alert.name}>
+                        <div><strong>{alert.name}</strong><small>{alert.purpose}</small></div>
+                        <StatusPill value={alert.present ? 'ok' : 'missing'} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {observabilityHealth?.runbook && (
+                  <div className={styles.runbookBox}>
+                    <strong>Observability runbook</strong>
+                    <code>{observabilityHealth.runbook.setup}</code>
+                    <code>{observabilityHealth.runbook.targets}</code>
+                    <code>{observabilityHealth.runbook.docs}</code>
+                  </div>
+                )}
               </div>
             </div>
 

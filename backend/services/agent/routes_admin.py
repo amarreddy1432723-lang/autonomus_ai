@@ -110,6 +110,24 @@ def _release_readiness_report() -> dict:
 
 
 def _observability_health_report() -> dict:
+    root = Path(__file__).resolve().parents[3]
+    prometheus_config = root / "ops" / "prometheus" / "prometheus.yml"
+    alert_rules = root / "ops" / "prometheus" / "arceus-alerts.yml"
+    grafana_dashboard = root / "ops" / "grafana" / "arceus-code-overview.json"
+    docs_runbook = root / "docs" / "observability.md"
+    alert_text = alert_rules.read_text(encoding="utf-8") if alert_rules.exists() else ""
+    required_alerts = [
+        ("ArceusServiceDown", "API/service scrape failure"),
+        ("ArceusApiHighErrorRate", "5xx error-rate spike"),
+        ("ArceusApiP99LatencyHigh", "slow route latency"),
+        ("ArceusWorkerQueueDepthHigh", "worker queue backlog"),
+        ("ArceusWorkerDown", "no worker capacity"),
+        ("ArceusDeadLetterJobs", "failed background jobs"),
+    ]
+    alert_coverage = [
+        {"name": name, "purpose": purpose, "present": name in alert_text}
+        for name, purpose in required_alerts
+    ]
     sentry_backend = bool(os.getenv("SENTRY_DSN"))
     sentry_frontend = bool(os.getenv("NEXT_PUBLIC_SENTRY_DSN") or os.getenv("SENTRY_FRONTEND_DSN"))
     prometheus_enabled = os.getenv("PROMETHEUS_METRICS_ENABLED", "true").lower() not in {"0", "false", "no"}
@@ -119,8 +137,11 @@ def _observability_health_report() -> dict:
         _readiness_item("Frontend Sentry", sentry_frontend, "NEXT_PUBLIC_SENTRY_DSN captures browser errors", "warning"),
         _readiness_item("Prometheus metrics", prometheus_enabled, "PROMETHEUS_METRICS_ENABLED exposes /metrics", "warning"),
         _readiness_item("Release tag", app_release != "local", "APP_RELEASE or GIT_SHA ties errors to a deploy", "warning"),
-        _readiness_item("Prometheus config", (Path(__file__).resolve().parents[3] / "ops" / "prometheus" / "prometheus.yml").exists(), "ops/prometheus/prometheus.yml exists", "warning"),
-        _readiness_item("Alert rules", (Path(__file__).resolve().parents[3] / "ops" / "prometheus" / "arceus-alerts.yml").exists(), "ops/prometheus/arceus-alerts.yml exists", "warning"),
+        _readiness_item("Prometheus config", prometheus_config.exists(), "ops/prometheus/prometheus.yml exists", "warning"),
+        _readiness_item("Alert rules", alert_rules.exists(), "ops/prometheus/arceus-alerts.yml exists", "warning"),
+        _readiness_item("Required alert coverage", all(item["present"] for item in alert_coverage), "service, error, latency, worker, queue, and dead-letter alerts exist", "warning"),
+        _readiness_item("Grafana dashboard", grafana_dashboard.exists(), "ops/grafana/arceus-code-overview.json exists", "warning"),
+        _readiness_item("Observability runbook", docs_runbook.exists(), "docs/observability.md documents setup and incident checks", "warning"),
     ]
     warnings = [item for item in checks if not item["ok"]]
     return {
@@ -133,6 +154,26 @@ def _observability_health_report() -> dict:
             "request_id_header": "X-Request-Id",
             "trace_id_header": "X-Trace-Id",
             "response_time_header": "X-Response-Time-Ms",
+        },
+        "sentry": {
+            "backend_configured": sentry_backend,
+            "frontend_configured": sentry_frontend,
+            "traces_sample_rate": os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1"),
+        },
+        "prometheus": {
+            "config_path": "ops/prometheus/prometheus.yml",
+            "rules_path": "ops/prometheus/arceus-alerts.yml",
+            "alert_coverage": alert_coverage,
+        },
+        "grafana": {
+            "dashboard_path": "ops/grafana/arceus-code-overview.json",
+            "dashboard_ready": grafana_dashboard.exists(),
+        },
+        "runbook": {
+            "setup": "docker compose -f docker-compose.prod-smoke.yml --profile observability up -d",
+            "targets": "http://localhost:9090/targets",
+            "admin_gate": "GET /api/v1/admin/observability-health",
+            "docs": "docs/observability.md",
         },
         "checks": checks,
         "warnings": warnings,
