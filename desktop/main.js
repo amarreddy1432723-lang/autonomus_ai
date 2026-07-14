@@ -1,38 +1,170 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const net = require("net");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
+let autoUpdater = null;
+try {
+    autoUpdater = require("electron-updater").autoUpdater;
+} catch {
+    autoUpdater = null;
+}
+let nodePty = null;
+try {
+    nodePty = require("node-pty");
+} catch {
+    nodePty = null;
+}
 
 let mainWindow;
 let launcherWindow;
 let backendProcesses = [];
 let frontendProcess = null;
 let frontendOrigin = process.env.NEXUS_FRONTEND_URL || "http://localhost:3000";
+let terminalSessions = new Map();
+let dirWatcher;
+let dirWatcherRoot = "";
+let dirWatcherBatch = [];
+let dirWatcherTimer = null;
+let managedPostgres = null;
 const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/workspace";
+const WORKSPACE_IGNORED_DIRS = new Set([".git", ".hg", ".svn", "node_modules", ".next", "dist", "build", "coverage", ".venv", "venv", "__pycache__", "pycache", ".pytest_cache", ".turbo", ".cache"]);
+const WORKSPACE_IGNORED_EXTS = new Set([".pyc", ".pyo", ".map"]);
+const WORKSPACE_MAX_TREE_FILES = Number(process.env.NEXUS_DESKTOP_MAX_TREE_FILES || 5000);
+const WORKSPACE_MAX_FILE_BYTES = Number(process.env.NEXUS_DESKTOP_MAX_FILE_BYTES || 1500000);
+
+function configureAutoUpdater() {
+    if (!autoUpdater || isDev || process.env.ARCEUS_DISABLE_AUTO_UPDATE === "true") {
+        return;
+    }
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on("checking-for-update", () => console.log("Checking for Arceus updates..."));
+    autoUpdater.on("update-available", (info) => {
+        console.log(`Arceus update available: ${info.version || "unknown"}`);
+        if (mainWindow) {
+            mainWindow.webContents.send("update-available", {
+                version: info.version || "",
+            });
+            mainWindow.webContents.send("desktop-update-status", {
+                status: "available",
+                version: info.version || "",
+            });
+        }
+    });
+    autoUpdater.on("update-not-available", () => console.log("Arceus is up to date."));
+    autoUpdater.on("download-progress", (progress) => {
+        if (mainWindow) {
+            mainWindow.webContents.send("desktop-update-status", {
+                status: "downloading",
+                percent: Math.round(progress.percent || 0),
+            });
+        }
+    });
+    autoUpdater.on("update-downloaded", (info) => {
+        console.log(`Arceus update downloaded: ${info.version || "unknown"}`);
+        if (!mainWindow) return;
+        mainWindow.webContents.send("update-ready", {
+            version: info.version || "",
+        });
+        mainWindow.webContents.send("desktop-update-status", {
+            status: "ready",
+            version: info.version || "",
+        });
+        dialog.showMessageBox(mainWindow, {
+            type: "info",
+            buttons: ["Restart now", "Later"],
+            defaultId: 0,
+            cancelId: 1,
+            title: "Arceus update ready",
+            message: "A new Arceus version has been downloaded.",
+            detail: "Restart the app to install the update.",
+        }).then((result) => {
+            if (result.response === 0) {
+                autoUpdater.quitAndInstall(false, true);
+            }
+        }).catch(() => {});
+    });
+    autoUpdater.on("error", (error) => {
+        console.warn("Auto-update failed:", error?.message || error);
+        if (mainWindow) {
+            mainWindow.webContents.send("desktop-update-status", {
+                status: "error",
+                message: error?.message || String(error),
+            });
+        }
+    });
+}
+
+ipcMain.handle("desktop-install-update", async () => {
+    if (!autoUpdater || isDev || process.env.ARCEUS_DISABLE_AUTO_UPDATE === "true") {
+        return { ok: false, message: "Auto-update is unavailable in this build." };
+    }
+    autoUpdater.quitAndInstall(false, true);
+    return { ok: true };
+});
+
+function checkForAppUpdates() {
+    if (!autoUpdater || isDev || process.env.ARCEUS_DISABLE_AUTO_UPDATE === "true") {
+        return;
+    }
+    autoUpdater.checkForUpdatesAndNotify().catch((error) => {
+        console.warn("Update check failed:", error?.message || error);
+    });
+}
+
+if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+        app.setAsDefaultProtocolClient("arceus", process.execPath, [path.resolve(process.argv[1])]);
+    }
+} else {
+    app.setAsDefaultProtocolClient("arceus");
+}
+
+function handleDeepLink(url) {
+    console.log("Deep link received in desktop app:", url);
+    try {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.hostname === "auth" && parsedUrl.pathname === "/callback") {
+            const code = parsedUrl.searchParams.get("code");
+            if (code && mainWindow) {
+                mainWindow.webContents.send("desktop-auth-code", { code });
+            }
+        }
+    } catch (err) {
+        console.error("Failed to parse deep link:", err.message);
+    }
+}
+
+app.on("open-url", (event, url) => {
+    event.preventDefault();
+    if (url.startsWith("arceus://")) {
+        handleDeepLink(url);
+    }
+});
 
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
     app.quit();
 } else {
-    app.on("second-instance", () => {
+    app.on("second-instance", (event, commandLine) => {
         if (!mainWindow) return;
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.show();
         mainWindow.focus();
+
+        const url = commandLine.find((arg) => arg.startsWith("arceus://"));
+        if (url) {
+            handleDeepLink(url);
+        }
     });
 }
 
 async function waitForFrontend(attempts = 90) {
     for (let i = 0; i < attempts; i += 1) {
-        try {
-            const response = await fetch(frontendOrigin, { method: "HEAD" });
-            if (response.ok || response.status < 500) return;
-        } catch {
-            // The dev server is still booting.
-        }
+        if (await frontendResponds(frontendOrigin)) return;
         await new Promise((resolve) => setTimeout(resolve, 500));
     }
 }
@@ -52,8 +184,292 @@ async function urlResponds(url, attempts = 1) {
     return false;
 }
 
-async function serviceResponds(port) {
-    return urlResponds(`http://127.0.0.1:${port}/docs`) || urlResponds(`http://127.0.0.1:${port}/`);
+function tcpPortResponds(port, host = "127.0.0.1") {
+    return new Promise((resolve) => {
+        const socket = net.createConnection({ host, port, timeout: 1000 }, () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.once("timeout", () => {
+            socket.destroy();
+            resolve(false);
+        });
+        socket.once("error", () => resolve(false));
+    });
+}
+
+async function waitForTcpPort(port, attempts = 60) {
+    for (let i = 0; i < attempts; i += 1) {
+        if (await tcpPortResponds(port)) return true;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return false;
+}
+
+function configureLocalDatabase(port, options = {}) {
+    const user = options.user || process.env.NEXUS_LOCAL_POSTGRES_USER || process.env.POSTGRES_USER || "postgres";
+    const configuredPassword = options.password ?? process.env.NEXUS_LOCAL_POSTGRES_PASSWORD ?? process.env.POSTGRES_PASSWORD;
+    const password = configuredPassword ? configuredPassword : "postgrespassword";
+    const auth = password ? `${encodeURIComponent(user)}:${encodeURIComponent(password)}` : encodeURIComponent(user);
+    const url = `postgresql+psycopg://${auth}@127.0.0.1:${port}/my_ai_db`;
+    process.env.DATABASE_URL = url;
+    process.env.AUTH_DATABASE_URL = url;
+    process.env.GOALS_DATABASE_URL = url;
+    process.env.AGENT_DATABASE_URL = url;
+    process.env.DB_CONNECT_TIMEOUT_SECONDS = process.env.DB_CONNECT_TIMEOUT_SECONDS || "3";
+    return url;
+}
+
+function findLocalPostgresInstallation() {
+    const configuredBin = process.env.NEXUS_PG_BIN;
+    const configuredData = process.env.NEXUS_PG_DATA;
+    const candidates = [];
+
+    if (configuredBin) {
+        candidates.push({ binDir: configuredBin, dataDir: configuredData || path.join(path.dirname(configuredBin), "data") });
+    }
+
+    if (process.platform === "win32") {
+        const postgresRoot = path.join(process.env.ProgramFiles || "C:\\Program Files", "PostgreSQL");
+        if (fs.existsSync(postgresRoot)) {
+            const versions = fs.readdirSync(postgresRoot, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => entry.name)
+                .sort((left, right) => Number(right) - Number(left));
+            for (const version of versions) {
+                const installDir = path.join(postgresRoot, version);
+                candidates.push({ binDir: path.join(installDir, "bin"), dataDir: configuredData || path.join(installDir, "data") });
+            }
+        }
+    }
+
+    for (const candidate of candidates) {
+        const executable = (name) => path.join(candidate.binDir, process.platform === "win32" ? `${name}.exe` : name);
+        const pgCtl = executable("pg_ctl");
+        const psql = executable("psql");
+        if (fs.existsSync(pgCtl) && fs.existsSync(psql) && fs.existsSync(path.join(candidate.dataDir, "PG_VERSION"))) {
+            return { ...candidate, pgCtl, psql };
+        }
+    }
+    return null;
+}
+
+async function ensureLocalPostgresDatabase(psql, port) {
+    const env = { ...process.env, PGCONNECT_TIMEOUT: "3" };
+    const check = await runProcess(psql, [
+        "-h", "127.0.0.1", "-p", String(port), "-U", "postgres", "-d", "postgres",
+        "-tAc", "SELECT 1 FROM pg_database WHERE datname='my_ai_db'"
+    ], { env });
+    if (check.stdout.trim() !== "1") {
+        await runProcess(psql, [
+            "-h", "127.0.0.1", "-p", String(port), "-U", "postgres", "-d", "postgres",
+            "-v", "ON_ERROR_STOP=1", "-c", "CREATE DATABASE my_ai_db"
+        ], { env });
+    }
+}
+
+async function startInstalledPostgresFallback() {
+    const installation = findLocalPostgresInstallation();
+    if (!installation) return false;
+
+    const port = Number(process.env.NEXUS_LOCAL_POSTGRES_PORT || 55432);
+    if (await tcpPortResponds(port)) {
+        configureLocalDatabase(port);
+        console.log(`Reusing Arceus local PostgreSQL on port ${port}.`);
+        return true;
+    }
+
+    const runtimeDir = path.join(app.getPath("userData"), "postgres-runtime");
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    const hbaFile = path.join(runtimeDir, "pg_hba.conf");
+    const logFile = path.join(runtimeDir, "postgres.log");
+    fs.writeFileSync(
+        hbaFile,
+        [
+            "local all all trust",
+            "host all all 127.0.0.1/32 trust",
+            "host all all ::1/128 trust",
+            ""
+        ].join("\n"),
+        "utf8"
+    );
+
+    const hbaOption = hbaFile.replace(/\\/g, "/").replace(/'/g, "''");
+    try {
+        console.log(`Starting installed PostgreSQL for Arceus on port ${port}...`);
+        await runProcess(installation.pgCtl, [
+            "start", "-D", installation.dataDir,
+            "-o", `-h 127.0.0.1 -p ${port} -c hba_file='${hbaOption}'`,
+            "-l", logFile, "-w"
+        ], { env: process.env });
+        if (!(await waitForTcpPort(port, 20))) return false;
+        await ensureLocalPostgresDatabase(installation.psql, port);
+        configureLocalDatabase(port);
+        managedPostgres = { ...installation, port };
+        console.log(`Arceus local PostgreSQL is ready on port ${port}.`);
+        return true;
+    } catch (error) {
+        console.error(`Installed PostgreSQL fallback failed: ${error.message}`);
+        console.error(`PostgreSQL log: ${logFile}`);
+        return false;
+    }
+}
+
+function runProcess(command, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, {
+            ...options,
+            shell: false,
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout?.on("data", (data) => {
+            stdout += data.toString();
+        });
+        child.stderr?.on("data", (data) => {
+            stderr += data.toString();
+        });
+        child.once("error", reject);
+        child.once("close", (code) => {
+            if (code === 0) {
+                resolve({ stdout, stderr });
+            } else {
+                reject(new Error(stderr || stdout || `${command} exited with ${code}`));
+            }
+        });
+    });
+}
+
+async function startLocalDependencies() {
+    if (process.env.NEXUS_SKIP_DOCKER_DEPS === "true") return true;
+
+    const configuredDatabase = process.env.AGENT_DATABASE_URL || process.env.DATABASE_URL;
+    if (configuredDatabase && !/(localhost|127\.0\.0\.1)/i.test(configuredDatabase)) {
+        console.log("Using configured external database; skipping local Postgres startup.");
+        return true;
+    }
+
+    const nexusLocalPort = Number(process.env.NEXUS_LOCAL_POSTGRES_PORT || 55432);
+    if (await tcpPortResponds(nexusLocalPort)) {
+        configureLocalDatabase(nexusLocalPort);
+        managedPostgres = findLocalPostgresInstallation();
+        console.log(`Reusing Arceus local PostgreSQL on port ${nexusLocalPort}.`);
+        return true;
+    }
+
+    const postgresReady = await tcpPortResponds(5432);
+    const redisReady = await tcpPortResponds(6379);
+    if (postgresReady && redisReady) {
+        configureLocalDatabase(5432);
+        console.log("Reusing local Docker Postgres and Redis.");
+        return true;
+    }
+
+    const rootDir = findRepoRoot();
+    const composeFile = path.join(rootDir, "docker-compose.yml");
+    if (!fs.existsSync(composeFile)) {
+        console.warn("docker-compose.yml not found; skipping local dependency startup.");
+        if (postgresReady) {
+            configureLocalDatabase(5432);
+        }
+        return postgresReady || await startInstalledPostgresFallback();
+    }
+
+    const dockerCommand = process.platform === "win32" ? "docker.exe" : "docker";
+    try {
+        console.log("Starting local Postgres and Redis with Docker Compose...");
+        await runProcess(dockerCommand, ["compose", "up", "-d", "postgres", "redis"], { cwd: rootDir, env: process.env });
+    } catch (error) {
+        console.error(`Could not start Docker dependencies: ${error.message}`);
+        console.warn("Docker Desktop is unavailable. Trying installed PostgreSQL fallback...");
+        if (postgresReady) {
+            configureLocalDatabase(5432);
+        }
+        const fallbackReady = postgresReady || await startInstalledPostgresFallback();
+        if (!fallbackReady) {
+            console.error("Start Docker Desktop, then run: docker compose up -d postgres redis");
+        }
+        return fallbackReady;
+    }
+
+    const postgresStarted = await waitForTcpPort(5432, 90);
+    const redisStarted = await waitForTcpPort(6379, 30);
+    if (!postgresStarted) {
+        console.error("Postgres did not become ready on port 5432. Agent service may fail until the database is running.");
+    }
+    if (!redisStarted) {
+        console.warn("Redis did not become ready on port 6379. Rate limiting and short-term memory will fail open.");
+    }
+    if (postgresStarted) {
+        configureLocalDatabase(5432);
+    }
+    return postgresStarted;
+}
+
+function resolveWorkspacePath(rootPath, relativePath = "") {
+    if (!rootPath) throw new Error("Workspace root is required.");
+    const root = path.resolve(rootPath);
+    const target = path.resolve(root, relativePath || ".");
+    const relative = path.relative(root, target);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error("Path is outside the trusted workspace.");
+    }
+    return { root, target, relative: relative.replace(/\\/g, "/") };
+}
+
+function isIgnoredWorkspacePath(relativePath) {
+    const normalized = String(relativePath || "").replace(/\\/g, "/");
+    if (!normalized) return false;
+    if (WORKSPACE_IGNORED_EXTS.has(path.extname(normalized).toLowerCase())) return true;
+    return normalized
+        .split(/[\\/]/)
+        .some((part) => WORKSPACE_IGNORED_DIRS.has(part) || /^__pycache__$/.test(part));
+}
+
+async function readWorkspaceTree(rootPath) {
+    const { root } = resolveWorkspacePath(rootPath);
+    const items = [];
+    async function walk(current, base = "") {
+        if (items.length >= WORKSPACE_MAX_TREE_FILES) return;
+        const entries = await fs.promises.readdir(current, { withFileTypes: true });
+        for (const entry of entries) {
+            const rel = base ? `${base}/${entry.name}` : entry.name;
+            if (isIgnoredWorkspacePath(rel)) continue;
+            const full = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                items.push({ path: rel, type: "folder" });
+                await walk(full, rel);
+            } else if (entry.isFile()) {
+                const stat = await fs.promises.stat(full);
+                if (stat.size <= WORKSPACE_MAX_FILE_BYTES) {
+                    items.push({ path: rel, type: "file", size_bytes: stat.size });
+                }
+            }
+            if (items.length >= WORKSPACE_MAX_TREE_FILES) break;
+        }
+    }
+    await walk(root);
+    return { root, items, count: items.length };
+}
+
+async function serviceResponds(port, attempts = 1) {
+    return urlResponds(`http://127.0.0.1:${port}/docs`, attempts) || urlResponds(`http://127.0.0.1:${port}/`, attempts);
+}
+
+async function frontendResponds(origin, attempts = 1) {
+    const normalized = origin.replace(/\/$/, "");
+    for (let i = 0; i < attempts; i += 1) {
+        try {
+            const response = await fetch(`${normalized}/hub`, { method: "HEAD" });
+            if (response.ok) return true;
+        } catch {
+            // The frontend may still be booting or this port belongs to another app.
+        }
+        if (i < attempts - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+    }
+    return false;
 }
 
 function isPortFree(port) {
@@ -67,15 +483,51 @@ function isPortFree(port) {
     });
 }
 
+function frontendDevLockExists(frontendDir) {
+    return fs.existsSync(path.join(frontendDir, ".next", "dev", "lock"));
+}
+
+async function detectExistingNextFrontend(frontendDir) {
+    const defaultOrigin = "http://localhost:3000";
+    if (await frontendResponds(defaultOrigin, 3)) {
+        frontendOrigin = defaultOrigin;
+        return { origin: defaultOrigin, port: "3000", reuse: true };
+    }
+
+    const defaultPortFree = await isPortFree(3000);
+    const hasNextLock = frontendDevLockExists(frontendDir);
+    if (!defaultPortFree || hasNextLock) {
+        if (hasNextLock) {
+            console.log("Detected an existing Next.js dev-server lock for this frontend. Waiting for http://localhost:3000...");
+        }
+        if (await frontendResponds(defaultOrigin, 45)) {
+            frontendOrigin = defaultOrigin;
+            return { origin: defaultOrigin, port: "3000", reuse: true };
+        }
+        if (hasNextLock) {
+            frontendOrigin = defaultOrigin;
+            console.warn("Next.js dev lock is present but /hub is not ready yet. Reusing http://localhost:3000 instead of starting a second server.");
+            return { origin: defaultOrigin, port: "3000", reuse: true, pending: true };
+        }
+    }
+
+    return null;
+}
+
 async function resolveFrontendOrigin() {
     if (process.env.NEXUS_FRONTEND_URL) {
         frontendOrigin = process.env.NEXUS_FRONTEND_URL;
-        return { origin: frontendOrigin, port: new URL(frontendOrigin).port || "3000", reuse: await urlResponds(frontendOrigin) };
+        return { origin: frontendOrigin, port: new URL(frontendOrigin).port || "3000", reuse: await frontendResponds(frontendOrigin) };
     }
+
+    const rootDir = findRepoRoot();
+    const frontendDir = path.join(rootDir, "frontend");
+    const existingNext = await detectExistingNextFrontend(frontendDir);
+    if (existingNext) return existingNext;
 
     for (let port = 3000; port <= 3010; port += 1) {
         const origin = `http://localhost:${port}`;
-        if (await urlResponds(origin)) {
+        if (await frontendResponds(origin)) {
             frontendOrigin = origin;
             return { origin, port: String(port), reuse: true };
         }
@@ -97,7 +549,13 @@ async function loadFrontendRoute(windowRef, route) {
 
 async function resolveInitialRoute() {
     const args = process.argv.slice(1);
-    const folderArg = args.find(arg => !arg.startsWith('-') && fs.existsSync(arg) && fs.statSync(arg).isDirectory());
+    const explicitFolder = args.find((arg) => arg.startsWith("--folder="))?.slice("--folder=".length);
+    const folderArg = explicitFolder || args.find((arg) => {
+        if (!arg || arg === "." || arg.startsWith("-") || !path.isAbsolute(arg)) return false;
+        const resolved = path.resolve(arg);
+        if (resolved === path.resolve(__dirname) || resolved === path.resolve(app.getAppPath())) return false;
+        return fs.existsSync(resolved) && fs.statSync(resolved).isDirectory();
+    });
     
     if (folderArg) {
         console.log(`CLI Folder argument detected: ${folderArg}`);
@@ -143,7 +601,7 @@ function findRepoRoot() {
         }
     }
 
-    throw new Error("Could not find NEXUS repo root. Set NEXUS_REPO_ROOT to the folder that contains backend and frontend.");
+    throw new Error("Could not find Arceus repo root. Set NEXUS_REPO_ROOT to the folder that contains backend and frontend.");
 }
 
 function getBackendEnv(port) {
@@ -159,7 +617,7 @@ function getBackendEnv(port) {
 async function startBackendService(serviceName, entryPoint, port) {
     if (await serviceResponds(port)) {
         console.log(`Reusing existing backend service: ${serviceName} on port ${port}`);
-        return;
+        return true;
     }
 
     const rootDir = findRepoRoot();
@@ -199,6 +657,12 @@ async function startBackendService(serviceName, entryPoint, port) {
 
     backendProcesses.push(p);
     console.log(`Started backend service: ${serviceName} on port ${port}`);
+
+    const ready = await serviceResponds(port, 90);
+    if (!ready) {
+        console.error(`${serviceName} did not become ready on port ${port}. Check the logs above.`);
+    }
+    return ready;
 }
 
 async function startFrontendService() {
@@ -241,13 +705,34 @@ async function startFrontendService() {
     });
 
     console.log(`Started Next.js frontend developer server at ${resolved.origin}.`);
+    const startupResult = await Promise.race([
+        frontendResponds(resolved.origin, 90).then((ready) => ({ ready })),
+        new Promise((resolve) => {
+            frontendProcess.once("exit", (code, signal) => resolve({ ready: false, code, signal }));
+        })
+    ]);
+
+    if (startupResult.ready) {
+        return;
+    }
+
+    const fallback = await detectExistingNextFrontend(frontendDir);
+    if (fallback) {
+        console.log(`Falling back to existing Next.js frontend at ${fallback.origin}.`);
+        return;
+    }
+
+    console.error(
+        `Next.js frontend did not become ready at ${resolved.origin}.` +
+        (startupResult.code !== undefined ? ` Process exited with code ${startupResult.code}.` : "")
+    );
 }
 
 function createLauncherWindow() {
     launcherWindow = new BrowserWindow({
         width: 600,
         height: 160,
-        title: "NEXUS Launcher",
+        title: "Arceus Launcher",
         frame: false,
         resizable: false,
         show: false,
@@ -277,7 +762,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1366,
         height: 768,
-        title: "NEXUS OS",
+        title: "Arceus OS",
         frame: false, // Frameless design for custom titles
         transparent: false,
         webPreferences: {
@@ -297,6 +782,13 @@ function createWindow() {
     mainWindow.on("closed", () => {
         mainWindow = null;
     });
+
+    const initialUrl = process.argv.find((arg) => arg.startsWith("arceus://"));
+    if (initialUrl) {
+        mainWindow.webContents.once("dom-ready", () => {
+            handleDeepLink(initialUrl);
+        });
+    }
 }
 
 // Window control IPC handlers
@@ -344,57 +836,365 @@ ipcMain.handle("dialog-select-directory", async () => {
     return result.filePaths[0];
 });
 
-let dirWatcher;
+ipcMain.handle("workspace-read-directory-tree", async (_event, rootPath) => {
+    return readWorkspaceTree(rootPath);
+});
 
-ipcMain.on("watch-directory", (event, dirPath) => {
+ipcMain.handle("workspace-read-file", async (_event, rootPath, relativePath) => {
+    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const stat = await fs.promises.stat(target);
+    if (!stat.isFile()) throw new Error("Selected path is not a file.");
+    if (stat.size > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for inline editing.");
+    const buffer = await fs.promises.readFile(target);
+    if (buffer.includes(0)) throw new Error("Binary files are not supported.");
+    return { path: relative, content: buffer.toString("utf8"), size_bytes: stat.size };
+});
+
+ipcMain.handle("workspace-write-file", async (_event, rootPath, relativePath, content = "") => {
+    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const data = Buffer.from(String(content), "utf8");
+    if (data.length > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for local write.");
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, data);
+    return { path: relative, size_bytes: data.length };
+});
+
+ipcMain.handle("workspace-create-item", async (_event, rootPath, relativePath, type = "file", content = "") => {
+    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    if (type === "folder") {
+        await fs.promises.mkdir(target, { recursive: true });
+        return { path: relative, type: "folder" };
+    }
+    const data = Buffer.from(String(content), "utf8");
+    if (data.length > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for local create.");
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, data, { flag: "wx" });
+    return { path: relative, type: "file", size_bytes: data.length };
+});
+
+ipcMain.handle("workspace-rename-item", async (_event, rootPath, fromRelativePath, toRelativePath) => {
+    const from = resolveWorkspacePath(rootPath, fromRelativePath);
+    const to = resolveWorkspacePath(rootPath, toRelativePath);
+    await fs.promises.mkdir(path.dirname(to.target), { recursive: true });
+    await fs.promises.rename(from.target, to.target);
+    return { from: from.relative, to: to.relative };
+});
+
+ipcMain.handle("workspace-delete-item", async (_event, rootPath, relativePath) => {
+    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    await fs.promises.rm(target, { recursive: true, force: false });
+    return { path: relative, deleted: true };
+});
+
+ipcMain.handle("workspace-reveal-item", async (_event, rootPath, relativePath) => {
+    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    shell.showItemInFolder(target);
+    return { path: relative, revealed: true };
+});
+
+function findExecutableOnPath(name) {
+    const pathValue = process.env.PATH || "";
+    const extensions = process.platform === "win32"
+        ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")
+        : [""];
+    const requestedExt = path.extname(name);
+    for (const directory of pathValue.split(path.delimiter)) {
+        if (!directory) continue;
+        const candidates = requestedExt ? [path.join(directory, name)] : extensions.map((ext) => path.join(directory, `${name}${ext}`));
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) return candidate;
+        }
+    }
+    return "";
+}
+
+function terminalShell(profile) {
+    const requested = String(profile || "").toLowerCase();
+    if (process.platform === "win32") {
+        if (requested === "cmd") return process.env.ComSpec || "cmd.exe";
+        if (requested === "pwsh") return findExecutableOnPath("pwsh") || "powershell.exe";
+        if (requested === "bash") return findExecutableOnPath("bash") || "powershell.exe";
+        if (requested === "sh") return findExecutableOnPath("sh") || "powershell.exe";
+        if (requested === "zsh") return findExecutableOnPath("zsh") || "powershell.exe";
+        return "powershell.exe";
+    }
+    const shells = {
+        bash: "/bin/bash",
+        zsh: "/bin/zsh",
+        sh: "/bin/sh",
+        pwsh: "pwsh",
+        powershell: "pwsh"
+    };
+    return shells[requested] || process.env.SHELL || "/bin/sh";
+}
+
+function terminalShellArgs(shellPath) {
+    const basename = path.basename(String(shellPath || "")).toLowerCase();
+    if (process.platform === "win32" && (basename === "powershell.exe" || basename === "pwsh.exe")) {
+        return ["-NoLogo", "-NoProfile", "-NoExit"];
+    }
+    if (process.platform === "win32" && basename === "cmd.exe") {
+        return ["/Q"];
+    }
+    return [];
+}
+
+function emitTerminalData(id, data) {
+    const session = terminalSessions.get(id);
+    const seq = session ? Number(session.streamSeq || 0) + 1 : 1;
+    if (session) {
+        session.streamSeq = seq;
+        session.updatedAt = new Date().toISOString();
+        terminalSessions.set(id, session);
+    }
+    const payload = { id, seq, data: String(data || ""), timestamp: new Date().toISOString() };
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("terminal-data", payload);
+    }
+}
+
+function emitTerminalExit(id, code, signal) {
+    const session = terminalSessions.get(id);
+    if (session) {
+        session.status = "exited";
+        session.exitCode = code;
+        session.signal = signal;
+        session.updatedAt = new Date().toISOString();
+        terminalSessions.set(id, session);
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("terminal-exit", { id, code, signal, timestamp: new Date().toISOString() });
+    }
+}
+
+ipcMain.handle("terminal-create", async (_event, rootPath, options = {}) => {
+    const { root } = resolveWorkspacePath(rootPath);
+    const id = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const cols = Number(options.cols || 100);
+    const rows = Number(options.rows || 28);
+    const shell = terminalShell(options.shell);
+    const createdAt = new Date().toISOString();
+    const session = {
+        id,
+        cwd: root,
+        status: "active",
+        history: [],
+        logs: [],
+        streamSeq: 0,
+        backend: nodePty ? "node-pty" : "child-process",
+        created_at: createdAt,
+        updated_at: createdAt
+    };
+
+    if (nodePty) {
+        const ptyProcess = nodePty.spawn(shell, [], {
+            name: "xterm-256color",
+            cols,
+            rows,
+            cwd: root,
+            env: process.env
+        });
+        session.process = ptyProcess;
+        ptyProcess.onData((data) => {
+            const current = terminalSessions.get(id);
+            if (current) {
+                current.logs.push({ status: "stream", output_excerpt: String(data).slice(-4000), updated_at: new Date().toISOString() });
+                current.logs = current.logs.slice(-200);
+                current.updated_at = new Date().toISOString();
+                terminalSessions.set(id, current);
+            }
+            emitTerminalData(id, data);
+        });
+        ptyProcess.onExit(({ exitCode, signal }) => emitTerminalExit(id, exitCode, signal));
+    } else {
+        const child = spawn(shell, terminalShellArgs(shell), {
+            cwd: root,
+            env: process.env,
+            shell: false,
+            stdio: ["pipe", "pipe", "pipe"]
+        });
+        session.process = child;
+        emitTerminalData(id, "node-pty is unavailable. Running in command-bar fallback mode.\r\n");
+        child.stdout.on("data", (data) => emitTerminalData(id, data));
+        child.stderr.on("data", (data) => emitTerminalData(id, data));
+        child.on("close", (code, signal) => emitTerminalExit(id, code, signal));
+    }
+
+    terminalSessions.set(id, session);
+    return {
+        id,
+        status: session.status,
+        cwd: session.cwd,
+        history: session.history,
+        logs: session.logs,
+        backend: session.backend,
+        created_at: session.created_at,
+        updated_at: session.updated_at
+    };
+});
+
+ipcMain.handle("terminal-input", async (_event, terminalId, input = "", options = {}) => {
+    const session = terminalSessions.get(terminalId);
+    if (!session || !session.process) throw new Error("Terminal session not found.");
+    const text = String(input || "");
+    if (!text) return { id: terminalId, ignored: true };
+    const raw = Boolean(options && options.raw);
+    if (!raw && text.trim()) session.history.push(text.trim());
+    session.updated_at = new Date().toISOString();
+    terminalSessions.set(terminalId, session);
+    if (nodePty && typeof session.process.write === "function") {
+        session.process.write(raw ? text : (text.endsWith("\r") || text.endsWith("\n") ? text : `${text}\r`));
+    } else if (session.process.stdin?.writable) {
+        session.process.stdin.write(raw ? text : (text.endsWith("\n") ? text : `${text}\n`));
+    }
+    return { id: terminalId, status: session.status, cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend };
+});
+
+ipcMain.handle("terminal-resize", async (_event, terminalId, cols, rows) => {
+    const session = terminalSessions.get(terminalId);
+    if (!session) throw new Error("Terminal session not found.");
+    if (nodePty && typeof session.process?.resize === "function") {
+        session.process.resize(Number(cols || 100), Number(rows || 28));
+    }
+    return { id: terminalId, resized: true };
+});
+
+ipcMain.handle("terminal-kill", async (_event, terminalId) => {
+    const session = terminalSessions.get(terminalId);
+    if (!session) return { id: terminalId, status: "missing" };
+    try {
+        if (nodePty && typeof session.process?.kill === "function") {
+            session.process.kill();
+        } else if (session.process?.pid) {
+            if (process.platform === "win32") exec(`taskkill /pid ${session.process.pid} /t /f`);
+            else session.process.kill("SIGTERM");
+        }
+    } catch (error) {
+        console.error("Failed to kill terminal:", error);
+    }
+    session.status = "killed";
+    session.updated_at = new Date().toISOString();
+    terminalSessions.set(terminalId, session);
+    emitTerminalExit(terminalId, null, "killed");
+    return { id: terminalId, status: "killed", cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend };
+});
+
+function flushDirectoryChanges() {
+    if (!mainWindow || mainWindow.isDestroyed() || dirWatcherBatch.length === 0) {
+        dirWatcherBatch = [];
+        return;
+    }
+    const changes = dirWatcherBatch;
+    dirWatcherBatch = [];
+    mainWindow.webContents.send("directory-changed", {
+        event: "batch",
+        rootPath: dirWatcherRoot,
+        changes,
+        timestamp: new Date().toISOString()
+    });
+}
+
+async function closeDirectoryWatcher() {
     if (dirWatcher) {
         try {
-            dirWatcher.close();
+            await dirWatcher.close();
         } catch (e) {
             console.error("Failed to close existing watcher:", e);
         }
+        dirWatcher = null;
+        dirWatcherRoot = "";
     }
-    
-    const chokidar = require("chokidar");
-    dirWatcher = chokidar.watch(dirPath, {
-        ignored: /(^|[\/\\])\../, // ignore dotfiles
-        persistent: true,
-        ignoreInitial: true
-    });
-    
-    const sendChange = (changeEvent, filepath) => {
-        if (mainWindow) {
-            const relPath = path.relative(dirPath, filepath).replace(/\\/g, "/");
-            mainWindow.webContents.send("directory-changed", {
+}
+
+ipcMain.handle("watch-directory-stop", async () => {
+    await closeDirectoryWatcher();
+    return { stopped: true };
+});
+
+ipcMain.on("watch-directory", async (event, dirPath) => {
+    await closeDirectoryWatcher();
+    try {
+        const chokidarModule = await import("chokidar");
+        const chokidar = chokidarModule.default || chokidarModule;
+        const root = path.resolve(dirPath);
+        dirWatcherRoot = root;
+        dirWatcher = chokidar.watch(root, {
+            ignored: (filePath) => {
+                const rel = path.relative(root, filePath).replace(/\\/g, "/");
+                return Boolean(rel && isIgnoredWorkspacePath(rel));
+            },
+            persistent: true,
+            ignoreInitial: false,
+            awaitWriteFinish: {
+                stabilityThreshold: 80,
+                pollInterval: 20
+            }
+        });
+        
+        const notifyWatchError = (error) => {
+            const message = error?.message || String(error || "Folder watcher failed.");
+            console.error("Folder watch error:", message);
+            event.sender.send("folder-watch-error", {
+                rootPath: root,
+                message,
+                timestamp: new Date().toISOString()
+            });
+        };
+
+        const sendChange = (changeEvent, filepath) => {
+            const relPath = path.relative(root, filepath).replace(/\\/g, "/");
+            if (!relPath || isIgnoredWorkspacePath(relPath)) return;
+            dirWatcherBatch.push({
                 event: changeEvent,
                 path: relPath,
                 absolutePath: filepath
             });
-        }
-    };
-    
-    dirWatcher
-        .on("add", (filepath) => sendChange("add", filepath))
-        .on("change", (filepath) => sendChange("change", filepath))
-        .on("unlink", (filepath) => sendChange("unlink", filepath));
+            if (dirWatcherTimer) clearTimeout(dirWatcherTimer);
+            dirWatcherTimer = setTimeout(flushDirectoryChanges, 50);
+        };
         
-    console.log(`Started watching directory: ${dirPath}`);
+        dirWatcher
+            .on("add", (filepath) => sendChange("add", filepath))
+            .on("change", (filepath) => sendChange("change", filepath))
+            .on("unlink", (filepath) => sendChange("unlink", filepath))
+            .on("addDir", (filepath) => sendChange("addDir", filepath))
+            .on("unlinkDir", (filepath) => sendChange("unlinkDir", filepath))
+            .on("error", notifyWatchError);
+            
+        console.log(`Started watching directory: ${root}`);
+    } catch (error) {
+        event.sender.send("folder-watch-error", {
+            rootPath: dirPath,
+            message: error?.message || String(error || "Folder watcher failed."),
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
 app.whenReady().then(async () => {
-    // 1. Launch local backend microservices
-    await startBackendService("auth-service", "services.auth.main:app", 8001);
-    await startBackendService("goals-service", "services.goals.main:app", 8002);
-    await startBackendService("agent-service", "services.agent.main:app", 8003);
+    configureAutoUpdater();
 
-    // 2. Launch Next.js frontend
+    // 1. Launch local infrastructure required by the FastAPI services.
+    const dependenciesReady = await startLocalDependencies();
+
+    // 2. Launch local backend microservices after Postgres/Redis are reachable.
+    if (dependenciesReady) {
+        await startBackendService("auth-service", "services.auth.main:app", 8001);
+        await startBackendService("goals-service", "services.goals.main:app", 8002);
+        await startBackendService("agent-service", "services.agent.main:app", 8003);
+    } else {
+        console.error("Database startup failed. Backend services were not launched to avoid repeated connection errors.");
+    }
+
+    // 3. Launch Next.js frontend
     await startFrontendService();
 
-    // 3. Create native app UI window
+    // 4. Create native app UI window
     createWindow();
     createLauncherWindow();
+    checkForAppUpdates();
 
-    // 4. Register system-wide global shortcut to toggle launcher visibility
+    // 5. Register system-wide global shortcut to toggle launcher visibility
     const shortcutRegistered = globalShortcut.register("CommandOrControl+Shift+Space", () => {
         if (launcherWindow) {
             if (launcherWindow.isVisible()) {
@@ -420,11 +1220,24 @@ app.whenReady().then(async () => {
 app.on("will-quit", () => {
     // Unregister shortcuts
     globalShortcut.unregisterAll();
+    closeDirectoryWatcher().catch(() => {});
+    if (managedPostgres?.pgCtl && managedPostgres?.dataDir) {
+        try {
+            const stopProcess = spawn(managedPostgres.pgCtl, ["stop", "-D", managedPostgres.dataDir, "-m", "fast"], {
+                detached: true,
+                stdio: "ignore",
+                shell: false
+            });
+            stopProcess.unref();
+        } catch (error) {
+            console.error(`Failed to stop Arceus local PostgreSQL: ${error.message}`);
+        }
+    }
 });
 
 app.on("window-all-closed", () => {
     // Terminate all background processes on exit
-    console.log("Shutting down local NEXUS services...");
+    console.log("Shutting down local Arceus services...");
     backendProcesses.forEach(p => {
         try {
             if (process.platform === "win32") {

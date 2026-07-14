@@ -1,6 +1,6 @@
-# 🖥️ NEXUS Desktop OS Application Shell
+# 🖥️ Arceus Desktop OS Application Shell
 
-This folder contains the **Electron** desktop wrapper for the **NEXUS AI Platform**. It packages the Next.js frontend and Python backend microservices into a single, downloadable standalone desktop application (executable `.exe` / `.dmg` installer).
+This folder contains the **Electron** desktop wrapper for the **Arceus AI Platform**. It packages the Next.js frontend and Python backend microservices into a single, downloadable standalone desktop application (executable `.exe` / `.dmg` installer).
 
 ---
 

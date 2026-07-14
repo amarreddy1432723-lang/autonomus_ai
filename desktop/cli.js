@@ -10,13 +10,13 @@ const command = args[0];
 
 function printHelp() {
   console.log(`
-NEXUS OS CLI - Command Line Developer Interface
+Arceus OS CLI - Command Line Developer Interface
 Usage:
-  nexus start                  Start the standalone NEXUS OS desktop shell and services
-  nexus stop                   Terminate all running NEXUS OS background services
-  nexus status                 Check the status of running microservices and ports
-  nexus open <folder_path>     Import and open a local project folder directly in NEXUS
-  nexus --help                 Show this help menu
+  Arceus start                  Start the standalone Arceus OS desktop shell and services
+  Arceus stop                   Terminate all running Arceus OS background services
+  Arceus status                 Check the status of running microservices and ports
+  Arceus open <folder_path>     Import and open a local project folder directly in Arceus
+  Arceus --help                 Show this help menu
 `);
 }
 
@@ -48,7 +48,7 @@ async function getStatus() {
     "Agent Microservice": 8003
   };
   
-  console.log("NEXUS OS Microservices Status:");
+  console.log("Arceus OS Microservices Status:");
   for (const [name, port] of Object.entries(ports)) {
     const active = await checkPortStatus(port);
     console.log(`  - ${name} (Port ${port}): ${active ? "\x1b[32mRUNNING\x1b[0m" : "\x1b[31mOFFLINE\x1b[0m"}`);
@@ -56,7 +56,7 @@ async function getStatus() {
 }
 
 function stopServices() {
-  console.log("Stopping all running NEXUS OS microservices...");
+  console.log("Stopping all running Arceus OS microservices...");
   try {
     if (process.platform === "win32") {
       execSync("taskkill /IM uvicorn.exe /F", { stdio: "ignore" });
@@ -73,8 +73,8 @@ function stopServices() {
 }
 
 function startServices(openPath = "") {
-  const exeDir = path.join(__dirname, "dist", "NEXUS OS-win32-x64");
-  const exePath = path.join(exeDir, "NEXUS OS.exe");
+  const exeDir = path.join(__dirname, "dist", "Arceus OS-win32-x64");
+  const exePath = path.join(exeDir, "Arceus OS.exe");
   
   if (!fs.existsSync(exePath)) {
     // Fallback to dev start
@@ -87,18 +87,18 @@ function startServices(openPath = "") {
       shell: true
     });
     devProcess.unref();
-    console.log("\x1b[32mNEXUS Dev Shell spawned successfully.\x1b[0m");
+    console.log("\x1b[32mArceus Dev Shell spawned successfully.\x1b[0m");
     return;
   }
   
-  console.log(`Launching NEXUS OS: ${exePath}`);
+  console.log(`Launching Arceus OS: ${exePath}`);
   const spawnArgs = openPath ? [openPath] : [];
   const p = spawn(exePath, spawnArgs, {
     detached: true,
     stdio: "ignore"
   });
   p.unref();
-  console.log("\x1b[32mNEXUS OS launched successfully.\x1b[0m");
+  console.log("\x1b[32mArceus OS launched successfully.\x1b[0m");
 }
 
 async function handleCommand() {
