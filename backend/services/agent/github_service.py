@@ -502,6 +502,62 @@ def staged_approved_changes(session: CodeSession) -> dict:
     }
 
 
+def validate_commit_readiness(session: CodeSession, filenames: list[str] | None = None) -> dict:
+    metadata = session.metadata_json or {}
+    staged = staged_approved_changes(session)
+    selected = {name for name in (filenames or []) if name}
+    staged_names = {item.get("filename") for item in staged.get("staged") or [] if item.get("filename")}
+    if selected and not selected.issubset(staged_names):
+        missing = sorted(selected - staged_names)
+        raise HTTPException(status_code=409, detail={
+            "error_class": "patch_conflict",
+            "message": "Selected files are not approved for commit",
+            "cause": "Commit can only include files from the latest applied, reviewed patch.",
+            "files": missing,
+        })
+    pending_preview = metadata.get("patch_preview") or []
+    if pending_preview and not selected:
+        raise HTTPException(status_code=409, detail={
+            "error_class": "patch_conflict",
+            "message": "Patch review is still pending",
+            "cause": "Apply or reject pending patch hunks before committing all approved changes.",
+            "pending_files": [item.get("new_filename") or item.get("filename") for item in pending_preview],
+        })
+    selected_pending = [
+        item for item in pending_preview
+        if (item.get("new_filename") or item.get("filename")) in selected or item.get("filename") in selected
+    ]
+    if selected_pending:
+        raise HTTPException(status_code=409, detail={
+            "error_class": "patch_conflict",
+            "message": "Selected files still have pending review",
+            "cause": "Apply the accepted hunks before committing these files.",
+            "pending_files": [item.get("new_filename") or item.get("filename") for item in selected_pending],
+        })
+    conflicted = [
+        item for item in pending_preview
+        if item.get("conflict") and (not selected or (item.get("new_filename") or item.get("filename")) in selected or item.get("filename") in selected)
+    ]
+    if conflicted:
+        raise HTTPException(status_code=409, detail={
+            "error_class": "patch_conflict",
+            "message": "Patch conflict detected",
+            "cause": "Resolve or reset conflicted patch review before committing.",
+            "conflicts": [
+                {
+                    "filename": item.get("new_filename") or item.get("filename"),
+                    "operation_id": item.get("operation_id"),
+                    "base_checksum": item.get("base_checksum"),
+                    "current_checksum": item.get("current_checksum"),
+                }
+                for item in conflicted
+            ],
+        })
+    if not staged_names:
+        raise HTTPException(status_code=400, detail="No approved files are available to commit. Apply a reviewed patch first.")
+    return staged
+
+
 def _work_receipt_body(session: CodeSession, title: str, body: str | None = None) -> str:
     metadata = session.metadata_json or {}
     committed = list(metadata.get("last_committed_files") or [])
@@ -565,6 +621,7 @@ def commit_approved_changes(
     message: str | None = None,
     filenames: list[str] | None = None,
 ) -> dict:
+    validate_commit_readiness(session, filenames)
     token = installation_token(db, user_id)["token"]
     metadata = dict(session.metadata_json or {})
     git = metadata.get("git") or {}

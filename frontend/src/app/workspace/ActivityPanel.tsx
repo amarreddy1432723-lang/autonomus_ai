@@ -112,6 +112,13 @@ export type GitHubStatus = {
   pull_request_url?: string;
   checks?: Array<{ name?: string; status?: string; conclusion?: string; html_url?: string }>;
   check_summary?: { total?: number; passed?: number; failed?: number; running?: number };
+  staged?: {
+    staged?: Array<{ filename?: string; operation?: string; additions?: number; deletions?: number }>;
+    count?: number;
+    approval_state?: string;
+    line_impact?: { additions?: number; deletions?: number };
+    last_applied_at?: string;
+  };
 };
 
 export type RuntimeStatus = {

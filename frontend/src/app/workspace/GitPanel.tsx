@@ -86,12 +86,24 @@ export default function GitPanel({
   const refreshGithubRef = useRef(onRefreshGithub);
   const checkStatusRef = useRef(onCheckGithubPrStatus);
 
-  const staged = useMemo(() => patchPreview.map((item) => ({
-    filename: item.new_filename || item.filename,
-    operation: item.operation || 'modify',
-    additions: item.additions || 0,
-    deletions: item.deletions || 0,
-  })), [patchPreview]);
+  const staged = useMemo(() => {
+    const approved = githubStatus?.staged?.staged || [];
+    if (approved.length) {
+      return approved.map((item) => ({
+        filename: item.filename || '',
+        operation: item.operation || 'modify',
+        additions: item.additions || 0,
+        deletions: item.deletions || 0,
+      })).filter((item) => item.filename);
+    }
+    return patchPreview.map((item) => ({
+      filename: item.new_filename || item.filename,
+      operation: item.operation || 'modify',
+      additions: item.additions || 0,
+      deletions: item.deletions || 0,
+    }));
+  }, [githubStatus?.staged?.staged, patchPreview]);
+  const usingAppliedStagedFiles = Boolean(githubStatus?.staged?.staged?.length);
 
   const stagedFilenames = useMemo(() => staged.map((file) => file.filename).filter(Boolean), [staged]);
   const effectiveStageFiles = selectedStageFiles.filter((filename) => stagedFilenames.includes(filename));
@@ -299,7 +311,7 @@ export default function GitPanel({
 
       <div className={styles.gitStageBox}>
         <div className={styles.previewSectionTitle}>
-          <span>Approved/staged files</span>
+          <span>{usingAppliedStagedFiles ? 'Approved files ready to commit' : 'Pending review files'}</span>
           <em>{staged.length}</em>
         </div>
         {staged.length ? staged.slice(0, 12).map((file) => {

@@ -1,6 +1,9 @@
 from uuid import uuid4
+from types import SimpleNamespace
 
 import jwt
+import pytest
+from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -47,3 +50,39 @@ def test_github_install_url_contains_signed_user_state(monkeypatch):
     assert "github.com/apps/nexus-ai/installations/new" in result["install_url"]
     assert payload["sub"] == str(user_id)
     assert payload["type"] == "github_app_install"
+
+
+def test_commit_readiness_requires_applied_files():
+    session = SimpleNamespace(metadata_json={})
+
+    with pytest.raises(HTTPException) as exc:
+        github_service.validate_commit_readiness(session)
+
+    assert exc.value.status_code == 400
+    assert "No approved files" in str(exc.value.detail)
+
+
+def test_commit_readiness_rejects_unapproved_selection():
+    session = SimpleNamespace(metadata_json={
+        "last_applied_files": [{"filename": "src/app.ts", "operation": "modify", "additions": 2, "deletions": 1}]
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        github_service.validate_commit_readiness(session, ["src/other.ts"])
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error_class"] == "patch_conflict"
+    assert exc.value.detail["files"] == ["src/other.ts"]
+
+
+def test_commit_readiness_blocks_pending_review_for_commit_all():
+    session = SimpleNamespace(metadata_json={
+        "last_applied_files": [{"filename": "src/app.ts", "operation": "modify", "additions": 2, "deletions": 1}],
+        "patch_preview": [{"filename": "src/pending.ts", "operation": "modify"}],
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        github_service.validate_commit_readiness(session)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["message"] == "Patch review is still pending"

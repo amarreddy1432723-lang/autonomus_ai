@@ -1755,6 +1755,7 @@ export default function WorkspacePage() {
     try {
       const status = await apiRequest('/api/v1/github/status');
       let repos = status.repositories || [];
+      let staged = githubStatus?.staged;
       if (status.connected) {
         try {
           const repoResult = await apiRequest('/api/v1/github/repositories');
@@ -1763,17 +1764,39 @@ export default function WorkspacePage() {
           // Keep cached repositories from status if refresh fails.
         }
       }
+      if (sessionId) {
+        try {
+          const stagedResult = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/staged`);
+          staged = stagedResult.staged || staged;
+        } catch {
+          // Staged patch state should not block GitHub connection refresh.
+        }
+      }
       setGithubRepositories(repos);
       setGithubStatus((current) => ({
         ...(current || {}),
         ...status,
         repositories: repos,
+        staged,
       }));
       if (!selectedGithubRepo && repos[0]?.full_name) setSelectedGithubRepo(repos[0].full_name);
     } catch {
       setGithubStatus(null);
       setGithubRepositories([]);
       setGithubBranches([]);
+    }
+  };
+
+  const refreshGithubStagedState = async (idValue = sessionId) => {
+    if (!idValue) return;
+    try {
+      const stagedResult = await apiRequest(`/api/v1/code/sessions/${idValue}/github/staged`);
+      setGithubStatus((current) => ({
+        ...(current || {}),
+        staged: stagedResult.staged,
+      }));
+    } catch {
+      // Keep the current Git state when staged metadata is unavailable.
     }
   };
 
@@ -2710,6 +2733,7 @@ export default function WorkspacePage() {
       if (sessionId) {
         await hydrateSession(sessionId);
         await loadRollbackSnapshots(sessionId);
+        await refreshGithubStagedState(sessionId);
       }
     } catch (error) {
       reportWorkspaceError(error, 'Apply failed', { chat: true, intent: 'Patch apply' });
@@ -2763,6 +2787,8 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
+      await refreshGithubStagedState(sessionId);
+      await refreshGithubStagedState(sessionId);
       applied = true;
     } catch (error) {
       reportWorkspaceError(error, 'Apply selection failed', { chat: true, intent: 'Patch apply' });
@@ -3232,9 +3258,10 @@ export default function WorkspacePage() {
         body: JSON.stringify({ message: message || 'Arceus Code workspace changes', filenames }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
-      setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.branch_name, latest_commit_sha: result.commit_sha }));
+      setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.branch_name, latest_commit_sha: result.commit_sha, staged: result.staged || current?.staged }));
       addEvent({ kind: 'done', message: 'GitHub commit created', detail: `${result.committed?.length || 0} file(s) committed to ${result.branch_name}.` });
       await hydrateSession(sessionId);
+      await refreshGithubStagedState(sessionId);
     } catch (error) {
       reportWorkspaceError(error, 'Commit failed', { chat: true, intent: 'GitHub commit' });
     } finally {
@@ -3273,6 +3300,7 @@ export default function WorkspacePage() {
         pull_request_url: result.pull_request?.pull_request_url,
         checks: result.checks || [],
         check_summary: result.check_summary,
+        staged: result.staged || current?.staged,
       }));
       addEvent({ kind: 'done', message: 'GitHub PR status refreshed', detail: `${result.checks?.length || 0} check run(s).` });
     } catch (error) {
@@ -3321,6 +3349,7 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
+      await refreshGithubStagedState(sessionId);
     } catch (error) {
       reportWorkspaceError(error, 'Rollback failed', { chat: true, intent: 'Rollback' });
     } finally {
@@ -3380,6 +3409,7 @@ export default function WorkspacePage() {
         pull_request_url: result.pull_request_url,
         checks: result.checks || [],
         check_summary: result.check_summary,
+        staged: result.staged || current?.staged,
       }));
       addEvent({ kind: 'done', message: 'GitHub Commit -> PR completed', detail: result.pull_request_url || '' });
       await hydrateSession(sessionId);

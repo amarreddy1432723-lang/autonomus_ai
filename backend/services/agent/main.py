@@ -3520,7 +3520,7 @@ def github_commit_code_session_changes(
 ):
     from .agent_jobs import create_agent_job, complete_job, serialize_job
     from .code_workspace import get_code_session, append_activity
-    from .github_service import commit_approved_changes
+    from .github_service import commit_approved_changes, staged_approved_changes
 
     session = get_code_session(db, user_id, session_id)
     require_session_project_role(db, user_id, session, "editor")
@@ -3529,7 +3529,7 @@ def github_commit_code_session_changes(
     result = commit_approved_changes(db, user_id, session, request.message, request.filenames)
     append_activity(db, session, "done", "GitHub commit created", f"{len(result.get('committed') or [])} file(s) committed to {result.get('branch_name')}")
     complete_job(db, job, "completed", result, files_touched=result.get("committed") or [], approval_state="approved")
-    return {**result, "job": serialize_job(job)}
+    return {**result, "staged": staged_approved_changes(session), "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/github/pr")
 def github_open_code_session_pr(
@@ -3560,6 +3560,15 @@ def github_code_session_pr_status(session_id: UUID, user_id: UUID = Depends(get_
     session = get_code_session(db, user_id, session_id)
     return {**pr_status(db, user_id, session), "staged": staged_approved_changes(session)}
 
+@app.get("/api/v1/code/sessions/{session_id}/github/staged")
+def github_code_session_staged_changes(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session
+    from .github_service import staged_approved_changes
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "viewer")
+    return {"staged": staged_approved_changes(session)}
+
 @app.post("/api/v1/code/sessions/{session_id}/github/commit-pr")
 @app.post("/api/v1/github/sessions/{session_id}/create-pr")
 def github_commit_and_open_pr(
@@ -3570,7 +3579,7 @@ def github_commit_and_open_pr(
 ):
     from .agent_jobs import create_agent_job, complete_job, serialize_job
     from .code_workspace import get_code_session, append_activity
-    from .github_service import commit_and_open_pull_request
+    from .github_service import commit_and_open_pull_request, staged_approved_changes
 
     session = get_code_session(db, user_id, session_id)
     require_session_project_role(db, user_id, session, "editor")
@@ -3588,7 +3597,7 @@ def github_commit_and_open_pr(
     )
     append_activity(db, session, "done", "GitHub Commit -> PR completed", result.get("pull_request_url") or "")
     complete_job(db, job, "completed", result, files_touched=(result.get("commit") or {}).get("committed") or [], approval_state="approved")
-    return {**result, "job": serialize_job(job)}
+    return {**result, "staged": staged_approved_changes(session), "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/run-checks")
 def run_code_session_checks(
