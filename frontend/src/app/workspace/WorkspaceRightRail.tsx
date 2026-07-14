@@ -1,4 +1,4 @@
-import { AppWindow, ChevronLeft, ChevronRight, FileDiff, FolderTree, GitPullRequest, ListChecks, Play, Terminal, Workflow } from 'lucide-react';
+import { AppWindow, ChevronLeft, ChevronRight, FileDiff, FolderTree, GitPullRequest, ListChecks, Network, Play, Terminal, Workflow } from 'lucide-react';
 import type { AgentJob, PreviewCheck, TerminalSession } from './ActivityPanel';
 import styles from './Workspace.module.css';
 import type { WorkspaceRightPanelView } from './workspacePageUtils';
@@ -54,6 +54,14 @@ export default function WorkspaceRightRail({
       >
         <Terminal size={14} />
         {terminalCount > 0 && <span className={styles.railBadge}>{terminalCount}</span>}
+      </button>
+      <button
+        className={rightPanelOpen && rightPanelView === 'org' ? styles.rightRailButtonActive : styles.rightRailButton}
+        type="button"
+        title="Engineering organization"
+        onClick={() => onOpenRightTool('org')}
+      >
+        <Network size={14} />
       </button>
       <button
         className={rightPanelOpen && rightPanelView === 'changes' ? styles.rightRailButtonActive : styles.rightRailButton}

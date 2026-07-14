@@ -7,6 +7,7 @@ import { ApiError, apiRequest, createApiHeadersAsync } from '../../utils/api';
 import ActivityPanel, { ActivityEvent, AgentJob, GitHubBranch, GitHubRepository, GitHubStatus, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, RuntimeStatus, TerminalSession, WorkerStatus, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile, WorkspaceDiagnostic } from './EditorPanel';
+import EngineeringOrgPanel, { EngineeringOrgState } from './EngineeringOrgPanel';
 import ProjectNavigator from './ProjectNavigator';
 import OnboardingWizard from './OnboardingWizard';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
@@ -113,6 +114,8 @@ export default function WorkspacePage() {
   const [localWorkspacePath, setLocalWorkspacePath] = useState('');
   const [localTreeFiles, setLocalTreeFiles] = useState<WorkspaceFile[]>([]);
   const [folderWatchError, setFolderWatchError] = useState<{ rootPath: string; message: string } | null>(null);
+  const [engineeringOrgState, setEngineeringOrgState] = useState<EngineeringOrgState | null>(null);
+  const [engineeringProblem, setEngineeringProblem] = useState('');
   const [terminalSessions, setTerminalSessions] = useState<Record<string, TerminalSession>>({});
   const [activeTerminalId, setActiveTerminalId] = useState('');
   const [terminalCommand, setTerminalCommand] = useState('');
@@ -230,6 +233,80 @@ export default function WorkspacePage() {
     }
   };
 
+  const loadEngineeringOrg = useCallback(async (idValue = projectId) => {
+    if (!idValue) {
+      setEngineeringOrgState(null);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${idValue}/orchestration/state`);
+      setEngineeringOrgState(data);
+      if (!engineeringProblem && data?.original_problem) setEngineeringProblem(data.original_problem);
+    } catch {
+      setEngineeringOrgState(null);
+    }
+  }, [engineeringProblem, projectId]);
+
+  const analyzeEngineeringProblem = async () => {
+    if (!projectId || busy || engineeringProblem.trim().length < 3) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/analyze`, {
+        method: 'POST',
+        body: JSON.stringify({
+          problem: engineeringProblem.trim(),
+          acceptance_criteria: [
+            'A user can complete the core workflow end to end.',
+            'Changes are reviewable before approval.',
+            'Focused build or validation checks can run.',
+          ],
+        }),
+      });
+      setEngineeringOrgState(data);
+      setRightPanelView('org');
+      setRightPanelOpen(true);
+      addEvent({ kind: 'code', message: 'Engineering proposals ready', detail: 'Three senior perspectives were scored for this project.' });
+    } catch (error) {
+      reportWorkspaceError(error, 'Engineering proposal generation failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectEngineeringProposal = async (proposalId: string) => {
+    if (!projectId || busy || !proposalId) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/proposals/${proposalId}/select`, {
+        method: 'POST',
+        body: JSON.stringify({ rationale: 'Selected from the Arceus Engineering Org proposal panel.' }),
+      });
+      setEngineeringOrgState(data);
+      addEvent({ kind: 'done', message: 'Engineering proposal selected', detail: 'Architecture and first task graph are ready for approval.' });
+    } catch (error) {
+      reportWorkspaceError(error, 'Proposal selection failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveEngineeringArchitecture = async () => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/architecture/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ approved: true, notes: 'Approved from Arceus workspace.' }),
+      });
+      setEngineeringOrgState(data);
+      addEvent({ kind: 'done', message: 'Architecture approved', detail: 'The project is ready for bounded implementation tasks.' });
+    } catch (error) {
+      reportWorkspaceError(error, 'Architecture approval failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!trustedLocalPath) {
       setLocalTreeFiles([]);
@@ -237,6 +314,10 @@ export default function WorkspacePage() {
     }
     void refreshLocalTree(trustedLocalPath);
   }, [refreshLocalTree, trustedLocalPath]);
+
+  useEffect(() => {
+    void loadEngineeringOrg(projectId);
+  }, [loadEngineeringOrg, projectId]);
 
   const persistOpenProjects = (nextIds: string[], activeId?: string) => {
     const unique = nextIds.filter((idValue, index) => idValue && nextIds.indexOf(idValue) === index).slice(0, MAX_OPEN_PROJECTS);
@@ -3640,6 +3721,19 @@ export default function WorkspacePage() {
             onRefreshGithub={refreshGithubState}
             onSyncRuntime={syncRuntime}
             onRunChecks={runChecks}
+          />
+        )}
+        {rightPanelOpen && rightPanelView === 'org' && (
+          <EngineeringOrgPanel
+            projectName={activeProject?.name || ''}
+            state={engineeringOrgState}
+            problem={engineeringProblem}
+            busy={busy}
+            onProblemChange={setEngineeringProblem}
+            onAnalyze={analyzeEngineeringProblem}
+            onRefresh={() => loadEngineeringOrg()}
+            onSelectProposal={selectEngineeringProposal}
+            onApproveArchitecture={approveEngineeringArchitecture}
           />
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (

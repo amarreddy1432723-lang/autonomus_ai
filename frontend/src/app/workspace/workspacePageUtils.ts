@@ -26,7 +26,7 @@ export type CodeProject = {
 
 export type PendingProjectOpen = { kind: 'project'; projectId: string } | { kind: 'local'; localPath: string } | null;
 
-export type WorkspaceRightPanelView = 'explorer' | 'changes' | 'jobs' | 'preview' | 'git' | 'apps' | 'tasks';
+export type WorkspaceRightPanelView = 'explorer' | 'org' | 'changes' | 'jobs' | 'preview' | 'git' | 'apps' | 'tasks';
 
 export type WorkspaceCommandAction = {
   id: string;

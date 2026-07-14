@@ -26,6 +26,7 @@ from .deps import get_current_user_id, parse_vault_key, require_entitlement_or_4
 from .routes_admin import router as admin_router
 from .routes_billing import router as billing_router
 from .routes_public import router as public_router
+from .orchestration import router as orchestration_router
 from .schemas import (
     MemoryCreate,
     MemoryExtractRequest,
@@ -72,6 +73,7 @@ app.include_router(lsp_router)
 app.include_router(public_router)
 app.include_router(billing_router)
 app.include_router(admin_router)
+app.include_router(orchestration_router)
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"

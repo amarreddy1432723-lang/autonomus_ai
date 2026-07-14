@@ -5924,3 +5924,172 @@
 .editorTabActive button:last-child {
   opacity: 1;
 }
+
+.appsPanelSection {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.panelTitleRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.panelTitleRow div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.panelTitleRow strong {
+  color: #f3f4f6;
+  font-size: 13px;
+}
+
+.panelTitleRow small {
+  color: #8f95a3;
+  font-size: 11px;
+}
+
+.commandTextarea {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: #101116;
+  color: #e5e7eb;
+  padding: 10px;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.commandButtonPrimary,
+.proposalCard button,
+.proposalCardSelected button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid rgba(124, 108, 240, 0.42);
+  border-radius: 7px;
+  background: rgba(124, 108, 240, 0.16);
+  color: #ede9fe;
+  font-weight: 700;
+}
+
+.commandButtonPrimary:disabled,
+.proposalCard button:disabled,
+.proposalCardSelected button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.proposalCard,
+.proposalCardSelected {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: #121318;
+}
+
+.proposalCardSelected {
+  border-color: rgba(124, 108, 240, 0.65);
+  background: rgba(124, 108, 240, 0.11);
+}
+
+.proposalCard header,
+.proposalCardSelected header,
+.proposalMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proposalCard header span,
+.proposalCardSelected header span,
+.proposalMeta em {
+  color: #a78bfa;
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.proposalCard h4,
+.proposalCardSelected h4 {
+  margin: 0;
+  color: #f9fafb;
+  font-size: 13px;
+}
+
+.proposalCard p,
+.proposalCardSelected p,
+.proposalCard small,
+.proposalCardSelected small {
+  margin: 0;
+  color: #a7adba;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.proposalCard pre,
+.proposalCardSelected pre {
+  overflow: auto;
+  max-height: 160px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  color: #d7dbe4;
+  font-size: 11px;
+}
+
+.proposalCard ul,
+.proposalCardSelected ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: #a7adba;
+  font-size: 11px;
+}
+
+.orgArchitecture {
+  display: grid;
+  gap: 6px;
+}
+
+.orgArchitecture span,
+.orgTaskList div {
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #d7dbe4;
+  font-size: 11px;
+}
+
+.orgTaskList {
+  display: grid;
+  gap: 6px;
+}
+
+.orgTaskList div {
+  display: grid;
+  gap: 3px;
+}
+
+.orgTaskList strong {
+  color: #f3f4f6;
+  font-size: 12px;
+}
+
+.orgTaskList small {
+  color: #8f95a3;
+  font-size: 10px;
+}

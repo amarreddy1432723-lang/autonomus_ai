@@ -182,6 +182,69 @@ class CodeProject(Base):
     user = relationship("User", back_populates="code_projects")
     sessions = relationship("CodeSession", back_populates="project")
 
+class CodeProjectOrchestration(Base):
+    __tablename__ = "code_project_orchestrations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="CASCADE"), nullable=False)
+    stage = Column(String(80), default="intake")
+    original_problem = Column(Text, default="")
+    clarified_problem = Column(Text, default="")
+    business_goal = Column(Text, default="")
+    target_users = Column(JSON, default=list)
+    constraints = Column(JSON, default=list)
+    acceptance_criteria = Column(JSON, default=list)
+    selected_proposal_id = Column(UUID(as_uuid=True), nullable=True)
+    architecture_document = Column(JSON, default=dict)
+    implementation_plan = Column(JSON, default=dict)
+    tasks = Column(JSON, default=list)
+    review_findings = Column(JSON, default=list)
+    test_results = Column(JSON, default=list)
+    decisions = Column(JSON, default=list)
+    budget_used_usd = Column(Float, default=0.0)
+    token_usage = Column(Integer, default=0)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class CodeSolutionProposal(Base):
+    __tablename__ = "code_solution_proposals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    orchestration_id = Column(UUID(as_uuid=True), ForeignKey("code_project_orchestrations.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    perspective = Column(String(80), nullable=False)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, default="")
+    architecture = Column(Text, default="")
+    advantages = Column(JSON, default=list)
+    disadvantages = Column(JSON, default=list)
+    estimated_cost = Column(String(100), default="medium")
+    estimated_complexity = Column(String(100), default="medium")
+    risks = Column(JSON, default=list)
+    recommended_for = Column(Text, default="")
+    score = Column(Integer, default=0)
+    judge_summary = Column(Text, default="")
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class CodeProjectDecision(Base):
+    __tablename__ = "code_project_decisions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    orchestration_id = Column(UUID(as_uuid=True), ForeignKey("code_project_orchestrations.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    decision_type = Column(String(100), nullable=False)
+    title = Column(String(255), nullable=False)
+    selected_option_id = Column(UUID(as_uuid=True), nullable=True)
+    rationale = Column(Text, default="")
+    payload = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 class Organization(Base):
     __tablename__ = "organizations"
 
@@ -682,6 +745,9 @@ Index("idx_code_sessions_user_status", CodeSession.user_id, CodeSession.status)
 Index("idx_code_sessions_project_updated", CodeSession.project_id, CodeSession.updated_at)
 Index("idx_code_projects_user_status", CodeProject.user_id, CodeProject.status)
 Index("idx_code_projects_user_opened", CodeProject.user_id, CodeProject.last_opened_at)
+Index("idx_code_orchestration_project", CodeProjectOrchestration.project_id, CodeProjectOrchestration.user_id)
+Index("idx_code_proposals_project", CodeSolutionProposal.project_id, CodeSolutionProposal.user_id)
+Index("idx_code_decisions_project", CodeProjectDecision.project_id, CodeProjectDecision.user_id)
 Index("idx_agent_jobs_user_created", AgentJob.user_id, AgentJob.created_at)
 Index("idx_agent_jobs_session_created", AgentJob.code_session_id, AgentJob.created_at)
 Index("idx_agent_jobs_user_status", AgentJob.user_id, AgentJob.status)
@@ -847,4 +913,3 @@ class ProductEntitlement(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="entitlements")
-
