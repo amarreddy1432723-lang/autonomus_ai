@@ -401,6 +401,34 @@ def kill_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), d
     return {"id": str(job.id), "status": job.status, "previous_status": previous_status}
 
 
+@router.post("/api/v1/admin/jobs/{job_id}/retry")
+def retry_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AgentJob, AuditLog
+    from .agent_jobs import reset_background_job_for_retry, serialize_job
+
+    _require_admin(user_id)
+    job = db.query(AgentJob).filter(AgentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail={"code": "job_not_found", "message": "Job not found."})
+    previous_status = job.status
+    retried = reset_background_job_for_retry(db, job.user_id, job.id)
+    db.add(AuditLog(
+        user_id=job.user_id,
+        session_id=job.code_session_id,
+        event_type="admin.job.retry",
+        entity_type="agent_job",
+        entity_id=job.id,
+        actor_type="admin",
+        actor_id=str(user_id),
+        action="Admin retried job",
+        old_value={"status": previous_status},
+        new_value={"status": retried.status, "retry_count": int((retried.metadata_json or {}).get("retry_count") or 0)},
+    ))
+    db.commit()
+    db.refresh(retried)
+    return {"job": serialize_job(retried), "previous_status": previous_status}
+
+
 @router.get("/api/v1/admin/audit-logs")
 def get_admin_audit_logs(
     audit_user_id: Optional[UUID] = Query(None),
@@ -438,4 +466,34 @@ def get_admin_audit_logs(
             }
             for item in rows
         ]
+    }
+
+
+@router.get("/api/v1/admin/audit-logs/{audit_id}")
+def get_admin_audit_log_detail(audit_id: int, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AuditLog
+
+    _require_admin(user_id)
+    item = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail={"code": "audit_log_not_found", "message": "Audit log not found."})
+    return {
+        "audit_log": {
+            "id": item.id,
+            "user_id": str(item.user_id),
+            "session_id": str(item.session_id) if item.session_id else None,
+            "event_type": item.event_type,
+            "entity_type": item.entity_type,
+            "entity_id": str(item.entity_id) if item.entity_id else None,
+            "actor_type": item.actor_type,
+            "actor_id": item.actor_id,
+            "action": item.action,
+            "old_value": item.old_value,
+            "new_value": item.new_value,
+            "metadata": item.metadata_json or {},
+            "ip_address": item.ip_address,
+            "user_agent": item.user_agent,
+            "checksum": item.checksum,
+            "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+        }
     }

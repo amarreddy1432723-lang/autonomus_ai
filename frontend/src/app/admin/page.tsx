@@ -122,9 +122,16 @@ type ObservabilityHealth = {
 type AuditLog = {
   id: number | string;
   user_id: string;
+  session_id?: string | null;
   event_type: string;
   entity_type?: string | null;
+  entity_id?: string | null;
+  actor_type?: string | null;
+  actor_id?: string | null;
   action: string;
+  old_value?: unknown;
+  new_value?: unknown;
+  metadata?: Record<string, unknown>;
   occurred_at?: string | null;
 };
 
@@ -164,8 +171,10 @@ export default function AdminPage() {
   const [billingHealth, setBillingHealth] = useState<BillingHealth | null>(null);
   const [observabilityHealth, setObservabilityHealth] = useState<ObservabilityHealth | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [selectedAuditLog, setSelectedAuditLog] = useState<AuditLog | null>(null);
   const [auditFilters, setAuditFilters] = useState({ user: '', eventType: '', entityType: '', action: '' });
   const [killingJobId, setKillingJobId] = useState('');
+  const [retryingJobId, setRetryingJobId] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -225,6 +234,29 @@ export default function AdminPage() {
       setError(err instanceof Error ? err.message : 'Unable to kill job');
     } finally {
       setKillingJobId('');
+    }
+  };
+
+  const retryJob = async (jobId: string) => {
+    setRetryingJobId(jobId);
+    setError('');
+    try {
+      await apiRequest(`/api/v1/admin/jobs/${jobId}/retry`, { method: 'POST' });
+      await loadAdmin();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to retry job');
+    } finally {
+      setRetryingJobId('');
+    }
+  };
+
+  const loadAuditDetail = async (auditId: number | string) => {
+    setError('');
+    try {
+      const result = await apiRequest(`/api/v1/admin/audit-logs/${auditId}`);
+      setSelectedAuditLog(result.audit_log || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load audit detail');
     }
   };
 
@@ -364,16 +396,33 @@ export default function AdminPage() {
               </form>
               <div className={styles.list}>
                 {auditLogs.map((log) => (
-                  <div className={styles.row} key={log.id}>
+                  <button className={`${styles.row} ${styles.auditRowButton}`} type="button" key={log.id} onClick={() => loadAuditDetail(log.id)}>
                     <div>
                       <strong>{log.event_type}</strong>
                       <small>{log.action} · {log.entity_type || 'system'}</small>
                     </div>
                     <span className={styles.muted}>{log.occurred_at ? new Date(log.occurred_at).toLocaleTimeString() : ''}</span>
-                  </div>
+                  </button>
                 ))}
                 {!auditLogs.length && <span className={styles.muted}>No audit logs recorded yet.</span>}
               </div>
+              {selectedAuditLog && (
+                <div className={styles.detailBox}>
+                  <div className={styles.panelHeader}>
+                    <h3>{selectedAuditLog.event_type}</h3>
+                    <button type="button" onClick={() => setSelectedAuditLog(null)}>Close</button>
+                  </div>
+                  <small>{selectedAuditLog.action}</small>
+                  <code>User: {selectedAuditLog.user_id}</code>
+                  {selectedAuditLog.entity_type && <code>Entity: {selectedAuditLog.entity_type} {selectedAuditLog.entity_id || ''}</code>}
+                  <pre>{JSON.stringify({
+                    actor: `${selectedAuditLog.actor_type || 'unknown'}:${selectedAuditLog.actor_id || ''}`,
+                    old_value: selectedAuditLog.old_value,
+                    new_value: selectedAuditLog.new_value,
+                    metadata: selectedAuditLog.metadata,
+                  }, null, 2)}</pre>
+                </div>
+              )}
             </div>
           </div>
 
@@ -528,6 +577,11 @@ export default function AdminPage() {
                       {!['completed', 'failed', 'cancelled', 'dead_letter', 'timeout'].includes(job.status) && (
                         <button className={styles.killButton} type="button" onClick={() => killJob(job.id)} disabled={killingJobId === job.id}>
                           {killingJobId === job.id ? 'Killing' : 'Kill'}
+                        </button>
+                      )}
+                      {['failed', 'dead_letter', 'timeout', 'cancelled'].includes(job.status) && job.mode.startsWith('background_') && (
+                        <button className={styles.retryButton} type="button" onClick={() => retryJob(job.id)} disabled={retryingJobId === job.id}>
+                          {retryingJobId === job.id ? 'Retrying' : 'Retry'}
                         </button>
                       )}
                     </div>
