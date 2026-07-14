@@ -39,7 +39,7 @@ export default function WorkspaceAppsPanel({
     {
       id: 'github',
       name: 'GitHub',
-      detail: githubStatus?.connected ? `${githubStatus.account?.login || 'Connected'} · repo import, branches, commits, PRs` : 'Install the NEXUS GitHub App to import repos and open PRs.',
+      detail: githubStatus?.connected ? `${githubStatus.account?.login || 'Connected'} · repo import, branches, commits, PRs` : 'Install the Arceus GitHub App to import repos and open PRs.',
       status: githubStatus?.connected ? 'Connected' : githubStatus?.configured ? 'Ready' : 'Setup needed',
       icon: GitBranch,
       action: githubStatus?.connected ? 'Refresh' : 'Connect',
@@ -90,13 +90,13 @@ export default function WorkspaceAppsPanel({
     {
       id: 'calendar',
       name: 'Calendar',
-      detail: 'Calendar connectors remain separate from NEXUS Code unless a workspace task explicitly needs them.',
+      detail: 'Calendar connectors remain separate from Arceus Code unless a workspace task explicitly needs them.',
       status: 'Available later',
       icon: Calendar,
     },
     {
       id: 'agent',
-      name: 'NEXUS Agent CLI',
+      name: 'Arceus Agent CLI',
       detail: 'Internal agent actions call approved app CLIs and APIs server-side; tokens never appear in the browser.',
       status: 'Policy gated',
       icon: Bot,
@@ -111,7 +111,7 @@ export default function WorkspaceAppsPanel({
       </div>
       <div className={styles.appsList}>
         <div className={styles.appsIntro}>
-          <strong>Connect apps once. Let NEXUS call them internally.</strong>
+          <strong>Connect apps once. Let Arceus call them internally.</strong>
           <span>GitHub, runtime commands, browser preview, and deploy tools can be routed through workspace policies instead of manual sidebars.</span>
         </div>
         {apps.map((app) => {

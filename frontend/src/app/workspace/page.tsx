@@ -1,20 +1,28 @@
 'use client';
 
-import { Activity, AppWindow, ChevronLeft, ChevronRight, Circle, ListChecks, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppWindow, ChevronLeft, ChevronRight, Circle, FileDiff, FolderTree, GitPullRequest, ListChecks, MoreHorizontal, Play, Settings, Terminal, UserCircle, Workflow } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
-import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import ActivityPanel, { ActivityEvent, AgentJob, GitHubRepository, GitHubStatus, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, RuntimeStatus, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
+import { ApiError, apiRequest, createApiHeadersAsync } from '../../utils/api';
+import ActivityPanel, { ActivityEvent, AgentJob, GitHubBranch, GitHubRepository, GitHubStatus, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, RuntimeStatus, TerminalSession, WorkerStatus, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
-import EditorPanel, { OpenWorkspaceFile } from './EditorPanel';
+import EditorPanel, { OpenWorkspaceFile, WorkspaceDiagnostic } from './EditorPanel';
+import ProjectNavigator from './ProjectNavigator';
+import OnboardingWizard from './OnboardingWizard';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
 import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
-import WorkspaceTaskPanel from './WorkspaceTaskPanel';
+import WorkspaceTerminalPanel, { TerminalPanelSize } from './WorkspaceTerminalPanel';
+import { classifyError, type ClassifiedError } from './errorClassifier';
+import type { WorkspaceWorkReceipt } from './WorkReceipt';
 import styles from './Workspace.module.css';
 import { buildWorkspaceSuggestions, normalizeWorkspaceSuggestion, WorkspaceSuggestion } from './workspaceSuggestions';
 
-const model = { llm_provider: 'nexus', llm_model: 'nexus-code' };
+const model = { llm_provider: 'nexus', llm_model: 'Arceus-Code' };
+const OPEN_PROJECTS_KEY = 'nexus.code.open_projects';
+const ACTIVE_PROJECT_KEY = 'nexus.code.active_project';
+const TERMINAL_PREFS_KEY = 'nexus.code.terminal_preferences';
+const MAX_OPEN_PROJECTS = 3;
 
 type CodeProject = {
   id: string;
@@ -23,9 +31,15 @@ type CodeProject = {
   repo_url?: string;
   status?: string;
   file_ids?: string[];
+  file_count?: number;
+  metadata?: Record<string, any>;
+  local_workspace_path?: string;
+  openable?: boolean;
   active_session_id?: string | null;
   last_opened_at?: string | null;
 };
+
+type PendingProjectOpen = { kind: 'project'; projectId: string } | { kind: 'local'; localPath: string } | null;
 
 type WorkspaceCommandAction = {
   id: string;
@@ -51,6 +65,16 @@ function inferModes(prompt: string, selected: WorkspaceMode): WorkspaceMode[] {
   return modes.length ? modes : ['code'];
 }
 
+function inferReceiptIntent(prompt: string) {
+  const text = prompt.toLowerCase();
+  if (/(fix|bug|error|broken|not working|issue)/.test(text)) return 'Fix';
+  if (/(design|ui|ux|layout|screen|component|style)/.test(text)) return 'Design';
+  if (/(deploy|railway|vercel|production|release)/.test(text)) return 'Deploy';
+  if (/(test|lint|typecheck|build|compile)/.test(text)) return 'Check';
+  if (/(research|compare|latest|find|search)/.test(text)) return 'Research';
+  return 'Build';
+}
+
 function summarizePatch(raw: string) {
   try {
     const payload = JSON.parse(raw);
@@ -66,6 +90,130 @@ function summarizePreview(preview: Array<{ filename: string; additions?: number;
   return preview
     .map((file) => `Edited ${file.filename}: +${file.additions || 0} / -${file.deletions || 0}`)
     .join('\n');
+}
+
+function buildPreviewReceipt(check: PreviewCheck, project?: string): WorkspaceWorkReceipt {
+  const consoleCount = check.console_errors?.length || 0;
+  const pageCount = check.page_errors?.length || 0;
+  const networkCount = check.network_failures?.length || 0;
+  const failed = check.status !== 'passed';
+  const issues = [
+    ...(check.issues || []),
+    check.blank_page ? 'Blank page detected' : '',
+    check.playwright_error ? `Browser check error: ${check.playwright_error}` : '',
+  ].filter(Boolean);
+  const evidence = [
+    check.screenshot_base64 || check.screenshot_url ? 'Screenshot captured' : 'No screenshot captured',
+    `${consoleCount} console error${consoleCount === 1 ? '' : 's'}`,
+    `${pageCount} page error${pageCount === 1 ? '' : 's'}`,
+    `${networkCount} network failure${networkCount === 1 ? '' : 's'}`,
+    check.first_contentful_paint_ms ? `FCP ${Math.round(check.first_contentful_paint_ms)}ms` : '',
+  ].filter(Boolean).join(' · ');
+
+  return {
+    summary: failed ? 'Preview verification found an issue.' : 'Preview verification passed.',
+    mode: 'deploy',
+    intent: 'Verify',
+    project,
+    plan: [
+      `URL: ${check.url}`,
+      check.status_code ? `HTTP: ${check.status_code}` : '',
+      check.title ? `Title: ${check.title}` : '',
+      evidence,
+      issues.length ? `Issues: ${issues.join(', ')}` : 'No browser, console, network, or blank-page issue detected.',
+    ].filter(Boolean).join('\n'),
+    checks: [
+      { label: 'Browser preview', status: check.status },
+      { label: 'Screenshot', status: check.screenshot_base64 || check.screenshot_url ? 'captured' : 'missing' },
+      { label: 'Console errors', status: consoleCount ? `${consoleCount} failed` : 'passed' },
+      { label: 'Network requests', status: networkCount ? `${networkCount} failed` : 'passed' },
+      { label: 'Blank-page detection', status: check.blank_page ? 'failed' : 'passed' },
+    ],
+    checksPassed: failed ? 0 : 1,
+    checksFailed: failed ? 1 : 0,
+    approvalState: failed ? 'needs fix' : 'verified',
+    nextActions: failed ? [
+      normalizeWorkspaceSuggestion({
+        id: 'fix-preview-issue',
+        title: 'Fix preview issue',
+        summary: 'Use screenshot, console, and network evidence to prepare the smallest safe patch.',
+        prompt: check.fix_suggestion_prompt || `Fix the latest preview issue for ${check.url}. Use the captured browser evidence and avoid unrelated changes.`,
+        mode: 'code',
+        risk: 'medium',
+        requires_approval: true,
+      }),
+      normalizeWorkspaceSuggestion({
+        id: 'open-preview-evidence',
+        title: 'Inspect preview evidence',
+        summary: 'Open the Preview drawer and compare screenshot, console errors, and network failures.',
+        prompt: 'Summarize the latest preview evidence and identify the most likely source file to inspect next.',
+        mode: 'plan',
+        risk: 'low',
+      }),
+      normalizeWorkspaceSuggestion({
+        id: 'run-local-checks-after-preview',
+        title: 'Run checks after fix',
+        summary: 'Run the detected build, lint, or test command after the preview fix is reviewed.',
+        prompt: 'Run the safest available project checks and summarize failures with exact commands and files.',
+        mode: 'code',
+        risk: 'low',
+      }),
+    ] : [
+      normalizeWorkspaceSuggestion({
+        id: 'prepare-github-pr',
+        title: 'Prepare PR',
+        summary: 'Turn approved changes and verified preview evidence into a pull request summary.',
+        prompt: 'Prepare a concise PR title and body from the latest work receipt and preview verification.',
+        mode: 'deploy',
+        risk: 'low',
+      }),
+      normalizeWorkspaceSuggestion({
+        id: 'run-regression-checks',
+        title: 'Run regression checks',
+        summary: 'Run build, lint, and test commands before committing the work.',
+        prompt: 'Run the detected build, lint, and test commands and report pass/fail evidence.',
+        mode: 'code',
+        risk: 'low',
+      }),
+      normalizeWorkspaceSuggestion({
+        id: 'document-next-step',
+        title: 'Choose next task',
+        summary: 'Use Arceus next-action guidance to decide what should happen after the verified preview.',
+        prompt: 'Suggest the next 3 project actions using current files, preview status, jobs, and pending changes.',
+        mode: 'plan',
+        risk: 'low',
+      }),
+    ],
+  };
+}
+
+function buildWorkReceiptFromPayload(payload: any, fallback: WorkspaceWorkReceipt): WorkspaceWorkReceipt {
+  const receipt = payload?.work_receipt || payload?.workReceipt;
+  if (!receipt || typeof receipt !== 'object') return fallback;
+  return {
+    ...fallback,
+    summary: receipt.summary || fallback.summary,
+    mode: receipt.mode || fallback.mode,
+    intent: receipt.intent || fallback.intent,
+    project: receipt.project || fallback.project,
+    session: receipt.session || fallback.session,
+    plan: receipt.plan || fallback.plan,
+    filesInspected: receipt.files_inspected || receipt.filesInspected || fallback.filesInspected,
+    filesChanged: receipt.files_changed || receipt.filesChanged || fallback.filesChanged,
+    foldersCreated: receipt.folders_created || receipt.foldersCreated || fallback.foldersCreated,
+    commands: receipt.commands_run || receipt.commands || fallback.commands,
+    checks: receipt.checks || fallback.checks,
+    checksPassed: receipt.checks_passed ?? receipt.checksPassed ?? fallback.checksPassed,
+    checksFailed: receipt.checks_failed ?? receipt.checksFailed ?? fallback.checksFailed,
+    approvalState: receipt.approval_state || receipt.approvalState || fallback.approvalState,
+    lineImpact: receipt.line_impact || receipt.lineImpact || fallback.lineImpact,
+    nextActions: receipt.next_actions || receipt.nextActions || fallback.nextActions,
+    rollbackAvailable: receipt.rollback_available ?? receipt.rollbackAvailable ?? fallback.rollbackAvailable,
+  };
+}
+
+function promptTargetsActiveFile(value: string) {
+  return /\b(this file|current file|active file|the file|opened file|selected file|analyze the file|analyse the file|explain this|explain the file|review this|fix this|refactor this|test this|debug this)\b/i.test(value);
 }
 
 function normalizeEvents(events: any[]): ActivityEvent[] {
@@ -84,13 +232,16 @@ export default function WorkspacePage() {
   const [messages, setMessages] = useState<WorkspaceMessage[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [jobs, setJobs] = useState<AgentJob[]>([]);
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const [commands, setCommands] = useState<WorkspaceCommand[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [analysis, setAnalysis] = useState<WorkspaceAnalysis | null>(null);
+  const [diagnostics, setDiagnostics] = useState<WorkspaceDiagnostic[]>([]);
   const [rollbackSnapshots, setRollbackSnapshots] = useState<RollbackSnapshot[]>([]);
   const [mode, setMode] = useState<WorkspaceMode>('auto');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [upgradePrompt, setUpgradePrompt] = useState<any | null>(null);
   const [sessionId, setSessionId] = useState('');
   const [patchReady, setPatchReady] = useState(false);
   const [patchPreview, setPatchPreview] = useState<PatchPreviewItem[]>([]);
@@ -100,7 +251,9 @@ export default function WorkspacePage() {
   const [repoUrl, setRepoUrl] = useState('');
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubRepositories, setGithubRepositories] = useState<GitHubRepository[]>([]);
+  const [githubBranches, setGithubBranches] = useState<GitHubBranch[]>([]);
   const [selectedGithubRepo, setSelectedGithubRepo] = useState('');
+  const [githubBaseBranch, setGithubBaseBranch] = useState('');
   const [githubBranchName, setGithubBranchName] = useState('');
   const [openTabs, setOpenTabs] = useState<OpenWorkspaceFile[]>([]);
   const [activeFileId, setActiveFileId] = useState('');
@@ -110,8 +263,26 @@ export default function WorkspacePage() {
   const [searchFocusKey, setSearchFocusKey] = useState(0);
   const [filesOpen, setFilesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelView, setRightPanelView] = useState<'activity' | 'apps' | 'tasks'>('activity');
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [rightPanelView, setRightPanelView] = useState<'explorer' | 'changes' | 'jobs' | 'preview' | 'git' | 'apps' | 'tasks'>('explorer');
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [terminalPanelOpen, setTerminalPanelOpen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return JSON.parse(localStorage.getItem(TERMINAL_PREFS_KEY) || '{}')?.open === true;
+    } catch {
+      return false;
+    }
+  });
+  const [terminalPanelSize, setTerminalPanelSize] = useState<TerminalPanelSize>(() => {
+    if (typeof window === 'undefined') return 'half';
+    try {
+      const value = JSON.parse(localStorage.getItem(TERMINAL_PREFS_KEY) || '{}')?.size;
+      return value === 'compact' || value === 'half' || value === 'max' ? value : 'half';
+    } catch {
+      return 'half';
+    }
+  });
   const [typedSuggestionId, setTypedSuggestionId] = useState('');
   const [backendSuggestions, setBackendSuggestions] = useState<WorkspaceSuggestion[]>([]);
   const [workspaceTasks, setWorkspaceTasks] = useState<WorkspaceSuggestion[]>([]);
@@ -119,9 +290,24 @@ export default function WorkspacePage() {
   const [autoRunCommands, setAutoRunCommands] = useState(true);
   const [sandboxType, setSandboxType] = useState('local');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [agentOnline, setAgentOnline] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState('');
+  const [openProjectIds, setOpenProjectIds] = useState<string[]>([]);
+  const [pendingProjectOpen, setPendingProjectOpen] = useState<PendingProjectOpen>(null);
+  const [mergeSelection, setMergeSelection] = useState<string[]>([]);
+  const [localWorkspacePath, setLocalWorkspacePath] = useState('');
+  const [folderWatchError, setFolderWatchError] = useState<{ rootPath: string; message: string } | null>(null);
+  const [terminalSessions, setTerminalSessions] = useState<Record<string, TerminalSession>>({});
+  const [activeTerminalId, setActiveTerminalId] = useState('');
+  const [terminalCommand, setTerminalCommand] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastAutoOpenedTerminalRef = useRef('');
+  const autoCreatedTerminalRef = useRef('');
+  const terminalStreamBufferRef = useRef<Record<string, Array<{ data: string; timestamp: string }>>>({});
+  const terminalStreamFlushTimerRef = useRef<number | null>(null);
+  const terminalLastSeqRef = useRef<Record<string, number>>({});
+  const localWorkspacePathRef = useRef('');
 
   const selectedFileIds = useMemo(
     () => Object.entries(selected).filter(([, value]) => value).map(([fileId]) => fileId),
@@ -132,6 +318,104 @@ export default function WorkspacePage() {
     () => projects.find((project) => project.id === projectId) || null,
     [projectId, projects]
   );
+
+  const openProjects = useMemo(
+    () => openProjectIds.map((idValue) => projects.find((project) => project.id === idValue)).filter(Boolean) as CodeProject[],
+    [openProjectIds, projects]
+  );
+
+  const trustedLocalPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+  const normalizedTrustedLocalPath = trustedLocalPath.trim().toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+
+  useEffect(() => {
+    localWorkspacePathRef.current = trustedLocalPath;
+  }, [trustedLocalPath]);
+
+  useEffect(() => {
+    if (openProjects.length === 0) {
+      setOnboardingOpen(true);
+    }
+  }, [openProjects.length]);
+
+  const handleOnboardingComplete = (settings: any) => {
+    setOnboardingOpen(false);
+    if (settings.mode === 'create') {
+      void createProject();
+    } else {
+      void analyzeWorkspace();
+    }
+  };
+
+  const sameLocalPath = (left?: string, right?: string) => {
+    const normalize = (value?: string) => String(value || '').trim().toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+    return Boolean(normalize(left) && normalize(left) === normalize(right));
+  };
+
+  const openRightTool = (view: typeof rightPanelView) => {
+    setRightPanelView(view);
+    setRightPanelOpen((current) => !(current && rightPanelView === view));
+  };
+
+  const rightDrawerInitialTab = (
+    rightPanelView === 'changes' ? 'changes'
+      : rightPanelView === 'jobs' ? 'jobs'
+      : rightPanelView === 'preview' ? 'preview'
+      : rightPanelView === 'git' ? 'git'
+      : 'changes'
+  ) as 'changes' | 'jobs' | 'preview' | 'git' | 'checks' | 'rollback';
+
+  const canUseWorkspaceTerminal = !busy && (Boolean(trustedLocalPath) || agentOnline !== false);
+  const terminalHelp = trustedLocalPath
+    ? `Local terminal runs in ${trustedLocalPath}.`
+    : agentOnline === false
+      ? 'Open a folder to start local terminal, or start agent-service on port 8003 for cloud terminal.'
+      : 'Open a folder for local terminal, or use backend workspace runtime.';
+
+  const startFolderWatch = (path: string) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    if (!path || !electron?.watchDirectory) return false;
+    electron.watchDirectory(path);
+    setFolderWatchError(null);
+    return true;
+  };
+
+  const retryFolderWatch = () => {
+    const root = folderWatchError?.rootPath || trustedLocalPath;
+    if (!root) return;
+    if (startFolderWatch(root)) {
+      addEvent({ kind: 'read', message: 'Retrying folder watcher', detail: root });
+    }
+  };
+
+  const persistOpenProjects = (nextIds: string[], activeId?: string) => {
+    const unique = nextIds.filter((idValue, index) => idValue && nextIds.indexOf(idValue) === index).slice(0, MAX_OPEN_PROJECTS);
+    setOpenProjectIds(unique);
+    try {
+      localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(unique));
+      if (activeId !== undefined) {
+        if (activeId) localStorage.setItem(ACTIVE_PROJECT_KEY, activeId);
+        else localStorage.removeItem(ACTIVE_PROJECT_KEY);
+      }
+    } catch {
+      // Project tabs remain in memory if localStorage is unavailable.
+    }
+    return unique;
+  };
+
+  const canOpenProjectNow = (idValue: string) => openProjectIds.includes(idValue) || openProjectIds.length < MAX_OPEN_PROJECTS;
+
+  const rememberOpenProject = (idValue: string) => {
+    setOpenProjectIds((current) => {
+      const next = [idValue, ...current.filter((item) => item !== idValue)].slice(0, MAX_OPEN_PROJECTS);
+      try {
+        localStorage.setItem(OPEN_PROJECTS_KEY, JSON.stringify(next));
+        localStorage.setItem(ACTIVE_PROJECT_KEY, idValue);
+      } catch {
+        // In-memory project switcher still works.
+      }
+      return next;
+    });
+  };
 
   const localSuggestions = useMemo(
     () => buildWorkspaceSuggestions(prompt, mode, selectedFileIds.length),
@@ -147,6 +431,29 @@ export default function WorkspacePage() {
     () => (workspaceTasks.length ? workspaceTasks : suggestions),
     [suggestions, workspaceTasks]
   );
+
+  const activeSuggestion = useMemo(() => {
+    return taskRailItems.find((item) => item.id === typedSuggestionId) || taskRailItems[0] || null;
+  }, [taskRailItems, typedSuggestionId]);
+
+  const navigatorTask = useMemo(() => {
+    if (!activeSuggestion) return null;
+    return {
+      id: activeSuggestion.id,
+      objective: activeProject?.description || 'Implement developer requests in the current workspace',
+      recommendedTask: activeSuggestion.title,
+      reason: activeSuggestion.decisionReason || activeSuggestion.summary,
+      risks: activeSuggestion.risk || 'No critical architectural risks detected.',
+      suggestedActions: activeSuggestion.steps && activeSuggestion.steps.length > 0
+        ? activeSuggestion.steps
+        : [activeSuggestion.summary],
+      manualSteps: activeSuggestion.tradeoffs && activeSuggestion.tradeoffs.length > 0
+        ? activeSuggestion.tradeoffs
+        : ['Locate the target files in the explorer panel.', 'Read through functions and dependencies.', 'Perform the requested edit manually.', 'Run local test suites to verify compile correctness.'],
+      automatedPrompt: activeSuggestion.prompt
+    };
+  }, [activeSuggestion, activeProject]);
+
 
   useEffect(() => {
     try {
@@ -177,39 +484,303 @@ export default function WorkspacePage() {
     }
   }, [autoCompile, autoRunCommands, mode, sandboxType]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const checkAgentHealth = async () => {
+      try {
+        const headers = await createApiHeadersAsync();
+        const response = await fetch('/api/v1/code/projects', { headers });
+        if (!cancelled) setAgentOnline(response.ok);
+      } catch {
+        if (!cancelled) setAgentOnline(false);
+      }
+    };
+    void checkAgentHealth();
+    const timer = window.setInterval(checkAgentHealth, 10000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleTerminalShortcut = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key === '`') {
+        event.preventDefault();
+        setTerminalPanelOpen((current) => !current);
+      }
+    };
+    window.addEventListener('keydown', handleTerminalShortcut);
+    return () => window.removeEventListener('keydown', handleTerminalShortcut);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TERMINAL_PREFS_KEY, JSON.stringify({
+        open: terminalPanelOpen,
+        size: terminalPanelSize,
+      }));
+    } catch {
+      // Terminal layout preference is optional.
+    }
+  }, [terminalPanelOpen, terminalPanelSize]);
+
+  useEffect(() => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    if (!electron?.onTerminalData) return;
+    const flushTerminalStream = () => {
+      const batches = terminalStreamBufferRef.current;
+      terminalStreamBufferRef.current = {};
+      terminalStreamFlushTimerRef.current = null;
+      const entries = Object.entries(batches);
+      if (!entries.length) return;
+      setTerminalSessions((current) => {
+        let next = current;
+        for (const [terminalId, chunks] of entries) {
+          if (!chunks.length) continue;
+          const latest = chunks[chunks.length - 1];
+          const existing = next[terminalId] || {
+            id: terminalId,
+            status: 'active',
+            cwd: localWorkspacePathRef.current,
+            history: [],
+            logs: [],
+            created_at: latest.timestamp,
+          };
+          const combined = chunks.map((chunk) => chunk.data).join('');
+          next = {
+            ...next,
+            [terminalId]: {
+              ...existing,
+              status: existing.status === 'killed' ? existing.status : 'active',
+              logs: [
+                ...(existing.logs || []),
+                {
+                  status: 'stream',
+                  output_excerpt: combined,
+                  updated_at: latest.timestamp,
+                  source: 'electron-pty',
+                },
+              ].slice(-160),
+              updated_at: latest.timestamp,
+            },
+          };
+        }
+        return next;
+      });
+    };
+    const unsubscribeData = electron.onTerminalData((payload: any) => {
+      if (!payload?.id) return;
+      const terminalId = String(payload.id);
+      const seq = Number(payload.seq || 0);
+      if (seq > 0) {
+        const previousSeq = terminalLastSeqRef.current[terminalId] || 0;
+        if (seq <= previousSeq) return;
+        terminalLastSeqRef.current[terminalId] = seq;
+      }
+      terminalStreamBufferRef.current[terminalId] = [
+        ...(terminalStreamBufferRef.current[terminalId] || []),
+        { data: String(payload.data || ''), timestamp: payload.timestamp || new Date().toISOString() },
+      ];
+      if (terminalStreamFlushTimerRef.current === null) {
+        terminalStreamFlushTimerRef.current = window.setTimeout(flushTerminalStream, 50);
+      }
+    });
+    const unsubscribeExit = electron.onTerminalExit?.((payload: any) => {
+      if (!payload?.id) return;
+      setTerminalSessions((current) => {
+        const existing = current[payload.id];
+        if (!existing) return current;
+        const wasInterrupted = Number(payload.code) === -1073741510;
+        const status = payload.signal === 'killed' ? 'killed' : wasInterrupted ? 'interrupted' : 'exited';
+        const message = payload.signal === 'killed'
+          ? 'Terminal killed.'
+          : wasInterrupted
+            ? 'Terminal interrupted by Ctrl+C/control-break.'
+            : `Terminal exited${typeof payload.code === 'number' ? ` with code ${payload.code}` : ''}.`;
+        return {
+          ...current,
+          [payload.id]: {
+            ...existing,
+            status,
+            logs: [
+              ...(existing.logs || []),
+              {
+                status,
+                output_excerpt: message,
+                updated_at: payload.timestamp,
+                source: 'electron-pty',
+              },
+            ].slice(-160),
+            updated_at: payload.timestamp,
+          },
+        };
+      });
+    });
+    return () => {
+      if (terminalStreamFlushTimerRef.current !== null) {
+        window.clearTimeout(terminalStreamFlushTimerRef.current);
+        terminalStreamFlushTimerRef.current = null;
+      }
+      terminalStreamBufferRef.current = {};
+      terminalLastSeqRef.current = {};
+      unsubscribeData?.();
+      unsubscribeExit?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    if (!electron?.onFolderWatchError) return;
+    const unsubscribe = electron.onFolderWatchError((payload: any) => {
+      const root = payload?.rootPath || trustedLocalPath || 'workspace folder';
+      setFolderWatchError({
+        rootPath: root,
+        message: payload?.message || 'The folder watcher could not read part of this workspace.',
+      });
+      addEvent({
+        kind: 'error',
+        message: 'Folder watcher paused',
+        detail: `${payload?.message || 'The folder watcher could not read part of this workspace.'} Retry by reopening Explorer or the folder. (${root})`,
+      });
+    });
+    return () => unsubscribe?.();
+  }, [trustedLocalPath]);
+
   const openFile = useMemo(
     () => openTabs.find((file) => file.id === activeFileId) || openTabs[0] || null,
     [activeFileId, openTabs]
   );
 
+  const visibleFiles = useMemo(
+    () => files,
+    [files]
+  );
+
   const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
-    const projectItems = projects.slice(0, 5).map((project) => ({
+    const projectItems = openProjects.map((project) => ({
       id: `project-${project.id}`,
       label: project.name,
-      detail: project.repo_url || `${project.file_ids?.length || 0} file${project.file_ids?.length === 1 ? '' : 's'}`,
+      detail: project.local_workspace_path || project.repo_url || `${project.file_count ?? project.file_ids?.length ?? 0} file${(project.file_count ?? project.file_ids?.length) === 1 ? '' : 's'}`,
       kind: 'project' as const,
     }));
-    const jobItems = jobs.slice(0, 4).map((job) => ({
-      id: `job-${job.id}`,
-      label: job.prompt || `${job.mode || 'Agent'} job`,
-      detail: job.status || 'job',
-      kind: 'job' as const,
+    const taskItems = workspaceTasks.slice(0, 4).map((task) => ({
+      id: `task-${task.id}`,
+      label: task.title,
+      detail: task.status || task.mode || 'task',
+      kind: 'task' as const,
     }));
-    const fileItems = files.slice(0, 4).map((file) => ({
-      id: `file-${file.id}`,
-      label: file.filename,
-      detail: file.content_type || 'workspace file',
-      kind: 'file' as const,
-    }));
-    return [...projectItems, ...jobItems, ...fileItems].slice(0, 8);
-  }, [files, jobs, projects]);
+    return [...projectItems, ...taskItems].slice(0, 8);
+  }, [openProjects, workspaceTasks]);
 
   const addEvent = (event: Omit<ActivityEvent, 'id'>) => {
     setEvents((current) => [{ ...event, id: id('evt') }, ...current].slice(0, 80));
   };
 
-  const addMessage = (role: WorkspaceMessage['role'], content: string) => {
-    setMessages((current) => [...current, { id: id(role), role, content }]);
+  const addMessage = (role: WorkspaceMessage['role'], content: string, receipt?: WorkspaceWorkReceipt) => {
+    setMessages((current) => [...current, { id: id(role), role, content, receipt }]);
+  };
+
+  const selectedWorkspaceFilenames = (fileIds = selectedFileIds) => {
+    const selectedSet = new Set(fileIds);
+    return files.filter((file) => selectedSet.has(file.id)).map((file) => file.filename);
+  };
+
+  const resolveEffectiveFileIds = (value: string) => {
+    const ids = new Set(selectedFileIds);
+    if (promptTargetsActiveFile(value) && openFile?.id) {
+      ids.add(openFile.id);
+    }
+    return Array.from(ids);
+  };
+
+  const buildReceipt = ({
+    summary,
+    receiptMode,
+    intent,
+    plan,
+    preview,
+    commandsRun = [],
+    checks = [],
+    nextActions = [],
+    approvalState,
+    contextFileIds,
+  }: {
+    summary: string;
+    receiptMode: WorkspaceWorkReceipt['mode'];
+    intent: string;
+    plan?: string;
+    preview?: any[];
+    commandsRun?: Array<{ label: string; status?: string }>;
+    checks?: Array<{ label: string; status?: string }>;
+    nextActions?: WorkspaceSuggestion[];
+    approvalState?: string;
+    contextFileIds?: string[];
+  }): WorkspaceWorkReceipt => ({
+    summary,
+    mode: receiptMode,
+    intent,
+    project: activeProject?.name || 'Workspace',
+    session: sessionId ? sessionId.slice(0, 8) : undefined,
+    plan,
+    filesInspected: selectedWorkspaceFilenames(contextFileIds),
+    filesChanged: (preview || []).map((item) => ({
+      filename: item.filename || item.new_filename || item.file_id || 'workspace file',
+      operation: item.operation || item.type || 'modify',
+      additions: item.additions || 0,
+      deletions: item.deletions || 0,
+    })),
+    foldersCreated: (preview || []).filter((item) => (item.operation || item.type) === 'folder').map((item) => item.filename),
+    commands: commandsRun.length ? commandsRun : commands.slice(0, 4).map((command) => ({ label: command.command || command.label, status: 'recommended' })),
+    checks,
+    checksPassed: checks.filter((check) => /pass|success|done|completed/i.test(check.status || '')).length,
+    checksFailed: checks.filter((check) => /fail|error|blocked|timeout/i.test(check.status || '')).length,
+    approvalState,
+    lineImpact: {
+      additions: (preview || []).reduce((total, item) => total + (item.additions || 0), 0),
+      deletions: (preview || []).reduce((total, item) => total + (item.deletions || 0), 0),
+    },
+    nextActions: nextActions.slice(0, 3),
+  });
+
+  const buildErrorReceipt = (classified: ClassifiedError, intent = inferReceiptIntent(prompt || mode)): WorkspaceWorkReceipt => ({
+    summary: classified.message,
+    mode: 'error',
+    intent,
+    project: activeProject?.name || 'Workspace',
+    session: sessionId ? sessionId.slice(0, 8) : undefined,
+    plan: classified.hint,
+    filesInspected: selectedWorkspaceFilenames(),
+    filesChanged: [],
+    commands: [],
+    checks: [{ label: classified.class, status: 'failed' }],
+    checksPassed: 0,
+    checksFailed: 1,
+    approvalState: 'failed',
+    lineImpact: { additions: 0, deletions: 0 },
+    nextActions: suggestions.slice(0, 3),
+    errorClass: classified.class,
+    errorHint: classified.hint,
+    rawError: classified.raw,
+  });
+
+  const reportWorkspaceError = (error: unknown, fallbackMessage: string, options: { chat?: boolean; intent?: string } = {}) => {
+    const classified = classifyError(error);
+    addEvent({
+      kind: 'error',
+      message: classified.message || fallbackMessage,
+      detail: classified.hint,
+      errorClass: classified.class,
+      raw: classified.raw,
+    } as ActivityEvent & { errorClass?: string; raw?: string });
+    if (options.chat) {
+      addMessage(
+        'assistant',
+        `${classified.message}\n\n${classified.hint}${classified.raw ? `\n\nDetails: ${classified.raw}` : ''}`,
+        buildErrorReceipt(classified, options.intent || fallbackMessage)
+      );
+    }
+    return classified;
   };
 
   const updateOpenTab = (fileId: string, updater: (file: OpenWorkspaceFile) => OpenWorkspaceFile) => {
@@ -253,6 +824,10 @@ export default function WorkspacePage() {
     setGithubRepositories([]);
     setSelectedGithubRepo('');
     setGithubBranchName('');
+    setLocalWorkspacePath('');
+    setTerminalSessions({});
+    setActiveTerminalId('');
+    setTerminalCommand('');
     setOpenTabs([]);
     setActiveFileId('');
     setSearchMatches([]);
@@ -262,7 +837,7 @@ export default function WorkspacePage() {
 
   const createProject = async () => {
     if (busy) return;
-    const fallbackName = `NEXUS Code Project ${new Date().toLocaleDateString()}`;
+    const fallbackName = `Arceus Code Project ${new Date().toLocaleDateString()}`;
     const name = window.prompt('Project name', fallbackName)?.trim() || fallbackName;
     setBusy(true);
     try {
@@ -272,6 +847,7 @@ export default function WorkspacePage() {
         body: JSON.stringify({ name, file_ids: [] }),
       });
       setProjectId(project.id);
+      rememberOpenProject(project.id);
       if (project.session?.id) {
         setSessionId(project.session.id);
         localStorage.setItem('nexus.code.session_id', project.session.id);
@@ -281,16 +857,53 @@ export default function WorkspacePage() {
       setFilesOpen(true);
       setTimeout(() => fileInputRef.current?.click(), 0);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Create project failed', detail: error instanceof Error ? error.message : 'Could not create project.' });
+      reportWorkspaceError(error, 'Create project failed');
     } finally {
       setBusy(false);
     }
   };
 
-  const importLocalDirectory = async (localPath: string) => {
+  const importLocalDirectory = async (localPath: string, forceOpen = false) => {
     if (busy) return;
+    const existingProject = projects.find((project) => project.local_workspace_path === localPath || project.metadata?.local_workspace_path === localPath);
+    if (!forceOpen && existingProject && !canOpenProjectNow(existingProject.id)) {
+      setPendingProjectOpen({ kind: 'local', localPath });
+      return;
+    }
+    if (!forceOpen && !existingProject && openProjectIds.length >= MAX_OPEN_PROJECTS) {
+      setPendingProjectOpen({ kind: 'local', localPath });
+      return;
+    }
     setBusy(true);
     try {
+      if (!existingProject) {
+        try {
+          const linkedProject = await apiRequest(`/api/v1/code/projects/by-path?path=${encodeURIComponent(localPath)}`);
+          if (linkedProject?.id) {
+            setProjects((current) => [linkedProject, ...current.filter((project) => project.id !== linkedProject.id)]);
+            if (!forceOpen && !canOpenProjectNow(linkedProject.id)) {
+              setPendingProjectOpen({ kind: 'project', projectId: linkedProject.id });
+              return;
+            }
+            resetWorkspaceForProject();
+            setProjectId(linkedProject.id);
+            const trustedPath = linkedProject.local_workspace_path || linkedProject.metadata?.local_workspace_path || localPath;
+            setLocalWorkspacePath(trustedPath);
+            rememberOpenProject(linkedProject.id);
+            setSelected(Object.fromEntries((linkedProject.file_ids || []).map((fileId: string) => [fileId, true])));
+            startFolderWatch(trustedPath);
+            if (linkedProject.active_session_id) {
+              localStorage.setItem('nexus.code.session_id', linkedProject.active_session_id);
+              await hydrateSession(linkedProject.active_session_id);
+            }
+            await loadProjects();
+            addEvent({ kind: 'read', message: `Reopened ${linkedProject.name}`, detail: trustedPath });
+            return;
+          }
+        } catch {
+          // No linked project exists yet; import below will create one.
+        }
+      }
       resetWorkspaceForProject();
       const session = await apiRequest('/api/v1/code/sessions/import-local', {
         method: 'POST',
@@ -298,12 +911,15 @@ export default function WorkspacePage() {
       });
       setProjectId(session.project_id);
       setSessionId(session.id);
+      setLocalWorkspacePath(localPath);
+      if (session.project_id) rememberOpenProject(session.project_id);
       localStorage.setItem('nexus.code.session_id', session.id);
+      startFolderWatch(localPath);
       await loadProjects();
       addEvent({ kind: 'start', message: 'Local directory imported', detail: localPath });
       await hydrateSession(session.id);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Import local directory failed', detail: error instanceof Error ? error.message : 'Could not import directory.' });
+      reportWorkspaceError(error, 'Import local directory failed');
     } finally {
       setBusy(false);
     }
@@ -318,12 +934,20 @@ export default function WorkspacePage() {
     }
   };
 
-  const openCodeProject = async (idValue: string) => {
+  const openCodeProject = async (idValue: string, forceOpen = false) => {
     if (busy) return;
+    if (!forceOpen && !canOpenProjectNow(idValue)) {
+      setPendingProjectOpen({ kind: 'project', projectId: idValue });
+      return;
+    }
     setBusy(true);
     try {
       const project = await apiRequest(`/api/v1/code/projects/${idValue}`);
       setProjectId(project.id);
+      const trustedPath = project.local_workspace_path || project.metadata?.local_workspace_path || '';
+      setLocalWorkspacePath(trustedPath);
+      startFolderWatch(trustedPath);
+      rememberOpenProject(project.id);
       const fileIds = project.file_ids || [];
       setSelected(Object.fromEntries(fileIds.map((fileId: string) => [fileId, true])));
       if (project.active_session_id) {
@@ -341,7 +965,7 @@ export default function WorkspacePage() {
       await loadProjects();
       addEvent({ kind: 'read', message: `Opened ${project.name}`, detail: `${fileIds.length} project file(s) linked.` });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Open project failed', detail: error instanceof Error ? error.message : 'Could not open project.' });
+      reportWorkspaceError(error, 'Open project failed');
     } finally {
       setBusy(false);
     }
@@ -360,12 +984,119 @@ export default function WorkspacePage() {
     focusWorkspaceSearch();
   };
 
-  const newChat = () => {
-    setMessages([]);
-    setPrompt('');
-    setTypedSuggestionId('');
-    setBackendSuggestions([]);
-    addEvent({ kind: 'start', message: 'New chat started', detail: 'Current project files remain in context.' });
+  const closeProjectTab = (idValue: string) => {
+    const next = openProjectIds.filter((item) => item !== idValue);
+    persistOpenProjects(next, projectId === idValue ? next[0] || '' : projectId);
+    setMergeSelection((current) => current.filter((item) => item !== idValue));
+    if (projectId === idValue) {
+      if (next[0]) void openCodeProject(next[0]);
+      else resetWorkspaceForProject();
+    }
+  };
+
+  const removeProjectFromApp = async (idValue: string) => {
+    const project = projects.find((item) => item.id === idValue);
+    const ok = window.confirm(`Remove ${project?.name || 'this project'} from Arceus? This does not delete the folder from your computer.`);
+    if (!ok) return;
+    try {
+      await apiRequest(`/api/v1/code/projects/${idValue}`, { method: 'DELETE' });
+      const next = openProjectIds.filter((item) => item !== idValue);
+      persistOpenProjects(next, projectId === idValue ? next[0] || '' : projectId);
+      setProjects((current) => current.filter((item) => item.id !== idValue));
+      setMergeSelection((current) => current.filter((item) => item !== idValue));
+      if (projectId === idValue) {
+        if (next[0]) void openCodeProject(next[0]);
+        else resetWorkspaceForProject();
+      }
+      addEvent({ kind: 'done', message: 'Project removed from app', detail: project?.name || idValue });
+    } catch (error) {
+      reportWorkspaceError(error, 'Remove project failed');
+    }
+  };
+
+  const toggleMergeProject = (idValue: string) => {
+    setMergeSelection((current) => {
+      if (current.includes(idValue)) return current.filter((item) => item !== idValue);
+      return [...current, idValue].slice(-2);
+    });
+  };
+
+  const mergeSelectedProjects = async () => {
+    if (mergeSelection.length !== 2 || busy) return;
+    setBusy(true);
+    try {
+      const first = projects.find((project) => project.id === mergeSelection[0]);
+      const second = projects.find((project) => project.id === mergeSelection[1]);
+      const merged = await apiRequest('/api/v1/code/projects/merge', {
+        method: 'POST',
+        body: JSON.stringify({
+          source_project_ids: mergeSelection,
+          name: first && second ? `Merged: ${first.name} + ${second.name}` : undefined,
+        }),
+      });
+      await loadProjects();
+      setMergeSelection([]);
+      rememberOpenProject(merged.id);
+      if (merged.session?.id) {
+        localStorage.setItem('nexus.code.session_id', merged.session.id);
+        await hydrateSession(merged.session.id);
+      } else {
+        await openCodeProject(merged.id);
+      }
+      addEvent({
+        kind: 'done',
+        message: 'Merged project created',
+        detail: `${merged.merge?.copied?.length || 0} files copied. Originals were not changed.`,
+      });
+    } catch (error) {
+      reportWorkspaceError(error, 'Merge projects failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const replaceOpenProject = async (closeId: string) => {
+    const next = openProjectIds.filter((item) => item !== closeId);
+    persistOpenProjects(next, projectId === closeId ? '' : projectId);
+    const pending = pendingProjectOpen;
+    setPendingProjectOpen(null);
+    if (!pending) return;
+    if (pending.kind === 'project') {
+      await openCodeProject(pending.projectId, true);
+    } else {
+      await importLocalDirectory(pending.localPath, true);
+    }
+  };
+
+  const newChat = async () => {
+    if (busy) return;
+    if (!projectId || !activeProject) {
+      addEvent({ kind: 'error', message: 'Open a project first', detail: 'New chats are scoped to a project folder.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const session = await apiRequest(`/api/v1/code/projects/${projectId}/sessions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: `${activeProject.name} chat`,
+          file_ids: activeProject.file_ids || selectedFileIds,
+          project_id: projectId,
+        }),
+      });
+      setMessages([]);
+      setPrompt('');
+      setTypedSuggestionId('');
+      setBackendSuggestions([]);
+      setSessionId(session.id);
+      localStorage.setItem('nexus.code.session_id', session.id);
+      await hydrateSession(session.id);
+      addEvent({ kind: 'start', message: 'Project chat started', detail: `${activeProject.name} only.` });
+    } catch (error) {
+      reportWorkspaceError(error, 'New chat failed');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const updatePrompt = (value: string) => {
@@ -395,7 +1126,7 @@ export default function WorkspacePage() {
         body: JSON.stringify({
           user_description: trimmed,
           selected_mode: currentMode,
-          selected_file_ids: selectedFileIds,
+          selected_file_ids: resolveEffectiveFileIds(trimmed),
           open_file_ids: openTabs.map((file) => file.id),
           current_prompt: trimmed,
           recent_messages: messages.slice(-6).map((message) => ({ role: message.role, content: message.content.slice(0, 1000) })),
@@ -467,6 +1198,12 @@ export default function WorkspacePage() {
       const session = await apiRequest(`/api/v1/code/sessions/${idValue}`);
       setSessionId(session.id);
       setProjectId(session.project_id || '');
+      if (session.project_id) rememberOpenProject(session.project_id);
+      setLocalWorkspacePath(session.metadata_json?.local_workspace_path || '');
+      const hydratedTerminals = session.metadata_json?.terminal_sessions || {};
+      setTerminalSessions(hydratedTerminals);
+      const firstTerminalId = Object.keys(hydratedTerminals)[0] || '';
+      setActiveTerminalId((current) => (current && hydratedTerminals[current] ? current : firstTerminalId));
       setSelected(Object.fromEntries((session.file_ids || []).map((fileId: string) => [fileId, true])));
       setEvents(normalizeEvents(session.activity_log || []));
       setPatchPreview(session.patch_preview || []);
@@ -501,17 +1238,34 @@ export default function WorkspacePage() {
       }
       await refreshGithubState();
       
-      if (session.metadata_json?.local_workspace_path && typeof window !== 'undefined' && (window as any).electron) {
-        (window as any).electron.watchDirectory(session.metadata_json.local_workspace_path);
+      if (session.metadata_json?.local_workspace_path) {
+        startFolderWatch(session.metadata_json.local_workspace_path);
       }
     } catch {
       localStorage.removeItem('nexus.code.session_id');
       setSessionId('');
+      setLocalWorkspacePath('');
       setPatchPreview([]);
       setAnalysis(null);
       setRollbackSnapshots([]);
       setCommands([]);
       setRuntimeStatus(null);
+      setDiagnostics([]);
+      setTerminalSessions({});
+      setActiveTerminalId('');
+    }
+  };
+
+  const refreshDiagnostics = async (idValue: string) => {
+    if (!idValue) {
+      setDiagnostics([]);
+      return;
+    }
+    try {
+      const data = await apiRequest(`/api/v1/code/sessions/${idValue}/diagnostics`);
+      setDiagnostics(data.diagnostics || []);
+    } catch {
+      setDiagnostics([]);
     }
   };
 
@@ -528,6 +1282,12 @@ export default function WorkspacePage() {
     } catch {
       setJobs([]);
     }
+    try {
+      const status = await apiRequest('/api/v1/code/worker/status');
+      setWorkerStatus(status);
+    } catch {
+      setWorkerStatus({ enabled: false, alive: false });
+    }
   };
 
   const refreshCurrentJobs = async () => {
@@ -542,7 +1302,29 @@ export default function WorkspacePage() {
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 20));
       addEvent({ kind: 'done', message: 'Job cancelled', detail: `${job.mode} - ${job.status}` });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Cancel job failed', detail: error instanceof Error ? error.message : 'Could not cancel job.' });
+      reportWorkspaceError(error, 'Cancel job failed');
+    }
+  };
+
+  const pauseJob = async (jobId: string) => {
+    if (busy) return;
+    try {
+      const job = await apiRequest(`/api/v1/code/jobs/${jobId}/pause`, { method: 'POST' });
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 20));
+      addEvent({ kind: 'done', message: 'Job paused', detail: `${job.mode} - ${job.status}` });
+    } catch (error) {
+      reportWorkspaceError(error, 'Pause job failed');
+    }
+  };
+
+  const resumeJob = async (jobId: string) => {
+    if (busy) return;
+    try {
+      const job = await apiRequest(`/api/v1/code/jobs/${jobId}/resume`, { method: 'POST' });
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)].slice(0, 20));
+      addEvent({ kind: 'code', message: 'Job resumed', detail: `${job.mode} - ${job.status}` });
+    } catch (error) {
+      reportWorkspaceError(error, 'Resume job failed');
     }
   };
 
@@ -553,8 +1335,335 @@ export default function WorkspacePage() {
       if (result.job) setJobs((current) => [result.job, ...current.filter((item) => item.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'code', message: 'Background job retried', detail: result.job?.prompt || jobId });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Retry job failed', detail: error instanceof Error ? error.message : 'Could not retry job.' });
+      reportWorkspaceError(error, 'Retry job failed');
     }
+  };
+
+  const upsertTerminal = (terminal?: TerminalSession | null) => {
+    if (!terminal?.id) return;
+    setTerminalSessions((current) => ({ ...current, [terminal.id]: terminal }));
+    setActiveTerminalId(terminal.id);
+  };
+
+  const createLocalTerminal = async (shellProfile = 'powershell', options: { reuseExisting?: boolean } = {}) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.terminalCreate) {
+      throw new Error('Open a folder first to create a trusted local terminal.');
+    }
+    if (options.reuseExisting !== false) {
+      const existing = Object.values(terminalSessions).find((terminal) => terminal.id?.startsWith('local-') && sameLocalPath(terminal.cwd, trustedPath) && !['killed', 'exited', 'failed'].includes(terminal.status || ''));
+      if (existing) {
+        setActiveTerminalId(existing.id);
+        return existing;
+      }
+    }
+    const terminal = await electron.terminalCreate(trustedPath, { cols: 100, rows: 28, shell: shellProfile });
+    const normalizedTerminal: TerminalSession = {
+      id: terminal.id,
+      status: terminal.status || 'active',
+      cwd: terminal.cwd || trustedPath,
+      backend: terminal.backend || 'unknown',
+      history: terminal.history || [],
+      logs: terminal.logs || [],
+      created_at: terminal.created_at,
+      updated_at: terminal.updated_at,
+    };
+    upsertTerminal(normalizedTerminal);
+    addEvent({
+      kind: terminal.backend === 'node-pty' ? 'deploy' : 'error',
+      message: terminal.backend === 'node-pty' ? 'Local terminal created' : 'Local terminal fallback active',
+      detail: terminal.backend === 'node-pty'
+        ? (normalizedTerminal.cwd || trustedPath)
+        : 'node-pty is unavailable, so Arceus is using command-bar mode. Run npm install in desktop or rebuild node-pty for full interactive terminal.',
+    });
+    return normalizedTerminal;
+  };
+
+  const createTerminal = async (shellProfile = 'powershell') => {
+    if (busy) return;
+    setTerminalPanelOpen(true);
+    if (agentOnline === false) {
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+      if (!trustedPath || !electron?.terminalCreate) {
+        addEvent({ kind: 'error', message: 'Open a folder for terminal', detail: 'The Agent API is offline. Local terminal still works after you open a trusted folder.' });
+        return;
+      }
+    }
+    try {
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+      if (trustedPath && electron?.terminalCreate) {
+        await createLocalTerminal(shellProfile, { reuseExisting: false });
+        return;
+      }
+      const sid = await ensureSession();
+      const terminalId = id('cloud-terminal');
+      const terminal: TerminalSession = {
+        id: terminalId,
+        status: 'connecting',
+        cwd: 'cloud workspace',
+        history: [],
+        logs: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      upsertTerminal(terminal);
+      addEvent({ kind: 'deploy', message: 'Cloud PTY terminal opening', detail: 'Connecting to agent-service WebSocket.' });
+    } catch (error) {
+      reportWorkspaceError(error, 'Terminal create failed', { chat: true, intent: 'Terminal' });
+    }
+  };
+
+  const sendTerminalInput = async () => {
+    const command = terminalCommand.trim();
+    if (busy || !command) return;
+    setTerminalPanelOpen(true);
+    try {
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+      if (trustedPath && electron?.terminalInput) {
+        const localTerminal = activeTerminalId?.startsWith('local-')
+          ? terminalSessions[activeTerminalId]
+          : await createLocalTerminal();
+        const terminalId = localTerminal.id;
+        const result = await electron.terminalInput(terminalId, command);
+        setTerminalSessions((current) => {
+          const existing = current[terminalId] || {
+            id: terminalId,
+            cwd: trustedPath,
+            status: 'active',
+            logs: [],
+            history: [],
+          };
+          return {
+            ...current,
+            [terminalId]: {
+              ...existing,
+              status: result.status || 'active',
+              backend: result.backend || existing.backend,
+              history: result.history || [...(existing.history || []), command],
+              updated_at: new Date().toISOString(),
+            },
+          };
+        });
+        setActiveTerminalId(terminalId);
+        setTerminalCommand('');
+        addEvent({ kind: 'deploy', message: `Local terminal: ${command}`, detail: trustedPath || 'trusted workspace' });
+        return;
+      }
+      if (agentOnline === false) {
+        addEvent({ kind: 'error', message: 'Open folder or start Agent API', detail: 'Local terminal needs a trusted folder. Cloud terminal needs agent-service on port 8003.' });
+        return;
+      }
+      if (activeTerminalId?.startsWith('cloud-terminal') || activeTerminalId?.startsWith('pty-')) {
+        setTerminalSessions((current) => {
+          const existing = current[activeTerminalId];
+          if (!existing) return current;
+          return {
+            ...current,
+            [activeTerminalId]: {
+              ...existing,
+              logs: [
+                ...(existing.logs || []),
+                { status: 'input', output_excerpt: `${command}\r`, updated_at: new Date().toISOString(), source: 'cloud-pty' },
+              ].slice(-240),
+              history: [...(existing.history || []), command].slice(-80),
+              updated_at: new Date().toISOString(),
+            },
+          };
+        });
+        setTerminalCommand('');
+        addEvent({ kind: 'deploy', message: `Cloud terminal: ${command}`, detail: 'Command sent to active PTY.' });
+        return;
+      }
+      const sid = await ensureSession();
+      const result = activeTerminalId
+        ? await apiRequest(`/api/v1/code/terminal/${activeTerminalId}/input`, {
+            method: 'POST',
+            body: JSON.stringify({ input: command }),
+          })
+        : await apiRequest(`/api/v1/code/sessions/${sid}/terminal`, {
+            method: 'POST',
+            body: JSON.stringify({ command, approved: false }),
+          });
+      upsertTerminal(result.terminal);
+      if (result.job) setJobs((current) => [result.job, ...current.filter((item) => item.id !== result.job.id)].slice(0, 20));
+      setTerminalCommand('');
+      addEvent({
+        kind: result.result?.status === 'failed' ? 'error' : 'deploy',
+        message: `Terminal: ${command}`,
+        detail: result.result?.output_excerpt || result.result?.status || 'Command recorded.',
+      });
+      await hydrateSession(sid);
+    } catch (error) {
+      reportWorkspaceError(error, 'Terminal command failed', { chat: true, intent: 'Terminal' });
+    }
+  };
+
+  const sendTerminalRawInput = useCallback(async (terminalId: string, input: string) => {
+    if (!terminalId || !input || !terminalId.startsWith('local-')) return;
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.terminalInput) return;
+    try {
+      const result = await electron.terminalInput(terminalId, input, { raw: true });
+      setTerminalSessions((current) => {
+        const existing = current[terminalId];
+        if (!existing) return current;
+        return {
+          ...current,
+          [terminalId]: {
+            ...existing,
+            status: result.status || existing.status || 'active',
+            backend: result.backend || existing.backend,
+            history: result.history || existing.history || [],
+            updated_at: new Date().toISOString(),
+          },
+        };
+      });
+    } catch (error) {
+      reportWorkspaceError(error, 'Terminal input failed');
+    }
+  }, [activeProject?.local_workspace_path, activeProject?.metadata?.local_workspace_path, localWorkspacePath]);
+
+  const resizeTerminal = useCallback(async (terminalId: string, cols: number, rows: number) => {
+    if (!terminalId || !terminalId.startsWith('local-')) return;
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    if (!electron?.terminalResize) return;
+    try {
+      await electron.terminalResize(terminalId, cols, rows);
+    } catch {
+      // Resize is best-effort; stale terminals may disappear during reloads.
+    }
+  }, []);
+
+  const handleCloudTerminalFrame = useCallback((terminalId: string, frame: Record<string, any>) => {
+    if (!terminalId) return;
+    const frameType = frame.type || frame.event || 'event';
+    setTerminalSessions((current) => {
+      const existing = current[terminalId];
+      if (!existing) return current;
+      const output = typeof frame.data === 'string'
+        ? frame.data
+        : frame.message || frame.reason || '';
+      const nextStatus =
+        frameType === 'ready' ? 'active'
+          : frameType === 'exit' ? 'exited'
+          : frameType === 'error' ? 'failed'
+          : frameType === 'blocked' ? 'blocked'
+          : frameType === 'connecting' ? 'connecting'
+          : existing.status || 'active';
+      return {
+        ...current,
+        [terminalId]: {
+          ...existing,
+          status: nextStatus,
+          cwd: frame.cwd || existing.cwd,
+          logs: output
+            ? [
+                ...(existing.logs || []),
+                {
+                  status: frameType,
+                  output_excerpt: String(output),
+                  updated_at: new Date().toISOString(),
+                  source: 'cloud-pty',
+                },
+              ].slice(-240)
+            : existing.logs || [],
+          updated_at: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const hasLocalTerminal = Object.values(terminalSessions).some((terminal) => terminal.id?.startsWith('local-') && sameLocalPath(terminal.cwd, trustedLocalPath) && !['killed', 'exited', 'failed'].includes(terminal.status || ''));
+    const autoKey = `${projectId || 'workspace'}:${trustedLocalPath}`;
+    if (!terminalPanelOpen || !trustedLocalPath || hasLocalTerminal || busy || !electron?.terminalCreate || autoCreatedTerminalRef.current === autoKey) return;
+    autoCreatedTerminalRef.current = autoKey;
+    void createLocalTerminal('powershell', { reuseExisting: true }).catch((error) => {
+      autoCreatedTerminalRef.current = '';
+      addEvent({
+        kind: 'error',
+        message: 'Local terminal unavailable',
+        detail: classifyError(error).hint,
+      });
+    });
+  }, [busy, projectId, terminalPanelOpen, terminalSessions, trustedLocalPath]);
+
+  useEffect(() => {
+    if (!normalizedTrustedLocalPath || rightPanelOpen) return;
+    setRightPanelView('explorer');
+    setRightPanelOpen(true);
+  }, [normalizedTrustedLocalPath, rightPanelOpen]);
+
+  const killTerminal = async (terminalId: string) => {
+    if (busy || !terminalId) return;
+    try {
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      if (terminalId.startsWith('local-') && electron?.terminalKill) {
+        const result = await electron.terminalKill(terminalId);
+        setTerminalSessions((current) => ({
+          ...current,
+          [terminalId]: {
+            ...(current[terminalId] || { id: terminalId, history: [], logs: [] }),
+            status: result.status || 'killed',
+            updated_at: new Date().toISOString(),
+          },
+        }));
+        addEvent({ kind: 'done', message: 'Local terminal killed', detail: terminalId.slice(0, 8) });
+        return;
+      }
+      if (terminalId.startsWith('cloud-terminal') || terminalId.startsWith('pty-')) {
+        setTerminalSessions((current) => ({
+          ...current,
+          [terminalId]: {
+            ...(current[terminalId] || { id: terminalId, history: [], logs: [] }),
+            status: 'killed',
+            logs: [
+              ...((current[terminalId]?.logs || [])),
+              {
+                status: 'killed',
+                output_excerpt: 'Terminal killed.',
+                updated_at: new Date().toISOString(),
+                source: 'cloud-pty',
+              },
+            ].slice(-240),
+            updated_at: new Date().toISOString(),
+          },
+        }));
+        addEvent({ kind: 'done', message: 'Cloud terminal killed', detail: terminalId.slice(0, 8) });
+        return;
+      }
+      const result = await apiRequest(`/api/v1/code/terminal/${terminalId}/kill`, { method: 'POST' });
+      upsertTerminal(result.terminal);
+      addEvent({ kind: 'done', message: 'Terminal killed', detail: terminalId.slice(0, 8) });
+    } catch (error) {
+      reportWorkspaceError(error, 'Kill terminal failed');
+    }
+  };
+
+  const clearTerminal = (terminalId: string) => {
+    setTerminalSessions((current) => {
+      const terminal = current[terminalId];
+      if (!terminal) return current;
+      return {
+        ...current,
+        [terminalId]: {
+          ...terminal,
+          logs: [],
+          updated_at: new Date().toISOString(),
+        },
+      };
+    });
+  };
+
+  const restartTerminal = async (terminalId: string) => {
+    await killTerminal(terminalId);
+    await createTerminal();
   };
 
   const refreshCommands = async (idValue: string) => {
@@ -605,8 +1714,39 @@ export default function WorkspacePage() {
     } catch {
       setGithubStatus(null);
       setGithubRepositories([]);
+      setGithubBranches([]);
     }
   };
+
+  const refreshGithubBranches = async (repository = selectedGithubRepo, forceDefault = false) => {
+    if (!repository) {
+      setGithubBranches([]);
+      return;
+    }
+    try {
+      const result = await apiRequest(`/api/v1/github/branches?repository=${encodeURIComponent(repository)}`);
+      const branches = result.branches || [];
+      setGithubBranches(branches);
+      setGithubBaseBranch((current) => (forceDefault ? branches[0]?.name || '' : current || branches[0]?.name || ''));
+    } catch {
+      setGithubBranches([]);
+      setGithubBaseBranch('');
+    }
+  };
+
+  useEffect(() => {
+    refreshGithubBranches(selectedGithubRepo, true);
+  }, [selectedGithubRepo]);
+
+  useEffect(() => {
+    const onGitHubConnected = (event: MessageEvent) => {
+      if (event.data?.type !== 'arceus.github.connected') return;
+      refreshGithubState();
+      addEvent({ kind: 'done', message: 'GitHub connected', detail: 'Repository access is ready. Choose a repo to import or open a PR.' });
+    };
+    window.addEventListener('message', onGitHubConnected);
+    return () => window.removeEventListener('message', onGitHubConnected);
+  }, []);
 
   const loadRollbackSnapshots = async (idValue = sessionId) => {
     if (!idValue) {
@@ -622,6 +1762,17 @@ export default function WorkspacePage() {
   };
 
   useEffect(() => {
+    try {
+      const rawOpenProjects = localStorage.getItem(OPEN_PROJECTS_KEY);
+      if (rawOpenProjects) {
+        const parsed = JSON.parse(rawOpenProjects);
+        if (Array.isArray(parsed)) setOpenProjectIds(parsed.filter(Boolean).slice(0, MAX_OPEN_PROJECTS));
+      }
+      const activeProjectId = localStorage.getItem(ACTIVE_PROJECT_KEY);
+      if (activeProjectId) setProjectId(activeProjectId);
+    } catch {
+      // Project switcher state is optional.
+    }
     loadProjects();
     loadFiles();
     const params = new URLSearchParams(window.location.search);
@@ -647,13 +1798,85 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     if (!sessionId) return;
-    const hasRunningJob = jobs.some((job) => ['running', 'queued'].includes(job.status));
+    const hasRunningJob = jobs.some((job) => ['running', 'queued', 'claimed', 'retrying', 'cancel_requested'].includes(job.status));
     if (!hasRunningJob) return;
     const timer = window.setInterval(() => {
       void refreshJobs(sessionId);
-    }, 4000);
+    }, typeof window !== 'undefined' && typeof EventSource !== 'undefined' ? 10000 : 4000);
     return () => window.clearInterval(timer);
   }, [jobs, sessionId]);
+
+  useEffect(() => {
+    const streamableJobs = jobs.filter((job) => job.id && ['queued', 'claimed', 'running', 'retrying', 'cancel_requested'].includes(job.status || ''));
+    if (!streamableJobs.length || typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+    const sources = streamableJobs.map((job) => {
+      const source = new EventSource(`/api/v1/jobs/${job.id}/stream`);
+      source.addEventListener('log', (event) => {
+        try {
+          const log = JSON.parse((event as MessageEvent).data);
+          setJobs((current) => current.map((item) => (
+            item.id === job.id
+              ? { ...item, logs: [...(item.logs || []), log].slice(-300) }
+              : item
+          )));
+        } catch {
+          // The polling fallback will correct malformed stream data.
+        }
+      });
+      source.addEventListener('status', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data);
+          setJobs((current) => current.map((item) => (
+            item.id === job.id
+              ? { ...item, status: payload.status || item.status, progress: payload.progress || item.progress }
+              : item
+          )));
+        } catch {
+          // Polling fallback remains active.
+        }
+      });
+      source.addEventListener('done', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data);
+          setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 20));
+        } catch {
+          void refreshCurrentJobs();
+        }
+        source.close();
+      });
+      source.onerror = () => {
+        source.close();
+      };
+      return source;
+    });
+    return () => sources.forEach((source) => source.close());
+  }, [jobs.map((job) => `${job.id}:${job.status}`).join('|')]);
+
+  useEffect(() => {
+    if (!projectId || sessionId || busy || !projects.some((project) => project.id === projectId)) return;
+    void openCodeProject(projectId);
+  }, [busy, projectId, projects, sessionId]);
+
+  useEffect(() => {
+    const failedJob = jobs.find((job) => ['failed', 'timeout', 'dead_letter'].includes(job.status || ''));
+    const previewIssue = previewChecks.find((check) => check.status && check.status !== 'passed');
+    const activeTerminal = Object.values(terminalSessions).find((terminal) => ['running', 'active'].includes(terminal.status || '') && (terminal.logs || []).length > 0);
+    if (activeTerminal && lastAutoOpenedTerminalRef.current !== activeTerminal.id) {
+      lastAutoOpenedTerminalRef.current = activeTerminal.id;
+      setTerminalPanelOpen(true);
+    }
+    if (rightPanelOpen) return;
+    if (patchPreview.length > 0) {
+      setRightPanelView('changes');
+      setRightPanelOpen(true);
+    } else if (failedJob) {
+      setRightPanelView('jobs');
+      setRightPanelOpen(true);
+    } else if (previewIssue) {
+      setRightPanelView('preview');
+      setRightPanelOpen(true);
+    }
+  }, [jobs, patchPreview.length, previewChecks, rightPanelOpen, terminalPanelOpen, terminalSessions]);
 
   useEffect(() => {
     const value = prompt.trim();
@@ -665,29 +1888,51 @@ export default function WorkspacePage() {
       void fetchBackendSuggestions(value, mode);
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [mode, prompt, selectedFileIds.join('|'), openTabs.map((file) => file.id).join('|'), sessionId]);
+  }, [mode, prompt, selectedFileIds.join('|'), openTabs.map((file) => file.id).join('|'), activeFileId, sessionId]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && (window as any).electron && sessionId) {
       const unsubscribe = (window as any).electron.onDirectoryChanged(async (change: any) => {
-        console.log('Local directory change detected:', change);
+        const changes = Array.isArray(change?.changes) ? change.changes : [change].filter(Boolean);
+        if (!changes.length) return;
         try {
-          const updatedSession = await apiRequest(`/api/v1/code/sessions/${sessionId}/sync-local-file`, {
-            method: 'POST',
-            body: JSON.stringify({
-              action: change.event,
-              relative_path: change.path
-            })
-          });
-          setSelected(Object.fromEntries((updatedSession.file_ids || []).map((fileId: string) => [fileId, true])));
+          let latestSession: any = null;
+          for (const item of changes) {
+            if (!item?.path) continue;
+            if (item.event === 'addDir' || item.event === 'unlinkDir') {
+              latestSession = null;
+              continue;
+            }
+            latestSession = await apiRequest(`/api/v1/code/sessions/${sessionId}/sync-local-file`, {
+              method: 'POST',
+              body: JSON.stringify({
+                action: item.event,
+                relative_path: item.path
+              })
+            });
+            if (latestSession?.status === 'skipped' && latestSession?.skipped) {
+              const reason = latestSession.skipped.reason === 'file_too_large'
+                ? `Skipped large file (${Math.ceil((latestSession.skipped.size_bytes || 0) / 1024)} KB): ${latestSession.skipped.relative_path}`
+                : `Skipped ${latestSession.skipped.reason?.replace(/_/g, ' ') || 'unsupported file'}: ${latestSession.skipped.relative_path}`;
+              addEvent({ kind: 'read', message: 'Local file skipped', detail: reason });
+            }
+          }
+          if (latestSession?.file_ids) {
+            setSelected(Object.fromEntries((latestSession.file_ids || []).map((fileId: string) => [fileId, true])));
+          }
           await loadFiles();
+          if (!latestSession && sessionId) await hydrateSession(sessionId);
           addEvent({
             kind: 'done',
             message: 'Workspace synced',
-            detail: `${change.event} file: ${change.path}`
+            detail: changes.length === 1 ? `${changes[0].event} file: ${changes[0].path}` : `${changes.length} local file changes synced.`
           });
         } catch (err) {
-          console.error('Failed to sync local folder change:', err);
+          addEvent({
+            kind: 'error',
+            message: 'Local folder sync skipped',
+            detail: err instanceof Error ? err.message : 'A local file change could not be synced.',
+          });
         }
       });
       return () => unsubscribe();
@@ -734,7 +1979,7 @@ export default function WorkspacePage() {
       }
       addEvent({ kind: 'done', message: 'Files ready', detail: 'Uploaded files can now be used by hidden agents.' });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Upload failed', detail: error instanceof Error ? error.message : 'Unknown upload error.' });
+      reportWorkspaceError(error, 'Upload failed');
     } finally {
       setBusy(false);
     }
@@ -748,9 +1993,14 @@ export default function WorkspacePage() {
       });
       return sessionId;
     }
-    const session = await apiRequest('/api/v1/code/sessions', {
+    const session = projectId
+      ? await apiRequest(`/api/v1/code/projects/${projectId}/sessions`, {
+        method: 'POST',
+        body: JSON.stringify({ title: `${activeProject?.name || 'Arceus Code'} chat`, file_ids: selectedFileIds, project_id: projectId }),
+      })
+      : await apiRequest('/api/v1/code/sessions', {
       method: 'POST',
-      body: JSON.stringify({ title: 'NEXUS Code unified workspace', file_ids: selectedFileIds, project_id: projectId || undefined }),
+      body: JSON.stringify({ title: 'Arceus Code unified workspace', file_ids: selectedFileIds, project_id: projectId || undefined }),
     });
     setSessionId(session.id);
     localStorage.setItem('nexus.code.session_id', session.id);
@@ -765,7 +2015,17 @@ export default function WorkspacePage() {
     setBusy(true);
     try {
       const data = await apiRequest(`/api/v1/files/${file.id}/content`);
-      const nextFile = { id: data.id, filename: data.filename, content: data.content || '', dirty: false };
+      let content = data.content || '';
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      if (localWorkspacePath && electron?.readFile) {
+        try {
+          const nativeFile = await electron.readFile(localWorkspacePath, data.filename);
+          content = nativeFile.content || content;
+        } catch {
+          // API content remains the safe fallback for cloud/app-managed files.
+        }
+      }
+      const nextFile = { id: data.id, filename: data.filename, content, dirty: false };
       setOpenTabs((current) => {
         const exists = current.some((item) => item.id === nextFile.id);
         return exists ? current.map((item) => item.id === nextFile.id ? { ...nextFile, dirty: item.dirty, content: item.dirty ? item.content : nextFile.content } : item) : [...current, nextFile];
@@ -773,10 +2033,37 @@ export default function WorkspacePage() {
       setActiveFileId(nextFile.id);
       addEvent({ kind: 'read', message: `Opened ${data.filename}`, detail: 'Loaded into the inline editor.' });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Open file failed', detail: error instanceof Error ? error.message : 'Could not open file.' });
+      reportWorkspaceError(error, 'Open file failed');
     } finally {
       setBusy(false);
     }
+  };
+
+  const openDiagnosticFile = async (diagnostic: WorkspaceDiagnostic) => {
+    const diagnosticFile = String(diagnostic.file || '').replace(/\\/g, '/').toLowerCase();
+    if (!diagnosticFile || diagnosticFile === 'unknown') return;
+    const target = files.find((file) => {
+      const filename = file.filename.replace(/\\/g, '/').toLowerCase();
+      return filename.endsWith(diagnosticFile) || diagnosticFile.endsWith(filename) || filename.endsWith(diagnosticFile.split('/').pop() || '');
+    });
+    if (target) await openWorkspaceFile(target);
+  };
+
+  const openReceiptFile = async (filename: string) => {
+    const query = filename.replace(/\\/g, '/').toLowerCase();
+    if (!query) return;
+    const basename = query.split('/').pop() || query;
+    const target = files.find((file) => {
+      const candidate = file.filename.replace(/\\/g, '/').toLowerCase();
+      return candidate === query || candidate.endsWith(`/${query}`) || query.endsWith(`/${candidate}`) || candidate.endsWith(`/${basename}`);
+    });
+    if (target) {
+      await openWorkspaceFile(target);
+      return;
+    }
+    setFilesOpen(true);
+    setSearchQuery(filename);
+    addEvent({ kind: 'read', message: 'File lookup prepared', detail: `Search opened for ${filename}.` });
   };
 
   const searchWorkspace = async () => {
@@ -803,7 +2090,7 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Workspace search failed', detail: error instanceof Error ? error.message : 'Could not search files.' });
+      reportWorkspaceError(error, 'Workspace search failed');
     } finally {
       setBusy(false);
     }
@@ -813,31 +2100,144 @@ export default function WorkspacePage() {
     if (!openFile || busy) return;
     setBusy(true);
     try {
+      const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+      let nativeWrite: { size_bytes?: number } | null = null;
+      if (localWorkspacePath && electron?.writeFile) {
+        nativeWrite = await electron.writeFile(localWorkspacePath, openFile.filename, openFile.content);
+      }
       const result = await apiRequest(`/api/v1/files/${openFile.id}/content`, {
         method: 'PUT',
         body: JSON.stringify({ content: openFile.content }),
       });
       updateOpenTab(openFile.id, (file) => ({ ...file, dirty: false }));
-      addEvent({ kind: 'done', message: `Saved ${result.filename}`, detail: `${result.size_bytes} bytes written to workspace storage.` });
+      addEvent({
+        kind: 'done',
+        message: `Saved ${result.filename}`,
+        detail: nativeWrite
+          ? `${nativeWrite.size_bytes ?? result.size_bytes} bytes written to trusted local folder and workspace storage.`
+          : `${result.size_bytes} bytes written to workspace storage.`,
+      });
       await loadFiles();
       if (sessionId) {
         await hydrateSession(sessionId);
       }
       await loadRollbackSnapshots(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Save failed', detail: error instanceof Error ? error.message : 'Could not save file.' });
+      reportWorkspaceError(error, 'Save failed');
     } finally {
       setBusy(false);
       if (autoCompile) {
-        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so NEXUS is verifying the applied patch.' });
+        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so Arceus is verifying the applied patch.' });
       }
+    }
+  };
+
+  const syncLocalFileReference = async (action: 'add' | 'change' | 'unlink', relativePath: string) => {
+    if (!sessionId || !relativePath) return;
+    const updatedSession = await apiRequest(`/api/v1/code/sessions/${sessionId}/sync-local-file`, {
+      method: 'POST',
+      body: JSON.stringify({ action, relative_path: relativePath }),
+    });
+    if (updatedSession?.status === 'skipped') {
+      addEvent({
+        kind: 'read',
+        message: 'Local file skipped',
+        detail: updatedSession.skipped?.reason === 'file_too_large'
+          ? `${relativePath} is larger than the inline workspace limit. It remains on disk but is not loaded into chat context.`
+          : `${relativePath} could not be loaded into chat context.`,
+      });
+      await loadFiles();
+      return;
+    }
+    setSelected(Object.fromEntries((updatedSession.file_ids || []).map((fileId: string) => [fileId, true])));
+    await loadFiles();
+    await hydrateSession(updatedSession.id || sessionId);
+  };
+
+  const createLocalWorkspaceItem = async (type: 'file' | 'folder', basePath = '') => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.createItem) {
+      addEvent({ kind: 'error', message: 'Open a folder first', detail: 'Local file creation works inside a trusted Electron folder.' });
+      return;
+    }
+    const defaultName = type === 'folder' ? 'new-folder' : 'new-file.txt';
+    const suggested = basePath ? `${basePath.replace(/\\/g, '/').replace(/\/$/, '')}/${defaultName}` : defaultName;
+    const relativePath = window.prompt(type === 'folder' ? 'Folder path' : 'File path', suggested)?.trim().replace(/\\/g, '/');
+    if (!relativePath) return;
+    setBusy(true);
+    try {
+      const result = await electron.createItem(trustedPath, relativePath, type, type === 'file' ? '' : undefined);
+      if (type === 'file') await syncLocalFileReference('add', result.path || relativePath);
+      else if (sessionId) await hydrateSession(sessionId);
+      addEvent({ kind: 'done', message: `${type === 'folder' ? 'Folder' : 'File'} created`, detail: result.path || relativePath });
+    } catch (error) {
+      reportWorkspaceError(error, `Create ${type} failed`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renameLocalWorkspaceFile = async (file: WorkspaceFile, providedNextPath?: string) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.renameItem) {
+      addEvent({ kind: 'error', message: 'Open a folder first', detail: 'Local rename works inside a trusted Electron folder.' });
+      return;
+    }
+    const nextPath = (providedNextPath || window.prompt('Rename file to', file.filename) || '').trim().replace(/\\/g, '/');
+    if (!nextPath || nextPath === file.filename) return;
+    setBusy(true);
+    try {
+      const result = await electron.renameItem(trustedPath, file.filename, nextPath);
+      await syncLocalFileReference('unlink', file.filename);
+      await syncLocalFileReference('add', result.to || nextPath);
+      setOpenTabs((current) => current.map((tab) => tab.id === file.id ? { ...tab, filename: result.to || nextPath } : tab));
+      addEvent({ kind: 'done', message: 'File renamed', detail: `${file.filename} -> ${result.to || nextPath}` });
+    } catch (error) {
+      reportWorkspaceError(error, 'Rename failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteLocalWorkspaceFile = async (file: WorkspaceFile) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.deleteItem) {
+      addEvent({ kind: 'error', message: 'Open a folder first', detail: 'Local delete works inside a trusted Electron folder.' });
+      return;
+    }
+    if (!window.confirm(`Delete ${file.filename} from the trusted folder? This changes the local filesystem.`)) return;
+    setBusy(true);
+    try {
+      await electron.deleteItem(trustedPath, file.filename);
+      await syncLocalFileReference('unlink', file.filename);
+      setOpenTabs((current) => current.filter((tab) => tab.id !== file.id));
+      if (activeFileId === file.id) setActiveFileId('');
+      addEvent({ kind: 'done', message: 'File deleted', detail: file.filename });
+    } catch (error) {
+      reportWorkspaceError(error, 'Delete failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revealLocalWorkspacePath = async (relativePath: string) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    const trustedPath = localWorkspacePath || activeProject?.local_workspace_path || activeProject?.metadata?.local_workspace_path || '';
+    if (!trustedPath || !electron?.revealItem) return;
+    try {
+      await electron.revealItem(trustedPath, relativePath);
+    } catch (error) {
+      reportWorkspaceError(error, 'Reveal failed');
     }
   };
 
   const inlineEditSelection = async (instruction: string, selectedText: string, start: number, end: number) => {
     if (!openFile || busy) return;
     if (!selectedText.trim()) {
-      addEvent({ kind: 'error', message: 'Inline edit needs a selection', detail: 'Select the code you want NEXUS to rewrite.' });
+      addEvent({ kind: 'error', message: 'Inline edit needs a selection', detail: 'Select the code you want Arceus to rewrite.' });
       return;
     }
     setBusy(true);
@@ -864,7 +2264,7 @@ export default function WorkspacePage() {
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Inline edit applied to editor', detail: 'Review the replacement, then save the file if it looks right.' });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Inline edit failed', detail: error instanceof Error ? error.message : 'Could not edit selection.' });
+      reportWorkspaceError(error, 'Inline edit failed', { chat: true, intent: 'Inline edit' });
     } finally {
       setBusy(false);
     }
@@ -897,7 +2297,7 @@ export default function WorkspacePage() {
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'edit', message: 'Completion inserted into editor', detail: 'Review the insertion, then save the file if it looks right.' });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Completion failed', detail: error instanceof Error ? error.message : 'Could not complete code.' });
+      reportWorkspaceError(error, 'Completion failed');
     } finally {
       setBusy(false);
     }
@@ -923,16 +2323,25 @@ export default function WorkspacePage() {
     }
   };
 
-  const runWorkspace = async () => {
-    const instruction = prompt.trim();
+  const runWorkspace = async (customPrompt?: string) => {
+    const instruction = typeof customPrompt === 'string' ? customPrompt.trim() : prompt.trim();
     if (!instruction || busy) return;
+    if (agentOnline === false) {
+      addEvent({ kind: 'error', message: 'Agent API offline', detail: 'Restart Electron after Docker Postgres/Redis are healthy, or start agent-service on port 8003.' });
+      addMessage('user', instruction);
+      addMessage('assistant', 'The local agent API is offline. Start or restart Arceus Electron so the backend service on port 8003 is running, then try again.');
+      return;
+    }
     const activeTask = workspaceTasks.find((task) => task.id === typedSuggestionId);
     const activeTaskContext = activeTask
-      ? `\n\nSelected NEXUS task:\n- Title: ${activeTask.title}\n- Mode: ${activeTask.mode}\n- Risk: ${activeTask.risk || 'medium'}\n- Approval required: ${activeTask.requiresApproval ? 'yes' : 'no'}\n- Expected files: ${(activeTask.files || []).join(', ') || 'infer from workspace'}\n- Planned steps: ${(activeTask.steps || []).join(' | ') || 'inspect, plan, execute safely'}\n- Expected commands: ${(activeTask.expectedCommands || activeTask.commands || []).join(', ') || 'recommend checks'}`
+      ? `\n\nSelected Arceus task:\n- Title: ${activeTask.title}\n- Mode: ${activeTask.mode}\n- Risk: ${activeTask.risk || 'medium'}\n- Approval required: ${activeTask.requiresApproval ? 'yes' : 'no'}\n- Expected files: ${(activeTask.files || []).join(', ') || 'infer from workspace'}\n- Planned steps: ${(activeTask.steps || []).join(' | ') || 'inspect, plan, execute safely'}\n- Expected commands: ${(activeTask.expectedCommands || activeTask.commands || []).join(', ') || 'recommend checks'}`
       : '';
     const agentInstruction = `${instruction}${activeTaskContext}`;
+    const effectiveFileIds = resolveEffectiveFileIds(instruction);
+    const autoBoundActiveFile = Boolean(openFile?.id && effectiveFileIds.includes(openFile.id) && !selectedFileIds.includes(openFile.id));
     setBusy(true);
     setPatchReady(false);
+    const nextActionSnapshot = suggestions.slice(0, 3);
     addMessage('user', instruction);
     setPrompt('');
     setBackendSuggestions([]);
@@ -949,11 +2358,18 @@ export default function WorkspacePage() {
     await fetchActivityPlan(instruction, mode);
     const modes = inferModes(instruction, mode);
     const outputs: string[] = [];
+    let planText = '';
+    let currentPreview: any[] = [];
+    let latestBackendPayload: any = null;
+    const checksSummary: Array<{ label: string; status?: string }> = [];
+    const commandSummary: Array<{ label: string; status?: string }> = [];
     let producedPatch = false;
 
     try {
-      if (selectedFileIds.length) {
-        addEvent({ kind: 'read', message: `Reading ${selectedFileIds.length} selected file${selectedFileIds.length === 1 ? '' : 's'}`, detail: 'File context is injected into every hidden agent call.' });
+      if (autoBoundActiveFile && openFile) {
+        addEvent({ kind: 'read', message: `Using active file: ${openFile.filename}`, detail: 'The prompt points at the current file, so Arceus included it as context.' });
+      } else if (effectiveFileIds.length) {
+        addEvent({ kind: 'read', message: `Reading ${effectiveFileIds.length} selected file${effectiveFileIds.length === 1 ? '' : 's'}`, detail: 'File context is injected into every hidden agent call.' });
       }
 
       if (modes.includes('research')) {
@@ -980,7 +2396,7 @@ export default function WorkspacePage() {
         addEvent({ kind: 'deploy', message: 'Deploy agent analyzing', detail: 'No production deploy is triggered without explicit approval.' });
         const result = await apiRequest('/api/v1/deploy/analyze', {
           method: 'POST',
-          body: JSON.stringify({ project_type: 'NEXUS Code workspace', repo_context: agentInstruction }),
+          body: JSON.stringify({ project_type: 'Arceus Code workspace', repo_context: agentInstruction }),
         });
         outputs.push(`Deployment analysis:\n${JSON.stringify(result, null, 2)}`);
         addEvent({ kind: 'done', message: 'Deploy analysis ready' });
@@ -991,18 +2407,22 @@ export default function WorkspacePage() {
         addEvent({ kind: 'code', message: 'Planning code changes', detail: 'Generating a concise implementation plan.' });
         const plan = await apiRequest(`/api/v1/code/sessions/${sid}/plan`, {
           method: 'POST',
-          body: JSON.stringify({ instruction: agentInstruction, ...model }),
+          body: JSON.stringify({ instruction: agentInstruction, file_ids: effectiveFileIds, ...model }),
         });
+        latestBackendPayload = plan;
         if (plan.job) setJobs((current) => [plan.job, ...current.filter((job) => job.id !== plan.job.id)].slice(0, 20));
+        planText = plan.plan || '';
         outputs.push(`Implementation plan:\n${plan.plan}`);
         if (modes.includes('code')) {
           addEvent({ kind: 'edit', message: 'Preparing patch', detail: 'Patch is generated but not applied until you approve it.' });
           const patch = await apiRequest(`/api/v1/code/sessions/${sid}/patch`, {
             method: 'POST',
-            body: JSON.stringify({ instruction: agentInstruction, ...model }),
+            body: JSON.stringify({ instruction: agentInstruction, file_ids: effectiveFileIds, ...model }),
           });
+          latestBackendPayload = patch;
           if (patch.job) setJobs((current) => [patch.job, ...current.filter((job) => job.id !== patch.job.id)].slice(0, 20));
           const preview = patch.patch_preview || [];
+          currentPreview = preview;
           setPatchPreview(preview);
           setPatchReady(true);
           producedPatch = true;
@@ -1015,16 +2435,40 @@ export default function WorkspacePage() {
                 diff: item.diff,
               });
             });
-            outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePreview(preview)}`);
+            outputs.push(`Patch prepared. Open the Changes drawer to review and approve.\n\n${summarizePreview(preview)}`);
           } else {
             addEvent({ kind: 'edit', message: 'Patch ready for review', detail: summarizePatch(patch.patch), diff: patch.patch });
-            outputs.push(`Patch prepared. Review the Activity / Changes panel, then approve to apply.\n\n${summarizePatch(patch.patch)}`);
+            outputs.push(`Patch prepared. Open the Changes drawer to review and approve.\n\n${summarizePatch(patch.patch)}`);
           }
         }
       }
 
-      addMessage('assistant', outputs.join('\n\n---\n\n') || 'Done.');
-      addEvent({ kind: 'done', message: 'NEXUS Code finished', detail: modes.join(', ') });
+      commandSummary.push(...jobs.slice(0, 3).flatMap((job) => (job.commands_run || []).map((command: any) => ({
+        label: typeof command === 'string' ? command : command.command || job.prompt || job.mode,
+        status: typeof command === 'string' ? 'recorded' : command.status || job.status,
+      }))));
+      if (!commandSummary.length) {
+        commandSummary.push(...commands.slice(0, 4).map((command) => ({ label: command.command || command.label, status: 'recommended' })));
+      }
+      if (producedPatch) checksSummary.push({ label: 'Review patch before apply', status: 'pending approval' });
+      const fallbackReceipt = buildReceipt({
+        summary: producedPatch ? `Prepared ${currentPreview.length || 1} reviewable change${currentPreview.length === 1 ? '' : 's'}.` : 'Workspace request completed.',
+        receiptMode: modes.length > 1 ? 'mixed' : modes[0],
+        intent: modes.map((item) => item[0].toUpperCase() + item.slice(1)).join(' + '),
+        plan: planText,
+        preview: currentPreview,
+        commandsRun: commandSummary,
+        checks: checksSummary,
+        approvalState: producedPatch ? 'waiting approval' : 'done',
+        nextActions: nextActionSnapshot,
+        contextFileIds: effectiveFileIds,
+      });
+      const receipt = buildWorkReceiptFromPayload(
+        latestBackendPayload || { work_receipt: currentPreview.length ? { files_changed: currentPreview } : undefined },
+        fallbackReceipt
+      );
+      addMessage('assistant', outputs.join('\n\n---\n\n') || 'Done.', receipt);
+      addEvent({ kind: 'done', message: 'Arceus Code finished', detail: modes.join(', ') });
       if (activeTask?.id) {
         try {
           const nextStatus = producedPatch ? 'waiting_approval' : 'done';
@@ -1039,9 +2483,18 @@ export default function WorkspacePage() {
         }
       }
     } catch (error) {
-      const detail = error instanceof Error ? error.message : 'Workspace run failed.';
-      addEvent({ kind: 'error', message: 'Run failed', detail });
-      addMessage('assistant', `I hit an error while running the workspace agents:\n\n${detail}`);
+      if (error instanceof ApiError && error.status === 402) {
+        setUpgradePrompt(error.detail || { message: error.message });
+      }
+      const classified = reportWorkspaceError(error, 'Workspace run failed');
+      addMessage(
+        'assistant',
+        `${classified.message}\n\n${classified.hint}${classified.raw ? `\n\nDetails: ${classified.raw}` : ''}`,
+        {
+          ...buildErrorReceipt(classified, inferReceiptIntent(instruction)),
+          nextActions: nextActionSnapshot,
+        }
+      );
       if (activeTask?.id) {
         try {
           const updated = await apiRequest(`/api/v1/code/tasks/${activeTask.id}`, {
@@ -1063,6 +2516,7 @@ export default function WorkspacePage() {
   const runWorkspaceBackground = async () => {
     const instruction = prompt.trim();
     if (!instruction || busy) return;
+    const effectiveFileIds = resolveEffectiveFileIds(instruction);
     setBusy(true);
     setPatchReady(false);
     addMessage('user', instruction);
@@ -1074,39 +2528,90 @@ export default function WorkspacePage() {
       addEvent({ kind: 'code', message: 'Background job queued', detail: `${backgroundMode}: ${instruction}` });
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-background`, {
         method: 'POST',
-        body: JSON.stringify({ instruction, mode: backgroundMode, ...model }),
+        body: JSON.stringify({ instruction, mode: backgroundMode, file_ids: effectiveFileIds, ...model }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
-      addMessage('assistant', `Background ${backgroundMode} job started. Track it in Activity / Jobs; pending patches will appear in Changes when ready.`);
+      addMessage('assistant', `Background ${backgroundMode} job started. Track it in the Jobs drawer; pending patches will appear in Changes when ready.`);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : 'Could not start background job.';
-      addEvent({ kind: 'error', message: 'Background job failed to start', detail });
-      addMessage('assistant', `I could not start the background job:\n\n${detail}`);
+      const classified = reportWorkspaceError(error, 'Background job failed to start');
+      addMessage('assistant', `${classified.message}\n\n${classified.hint}`, buildErrorReceipt(classified, 'Background job'));
     } finally {
       setBusy(false);
     }
   };
 
+  const confirmPatchConflicts = async (): Promise<{ ok: boolean; allowConflicts: boolean }> => {
+    if (!sessionId) return { ok: true, allowConflicts: false };
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/check-conflicts`);
+      if (Array.isArray(result.patch_preview)) {
+        setPatchPreview(result.patch_preview);
+      }
+      const conflicts = result.conflicts || [];
+      if (!conflicts.length) return { ok: true, allowConflicts: false };
+      const names = conflicts.slice(0, 4).map((item: any) => item.filename).join(', ');
+      addEvent({
+        kind: 'error',
+        message: 'Patch conflict detected',
+        detail: `${conflicts.length} file(s) changed after the patch was generated: ${names}`,
+      });
+      const allowConflicts = window.confirm(`Patch conflict detected in ${conflicts.length} file(s): ${names}\n\nApply anyway?`);
+      return { ok: allowConflicts, allowConflicts };
+    } catch {
+      return { ok: true, allowConflicts: false };
+    }
+  };
+
   const applyChanges = async () => {
     if (!sessionId || !patchReady || busy) return;
+    const conflictDecision = await confirmPatchConflicts();
+    if (!conflictDecision.ok) return;
     setBusy(true);
     try {
       addEvent({ kind: 'edit', message: 'Applying approved patch', detail: 'Writing changes into app-managed workspace files.' });
-      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, { method: 'POST' });
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ allow_conflicts: conflictDecision.allowConflicts }),
+      });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       setPatchPreview(result.remaining || []);
       const changed = result.changed || [];
+      const impact = result.impact || {};
+      const impactText = [
+        `${impact.created_files?.length || 0} created`,
+        `${impact.modified_files?.length || 0} modified`,
+        `${impact.deleted_files?.length || 0} deleted`,
+        `${impact.renamed_files?.length || 0} renamed`,
+        `${impact.folders_created?.length || 0} folders`,
+        `+${impact.total_additions || 0} / -${impact.total_deletions || 0}`,
+      ].join(' · ');
       changed.forEach((item: any) => {
         addEvent({ kind: 'edit', message: `Edited ${item.filename}`, detail: `${item.diff?.split('\n').length || 0} diff lines`, diff: item.diff });
       });
       setPatchReady(false);
-      addMessage('assistant', `Applied ${changed.length} file${changed.length === 1 ? '' : 's'}.\n${result.summary || ''}`.trim());
+      addMessage(
+        'assistant',
+        `Applied ${changed.length} approved item${changed.length === 1 ? '' : 's'}.\n${impactText}\n${result.summary || ''}`.trim(),
+        buildWorkReceiptFromPayload(
+          result,
+          buildReceipt({
+            summary: `Applied ${changed.length} approved change${changed.length === 1 ? '' : 's'}.`,
+            receiptMode: 'code',
+            intent: 'Apply',
+            preview: changed,
+            checks: autoCompile ? [{ label: 'Auto-compile checks', status: 'queued' }] : [],
+            approvalState: 'approved',
+            nextActions: suggestions.slice(0, 3),
+          })
+        )
+      );
       await loadFiles();
       if (sessionId) {
         await hydrateSession(sessionId);
+        await loadRollbackSnapshots(sessionId);
       }
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Apply failed', detail: error instanceof Error ? error.message : 'Could not apply patch.' });
+      reportWorkspaceError(error, 'Apply failed', { chat: true, intent: 'Patch apply' });
     } finally {
       setBusy(false);
       if (autoCompile) {
@@ -1115,33 +2620,101 @@ export default function WorkspacePage() {
     }
   };
 
-  const applyFileChange = async (fileId: string) => {
+  const applyPatchSelection = async (selection: { fileIds?: string[]; operationIds?: string[]; hunkIds?: string[] }) => {
     if (!sessionId || busy) return;
+    const conflictDecision = await confirmPatchConflicts();
+    if (!conflictDecision.ok) return;
     setBusy(true);
     let applied = false;
     try {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/apply`, {
         method: 'POST',
-        body: JSON.stringify({ file_ids: [fileId] }),
+        body: JSON.stringify({
+          file_ids: selection.fileIds || [],
+          operation_ids: selection.operationIds || [],
+          hunk_ids: selection.hunkIds || [],
+          allow_conflicts: conflictDecision.allowConflicts,
+        }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       const remaining = result.remaining || [];
       setPatchPreview(remaining);
       setPatchReady(Boolean(remaining.length));
+      const impact = result.impact || {};
       (result.changed || []).forEach((item: any) => {
         addEvent({ kind: 'edit', message: `Applied ${item.filename}`, detail: `${item.diff?.split('\n').length || 0} diff lines`, diff: item.diff });
       });
+      addMessage(
+        'assistant',
+        `Applied selected review item${(result.changed || []).length === 1 ? '' : 's'}: ${(result.changed || []).length}. +${impact.total_additions || 0} / -${impact.total_deletions || 0}.`,
+        buildWorkReceiptFromPayload(
+          result,
+          buildReceipt({
+            summary: `Applied ${(result.changed || []).length} selected change${(result.changed || []).length === 1 ? '' : 's'}.`,
+            receiptMode: 'code',
+            intent: 'Apply selection',
+            preview: result.changed || [],
+            approvalState: remaining.length ? 'partially approved' : 'approved',
+            nextActions: suggestions.slice(0, 3),
+          })
+        )
+      );
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
       applied = true;
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Apply file failed', detail: error instanceof Error ? error.message : 'Could not apply selected file.' });
+      reportWorkspaceError(error, 'Apply selection failed', { chat: true, intent: 'Patch apply' });
     } finally {
       setBusy(false);
       if (applied && autoCompile) {
-        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so NEXUS is verifying the applied file.' });
+        void runChecks({ ignoreBusy: true, reason: 'Auto-Compile is enabled, so Arceus is verifying the applied file.' });
       }
+    }
+  };
+
+  const rejectPatchSelection = async (selection: { fileIds?: string[]; operationIds?: string[] }) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({
+          file_ids: selection.fileIds || [],
+          operation_ids: selection.operationIds || [],
+        }),
+      });
+      const remaining = result.remaining || [];
+      setPatchPreview(remaining);
+      setPatchReady(Boolean(remaining.length));
+      addEvent({ kind: 'done', message: 'Patch selection rejected', detail: `${result.rejected?.length || 0} operation(s) removed from review.` });
+    } catch (error) {
+      reportWorkspaceError(error, 'Reject selection failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateHunkReview = async (hunkId: string, action: 'approve' | 'reject') => {
+    if (!sessionId || busy) return;
+    try {
+      await apiRequest(`/api/v1/code/sessions/${sessionId}/hunks/${encodeURIComponent(hunkId)}/${action}`, { method: 'POST' });
+      const preview = await apiRequest(`/api/v1/code/sessions/${sessionId}/patch-preview`);
+      setPatchPreview(preview.patch_preview || []);
+      addEvent({ kind: 'edit', message: `${action === 'approve' ? 'Accepted' : 'Rejected'} hunk`, detail: hunkId });
+    } catch (error) {
+      reportWorkspaceError(error, 'Hunk review failed');
+    }
+  };
+
+  const resetPatchReview = async () => {
+    if (!sessionId || busy) return;
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/hunks/reset`, { method: 'POST' });
+      setPatchPreview(result.patch_preview || []);
+      addEvent({ kind: 'edit', message: 'Patch review reset', detail: 'All hunks are pending again.' });
+    } catch (error) {
+      reportWorkspaceError(error, 'Reset review failed');
     }
   };
 
@@ -1164,7 +2737,7 @@ export default function WorkspacePage() {
       await hydrateSession(sid);
       await refreshRuntimeStatus(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Command failed', detail: error instanceof Error ? error.message : 'Could not run command.' });
+      reportWorkspaceError(error, 'Command failed', { chat: true, intent: 'Command' });
     } finally {
       setBusy(false);
     }
@@ -1175,7 +2748,7 @@ export default function WorkspacePage() {
     setBusy(true);
     try {
       const sid = await ensureSession();
-      addEvent({ kind: 'deploy', message: 'Running workspace checks', detail: options.reason || 'NEXUS will run detected safe build/test/lint/typecheck commands.' });
+      addEvent({ kind: 'deploy', message: 'Running workspace checks', detail: options.reason || 'Arceus will run detected safe build/test/lint/typecheck commands.' });
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/run-checks`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({
@@ -1185,8 +2758,9 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sid);
       await refreshRuntimeStatus(sid);
+      await refreshDiagnostics(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Workspace checks failed', detail: error instanceof Error ? error.message : 'Could not run workspace checks.' });
+      reportWorkspaceError(error, 'Workspace checks failed', { chat: true, intent: 'Checks' });
     } finally {
       setBusy(false);
     }
@@ -1207,7 +2781,7 @@ export default function WorkspacePage() {
       await hydrateSession(sid);
       await refreshRuntimeStatus(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Runtime sync failed', detail: error instanceof Error ? error.message : 'Could not sync runtime workspace.' });
+      reportWorkspaceError(error, 'Runtime sync failed');
     } finally {
       setBusy(false);
     }
@@ -1234,7 +2808,7 @@ export default function WorkspacePage() {
       await hydrateSession(sid);
       await refreshRuntimeStatus(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Install failed', detail: error instanceof Error ? error.message : 'Could not install dependencies.' });
+      reportWorkspaceError(error, 'Install failed', { chat: true, intent: 'Install' });
     } finally {
       setBusy(false);
     }
@@ -1256,7 +2830,7 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Workspace analysis failed', detail: error instanceof Error ? error.message : 'Could not analyze workspace.' });
+      reportWorkspaceError(error, 'Workspace analysis failed');
     } finally {
       setBusy(false);
     }
@@ -1278,12 +2852,25 @@ export default function WorkspacePage() {
         result.status_code ? `HTTP ${result.status_code}` : '',
         result.title ? `Title: ${result.title}` : '',
         result.issues?.length ? `Issues: ${result.issues.join(', ')}` : '',
+        result.screenshot_base64 || result.screenshot_url ? 'Screenshot captured' : '',
+        result.console_errors?.length ? `${result.console_errors.length} console error(s)` : '',
+        result.network_failures?.length ? `${result.network_failures.length} network failure(s)` : '',
+        result.blank_page ? 'Blank page detected' : '',
       ].filter(Boolean).join('\n');
       addEvent({ kind: result.status === 'passed' ? 'done' : 'error', message: `Preview check ${result.status}`, detail });
       setPreviewChecks((current) => [...current, result].slice(-30));
+      addMessage(
+        'assistant',
+        result.status === 'passed'
+          ? 'Preview verification passed. Screenshot and browser evidence are available in Preview.'
+          : 'Preview verification found an issue. Open Preview for screenshot, console, and network evidence, or type the fix action below.',
+        buildPreviewReceipt(result, activeProject?.name || 'Workspace')
+      );
+      setRightPanelView('preview');
+      setRightPanelOpen(true);
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Preview check failed', detail: error instanceof Error ? error.message : 'Could not check preview.' });
+      reportWorkspaceError(error, 'Preview check failed', { chat: true, intent: 'Preview' });
     } finally {
       setBusy(false);
     }
@@ -1313,7 +2900,7 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Live preview failed', detail: error instanceof Error ? error.message : 'Could not start live preview.' });
+      reportWorkspaceError(error, 'Live preview failed');
     } finally {
       setBusy(false);
     }
@@ -1328,7 +2915,7 @@ export default function WorkspacePage() {
       addEvent({ kind: 'done', message: 'Live preview stopped', detail: result.command || '' });
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Stop preview failed', detail: error instanceof Error ? error.message : 'Could not stop live preview.' });
+      reportWorkspaceError(error, 'Stop preview failed');
     } finally {
       setBusy(false);
     }
@@ -1346,20 +2933,20 @@ export default function WorkspacePage() {
         detail: logs.issues?.length ? `Issues: ${logs.issues.join(', ')}` : 'No common error markers detected in recent logs.',
       });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Preview logs unavailable', detail: error instanceof Error ? error.message : 'Could not load preview logs.' });
+      reportWorkspaceError(error, 'Preview logs unavailable');
     } finally {
       setBusy(false);
     }
   };
 
-  const fixPreviewIssue = async () => {
+  const fixPreviewIssue = async (instruction?: string) => {
     if (!sessionId || busy) return;
     setBusy(true);
     try {
       addEvent({ kind: 'edit', message: 'Fixing preview issue', detail: 'Using the latest preview check to prepare a patch.' });
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/fix-preview`, {
         method: 'POST',
-        body: JSON.stringify({ instruction: 'Prepare the smallest safe code change that fixes the preview failure.', ...model }),
+        body: JSON.stringify({ instruction: instruction || 'Prepare the smallest safe code change that fixes the preview failure.', ...model }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       const preview = result.patch_preview || [];
@@ -1373,10 +2960,10 @@ export default function WorkspacePage() {
           diff: item.diff,
         });
       });
-      addMessage('assistant', `Preview fix prepared. Review the patch in Activity, then approve to apply.\n\n${summarizePreview(preview)}`);
+      addMessage('assistant', `Preview fix prepared. Open Changes to review and approve.\n\n${summarizePreview(preview)}`);
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Fix preview failed', detail: error instanceof Error ? error.message : 'Could not prepare preview fix.' });
+      reportWorkspaceError(error, 'Fix preview failed', { chat: true, intent: 'Preview fix' });
     } finally {
       setBusy(false);
     }
@@ -1395,7 +2982,7 @@ export default function WorkspacePage() {
       addEvent({ kind: 'done', message: 'Repository connected', detail: `${result.repo_url} (${result.default_branch})` });
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Repository connect failed', detail: error instanceof Error ? error.message : 'Could not connect repository.' });
+      reportWorkspaceError(error, 'Repository connect failed');
     } finally {
       setBusy(false);
     }
@@ -1411,7 +2998,7 @@ export default function WorkspacePage() {
       }
       addEvent({ kind: 'deploy', message: 'GitHub install opened', detail: 'Finish installation in GitHub, then refresh GitHub here.' });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'GitHub connect failed', detail: error instanceof Error ? error.message : 'Could not open GitHub install flow.' });
+      reportWorkspaceError(error, 'GitHub connect failed');
     } finally {
       setBusy(false);
     }
@@ -1426,7 +3013,7 @@ export default function WorkspacePage() {
       addEvent({ kind: 'read', message: 'Importing GitHub repository', detail: repository });
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/github/import`, {
         method: 'POST',
-        body: JSON.stringify({ repository }),
+        body: JSON.stringify({ repository, branch: githubBaseBranch || undefined }),
       });
       (result.imported || []).forEach((item: any) => {
         setSelected((current) => ({ ...current, [item.id]: true }));
@@ -1437,7 +3024,7 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
+      reportWorkspaceError(error, 'GitHub import failed', { chat: true, intent: 'GitHub import' });
     } finally {
       setBusy(false);
     }
@@ -1466,7 +3053,7 @@ export default function WorkspacePage() {
       await loadFiles();
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'GitHub import failed', detail: error instanceof Error ? error.message : 'Could not import repository.' });
+      reportWorkspaceError(error, 'GitHub import failed');
     } finally {
       setBusy(false);
     }
@@ -1478,7 +3065,7 @@ export default function WorkspacePage() {
     try {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/branch`, {
         method: 'POST',
-        body: JSON.stringify({ branch_name: githubBranchName || undefined }),
+        body: JSON.stringify({ branch_name: githubBranchName || undefined, base_branch: githubBaseBranch || undefined }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       setGithubBranchName(result.branch_name || githubBranchName);
@@ -1486,7 +3073,7 @@ export default function WorkspacePage() {
       addEvent({ kind: 'done', message: 'GitHub branch ready', detail: `${result.branch_name} from ${result.base_branch}` });
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Create branch failed', detail: error instanceof Error ? error.message : 'Could not create branch.' });
+      reportWorkspaceError(error, 'Create branch failed');
     } finally {
       setBusy(false);
     }
@@ -1499,7 +3086,7 @@ export default function WorkspacePage() {
       const sid = await ensureSession();
       const result = await apiRequest(`/api/v1/code/sessions/${sid}/git/prepare-pr`, {
         method: 'POST',
-        body: JSON.stringify({ title: 'NEXUS Code workspace changes' }),
+        body: JSON.stringify({ title: 'Arceus Code workspace changes' }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({
@@ -1509,7 +3096,7 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sid);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Prepare PR failed', detail: error instanceof Error ? error.message : 'Could not prepare PR.' });
+      reportWorkspaceError(error, 'Prepare PR failed');
     } finally {
       setBusy(false);
     }
@@ -1529,45 +3116,45 @@ export default function WorkspacePage() {
       });
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
+      reportWorkspaceError(error, 'Open PR failed', { chat: true, intent: 'GitHub PR' });
     } finally {
       setBusy(false);
     }
   };
 
-  const commitGithubChanges = async () => {
+  const commitGithubChanges = async (message?: string, filenames?: string[]) => {
     if (!sessionId || busy) return;
     setBusy(true);
     try {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/commit`, {
         method: 'POST',
-        body: JSON.stringify({ message: 'NEXUS Code workspace changes' }),
+        body: JSON.stringify({ message: message || 'Arceus Code workspace changes', filenames }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.branch_name, latest_commit_sha: result.commit_sha }));
       addEvent({ kind: 'done', message: 'GitHub commit created', detail: `${result.committed?.length || 0} file(s) committed to ${result.branch_name}.` });
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Commit failed', detail: error instanceof Error ? error.message : 'Could not commit approved changes.' });
+      reportWorkspaceError(error, 'Commit failed', { chat: true, intent: 'GitHub commit' });
     } finally {
       setBusy(false);
     }
   };
 
-  const openGithubAppPr = async () => {
+  const openGithubAppPr = async (title?: string, body?: string) => {
     if (!sessionId || busy) return;
     setBusy(true);
     try {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/pr`, {
         method: 'POST',
-        body: JSON.stringify({ title: 'NEXUS Code workspace changes' }),
+        body: JSON.stringify({ title: title || 'Arceus Code workspace changes', body }),
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       setGithubStatus((current) => ({ ...(current || {}), selected_repo: result.repo_full_name, working_branch: result.head_branch, pull_request_url: result.pull_request_url }));
       addEvent({ kind: 'done', message: 'GitHub pull request opened', detail: result.pull_request_url || '' });
       await hydrateSession(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Open PR failed', detail: error instanceof Error ? error.message : 'Could not open GitHub PR.' });
+      reportWorkspaceError(error, 'Open PR failed', { chat: true, intent: 'GitHub PR' });
     } finally {
       setBusy(false);
     }
@@ -1584,10 +3171,11 @@ export default function WorkspacePage() {
         latest_commit_sha: result.latest_commit_sha,
         pull_request_url: result.pull_request?.pull_request_url,
         checks: result.checks || [],
+        check_summary: result.check_summary,
       }));
       addEvent({ kind: 'done', message: 'GitHub PR status refreshed', detail: `${result.checks?.length || 0} check run(s).` });
     } catch (error) {
-      addEvent({ kind: 'error', message: 'PR status failed', detail: error instanceof Error ? error.message : 'Could not load PR status.' });
+      reportWorkspaceError(error, 'PR status failed');
     } finally {
       setBusy(false);
     }
@@ -1599,32 +3187,12 @@ export default function WorkspacePage() {
         await apiRequest(`/api/v1/code/sessions/${sessionId}/reject`, { method: 'POST' });
         await hydrateSession(sessionId);
       } catch {
-        addEvent({ kind: 'error', message: 'Reject failed', detail: 'Could not clear the pending patch on the server.' });
+        reportWorkspaceError(new Error('Pending patch could not be cleared on the server.'), 'Reject failed');
       }
     }
     setPatchReady(false);
     setPatchPreview([]);
     addEvent({ kind: 'done', message: 'Changes rejected', detail: 'Prepared patch was discarded from the UI approval flow.' });
-  };
-
-  const rejectFileChange = async (fileId: string) => {
-    if (!sessionId || busy) return;
-    setBusy(true);
-    try {
-      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/reject`, {
-        method: 'POST',
-        body: JSON.stringify({ file_ids: [fileId] }),
-      });
-      const remaining = result.remaining || [];
-      setPatchPreview(remaining);
-      setPatchReady(Boolean(remaining.length));
-      addEvent({ kind: 'done', message: 'File change rejected', detail: `${result.rejected?.length || 0} file(s) removed from pending changes.` });
-      await hydrateSession(sessionId);
-    } catch (error) {
-      addEvent({ kind: 'error', message: 'Reject file failed', detail: error instanceof Error ? error.message : 'Could not reject selected file.' });
-    } finally {
-      setBusy(false);
-    }
   };
 
   const rollbackChanges = async () => {
@@ -1634,11 +3202,26 @@ export default function WorkspacePage() {
       const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/rollback`, { method: 'POST' });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'done', message: 'Rolled back last apply', detail: `${result.restored?.length || 0} file(s) restored.` });
+      addMessage(
+        'assistant',
+        `Rolled back ${result.restored?.length || 0} item${result.restored?.length === 1 ? '' : 's'}.`,
+        buildWorkReceiptFromPayload(
+          result,
+          buildReceipt({
+            summary: `Rolled back ${result.restored?.length || 0} item${result.restored?.length === 1 ? '' : 's'}.`,
+            receiptMode: 'code',
+            intent: 'Rollback',
+            preview: result.restored || [],
+            approvalState: 'restored',
+            nextActions: suggestions.slice(0, 3),
+          })
+        )
+      );
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Rollback failed', detail: error instanceof Error ? error.message : 'Could not rollback changes.' });
+      reportWorkspaceError(error, 'Rollback failed', { chat: true, intent: 'Rollback' });
     } finally {
       setBusy(false);
     }
@@ -1654,11 +3237,53 @@ export default function WorkspacePage() {
       });
       if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
       addEvent({ kind: 'done', message: 'Rollback snapshot restored', detail: `${result.restored?.length || 0} file(s) restored.` });
+      addMessage(
+        'assistant',
+        `Restored rollback snapshot ${result.snapshot?.snapshot_id ? result.snapshot.snapshot_id.slice(0, 8) : ''}. ${result.restored?.length || 0} item${result.restored?.length === 1 ? '' : 's'} restored.`,
+        buildWorkReceiptFromPayload(
+          result,
+          buildReceipt({
+            summary: `Restored ${result.restored?.length || 0} rollback item${result.restored?.length === 1 ? '' : 's'}.`,
+            receiptMode: 'code',
+            intent: 'Rollback',
+            preview: result.restored || [],
+            approvalState: 'restored',
+            nextActions: suggestions.slice(0, 3),
+          })
+        )
+      );
       await loadFiles();
       await hydrateSession(sessionId);
       await loadRollbackSnapshots(sessionId);
     } catch (error) {
-      addEvent({ kind: 'error', message: 'Rollback snapshot failed', detail: error instanceof Error ? error.message : 'Could not restore selected snapshot.' });
+      reportWorkspaceError(error, 'Rollback snapshot failed', { chat: true, intent: 'Rollback' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitAndOpenGithubPr = async (payload: { commit_message?: string; title?: string; body?: string; branch_name?: string; filenames?: string[] }) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      const result = await apiRequest(`/api/v1/code/sessions/${sessionId}/github/commit-pr`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (result.job) setJobs((current) => [result.job, ...current.filter((job) => job.id !== result.job.id)].slice(0, 20));
+      setGithubStatus((current) => ({
+        ...(current || {}),
+        selected_repo: result.repo_full_name,
+        working_branch: result.branch_name,
+        latest_commit_sha: result.latest_commit_sha,
+        pull_request_url: result.pull_request_url,
+        checks: result.checks || [],
+        check_summary: result.check_summary,
+      }));
+      addEvent({ kind: 'done', message: 'GitHub Commit -> PR completed', detail: result.pull_request_url || '' });
+      await hydrateSession(sessionId);
+    } catch (error) {
+      reportWorkspaceError(error, 'Commit -> PR failed', { chat: true, intent: 'GitHub PR' });
     } finally {
       setBusy(false);
     }
@@ -1678,7 +3303,7 @@ export default function WorkspacePage() {
         rank: patchPreview.length ? 100 : 22,
         run: () => {
           setRightPanelOpen(true);
-          setRightPanelView('activity');
+          setRightPanelView('changes');
         },
       },
       {
@@ -1766,7 +3391,7 @@ export default function WorkspacePage() {
         rank: hasGit && patchPreview.length ? 72 : 55,
         run: () => {
           setRightPanelOpen(true);
-          setRightPanelView('activity');
+          setRightPanelView('git');
           if (hasGit) void preparePr();
           else void connectGithubApp();
         },
@@ -1799,7 +3424,7 @@ export default function WorkspacePage() {
   };
 
   return (
-    <DesktopOnlyGuard product="NEXUS Code" reason="NEXUS Code is optimized for desktop workspaces with files, editor, terminal-style actions, preview, diffs, jobs, and Git controls.">
+    <DesktopOnlyGuard product="Arceus Code" reason="Arceus Code is optimized for desktop workspaces with files, editor, terminal-style actions, preview, diffs, jobs, and Git controls.">
       <main className={styles.workspace}>
       <WorkspaceSidebar
         recentItems={recentItems}
@@ -1809,15 +3434,37 @@ export default function WorkspacePage() {
         onSearch={focusWorkspaceSearch}
         onOpenRecent={openRecent}
         onImportLocal={importLocalDirectory}
-        onToggleFiles={() => setFilesOpen(!filesOpen)}
+        onToggleFiles={() => openRightTool('explorer')}
         onToggleEditor={() => setEditorOpen(!editorOpen)}
         editorOpen={editorOpen}
+        activeProjectId={projectId}
+        mergeSelection={mergeSelection}
+        onToggleMergeProject={toggleMergeProject}
+        onMergeSelectedProjects={mergeSelectedProjects}
+        onCloseProject={closeProjectTab}
+        onRemoveProject={removeProjectFromApp}
       />
       <header className={styles.topbar}>
         <div className={styles.breadcrumb}>
-          <span>NEXUS Code</span>
+          <span>Arceus Code</span>
           <strong>{activeProject?.name || 'Workspace'}</strong>
         </div>
+        {openProjects.length > 0 && (
+          <div className={styles.projectTabs} aria-label="Open projects">
+            {openProjects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                className={project.id === projectId ? styles.projectTabActive : styles.projectTab}
+                onClick={() => void openCodeProject(project.id)}
+                title={project.local_workspace_path || project.name}
+              >
+                <span>{project.name}</span>
+                <em>{project.file_count ?? project.file_ids?.length ?? 0}</em>
+              </button>
+            ))}
+          </div>
+        )}
         <div
           className={styles.commandSearchWrap}
           onBlur={() => window.setTimeout(() => setCommandPaletteOpen(false), 120)}
@@ -1863,7 +3510,7 @@ export default function WorkspacePage() {
         </div>
         <div className={styles.topActions}>
           <span className={styles.projectBadge} title={`Sandbox: ${sandboxType}`}>
-            <Circle size={7} fill="currentColor" /> {runtimeStatus?.status || 'ready'}
+            <Circle size={7} fill="currentColor" /> {agentOnline === false ? 'API offline' : runtimeStatus?.status || 'ready'}
           </span>
           
           <div className={styles.settingsWrapper}>
@@ -1919,8 +3566,9 @@ export default function WorkspacePage() {
           <UserCircle size={18} />
         </div>
       </header>
-      <div className={`${styles.layout} ${!editorOpen ? styles.layoutNoEditor : ''} ${!rightPanelOpen ? styles.layoutRightCollapsed : ''}`}>
-        {editorOpen && (
+      <div className={styles.layout}>
+        <div className={`${styles.workspaceBody} ${!editorOpen ? styles.layoutNoEditor : ''} ${!rightPanelOpen ? styles.layoutRightCollapsed : ''}`}>
+          {editorOpen && (
           <EditorPanel
             file={openFile}
             tabs={openTabs}
@@ -1936,31 +3584,83 @@ export default function WorkspacePage() {
             onComplete={completeAtCursor}
             onToggleExpand={() => setEditorOpen(false)}
             isCollapsed={false}
+            diagnostics={diagnostics}
+            onOpenDiagnostic={openDiagnosticFile}
+            onDiagnosticsChange={setDiagnostics}
+            workspaceRoot={trustedLocalPath}
           />
         )}
-        <ConversationPanel
+          <ConversationPanel
           mode={mode}
           messages={messages}
           prompt={prompt}
           busy={busy}
           selectedFileCount={selectedFileIds.length}
           suggestions={suggestions}
+          activeProjectName={activeProject?.name || ''}
+          activeSessionLabel={sessionId ? `session ${sessionId.slice(0, 8)}` : ''}
           onModeChange={setMode}
           onPromptChange={updatePrompt}
           onTypeSuggestion={typeSuggestion}
           onSubmit={runWorkspace}
           onSubmitBackground={runWorkspaceBackground}
           onAttachClick={() => fileInputRef.current?.click()}
-        />
-        {rightPanelOpen && rightPanelView === 'activity' && (
+            onOpenTool={(tool) => {
+              if (tool === 'terminal') {
+                setTerminalPanelOpen(true);
+                return;
+              }
+              setRightPanelView(tool);
+              setRightPanelOpen(true);
+            }}
+            onOpenFile={openReceiptFile}
+            onRollback={rollbackChanges}
+          />
+        {rightPanelOpen && rightPanelView === 'explorer' && (
+          <div className={styles.rightExplorerPanel}>
+            <div className={styles.rightDrawerHeader}>
+              <span>Folder Structure</span>
+              <button type="button" onClick={() => setRightPanelOpen(false)}>Close</button>
+            </div>
+            <FileExplorer
+              files={visibleFiles}
+              selectedIds={selectedFileIds}
+              activePath={openFile?.filename || ''}
+              searchQuery={searchQuery}
+              searchMatches={searchMatches}
+              busy={busy}
+              onRefresh={loadFiles}
+              onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
+              onOpenFile={(file) => {
+                openWorkspaceFile(file);
+                setEditorOpen(true);
+              }}
+              onSearchChange={setSearchQuery}
+              onSearch={searchWorkspace}
+              onUpload={uploadFiles}
+              onCreateItem={trustedLocalPath ? createLocalWorkspaceItem : undefined}
+              onCreateItemAtPath={trustedLocalPath ? createLocalWorkspaceItem : undefined}
+              onRenameFile={trustedLocalPath ? renameLocalWorkspaceFile : undefined}
+              onDeleteFile={trustedLocalPath ? deleteLocalWorkspaceFile : undefined}
+              onRevealPath={trustedLocalPath ? revealLocalWorkspacePath : undefined}
+              dirtyIds={openTabs.filter((tab) => tab.dirty).map((tab) => tab.id)}
+              dirtyPaths={openTabs.filter((tab) => tab.dirty).map((tab) => tab.filename)}
+              rootPath={trustedLocalPath}
+              searchFocusKey={searchFocusKey}
+            />
+          </div>
+        )}
+        {rightPanelOpen && ['changes', 'jobs', 'preview', 'git'].includes(rightPanelView) && (
           <ActivityPanel
             events={events}
             jobs={jobs}
+            workerStatus={workerStatus}
             patchPreview={patchPreview}
             commands={commands}
             runtimeStatus={runtimeStatus}
             githubStatus={githubStatus}
             githubRepositories={githubRepositories}
+            githubBranches={githubBranches}
             selectedGithubRepo={selectedGithubRepo}
             analysis={analysis}
             rollbackSnapshots={rollbackSnapshots}
@@ -1974,12 +3674,16 @@ export default function WorkspacePage() {
             canFixPreview={Boolean(sessionId) && !busy}
             canStartPreview={selectedFileIds.length > 0 && !busy}
             repoUrl={repoUrl}
+            githubBaseBranch={githubBaseBranch}
             githubBranchName={githubBranchName}
             canUseGit={Boolean(sessionId) && !busy}
             onApply={applyChanges}
             onReject={rejectChanges}
-            onApplyFile={applyFileChange}
-            onRejectFile={rejectFileChange}
+            onApplySelection={applyPatchSelection}
+            onRejectSelection={rejectPatchSelection}
+            onApproveHunk={(hunkId) => updateHunkReview(hunkId, 'approve')}
+            onRejectHunk={(hunkId) => updateHunkReview(hunkId, 'reject')}
+            onResetPatchReview={resetPatchReview}
             onRollback={rollbackChanges}
             onRollbackSnapshot={rollbackSnapshot}
             onLoadRollbackSnapshots={() => loadRollbackSnapshots()}
@@ -1988,7 +3692,19 @@ export default function WorkspacePage() {
             onInstallRuntime={installRuntime}
             onRefreshJobs={refreshCurrentJobs}
             onCancelJob={cancelJob}
+            onPauseJob={pauseJob}
+            onResumeJob={resumeJob}
             onRetryJob={retryJob}
+            terminalSessions={Object.values(terminalSessions)}
+            activeTerminalId={activeTerminalId}
+            terminalCommand={terminalCommand}
+            onCreateTerminal={createTerminal}
+            onSelectTerminal={setActiveTerminalId}
+            onTerminalCommandChange={setTerminalCommand}
+            onSendTerminalInput={sendTerminalInput}
+            onKillTerminal={killTerminal}
+            canUseTerminal={canUseWorkspaceTerminal}
+            terminalHelp={terminalHelp}
             onSyncRuntime={syncRuntime}
             onAnalyzeWorkspace={analyzeWorkspace}
             onPreviewUrlChange={setPreviewUrl}
@@ -1999,6 +3715,7 @@ export default function WorkspacePage() {
             onLoadPreviewLogs={loadPreviewLogs}
             onRepoUrlChange={setRepoUrl}
             onGithubRepoChange={setSelectedGithubRepo}
+            onGithubBaseBranchChange={setGithubBaseBranch}
             onGithubBranchNameChange={setGithubBranchName}
             onConnectGithubApp={connectGithubApp}
             onRefreshGithub={refreshGithubState}
@@ -2009,6 +3726,10 @@ export default function WorkspacePage() {
             onImportRepo={importRepo}
             onPreparePr={preparePr}
             onOpenPr={openGithubAppPr}
+            onCommitAndOpenPr={commitAndOpenGithubPr}
+            initialTab={rightDrawerInitialTab}
+            onClose={() => setRightPanelOpen(false)}
+            showTabs={false}
           />
         )}
         {rightPanelOpen && rightPanelView === 'apps' && (
@@ -2023,33 +3744,94 @@ export default function WorkspacePage() {
           />
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (
-          <WorkspaceTaskPanel
-            suggestions={taskRailItems}
-            activeSuggestionId={typedSuggestionId}
-            onTypeSuggestion={typeSuggestion}
-            busy={busy}
+          <ProjectNavigator
+            task={navigatorTask}
+            onAutomate={runWorkspace}
           />
         )}
+        </div>
+        <WorkspaceTerminalPanel
+          open={terminalPanelOpen}
+          size={terminalPanelSize}
+          sessions={Object.values(terminalSessions)}
+          activeTerminalId={activeTerminalId}
+          sessionId={sessionId}
+          command={terminalCommand}
+          canUseTerminal={canUseWorkspaceTerminal}
+          helpText={terminalHelp}
+          busy={busy}
+          onClose={() => setTerminalPanelOpen(false)}
+          onSizeChange={setTerminalPanelSize}
+          onCreate={createTerminal}
+          onSelect={setActiveTerminalId}
+          onCommandChange={setTerminalCommand}
+          onSend={sendTerminalInput}
+          onRawInput={sendTerminalRawInput}
+          onResize={resizeTerminal}
+          onCloudFrame={handleCloudTerminalFrame}
+          onKill={killTerminal}
+          onRestart={restartTerminal}
+          onClear={clearTerminal}
+        />
         <div className={styles.rightRail}>
           <button
-            className={rightPanelOpen && rightPanelView === 'activity' ? styles.rightRailButtonActive : styles.rightRailButton}
+            className={rightPanelOpen && rightPanelView === 'explorer' ? styles.rightRailButtonActive : styles.rightRailButton}
             type="button"
-            title="Activity / Changes"
-            onClick={() => {
-              setRightPanelView('activity');
-              setRightPanelOpen(true);
-            }}
+            title="Folder structure"
+            onClick={() => openRightTool('explorer')}
           >
-            <Activity size={14} />
+            <FolderTree size={14} />
+            {visibleFiles.length > 0 && <span className={styles.railBadge}>{Math.min(visibleFiles.length, 99)}</span>}
+          </button>
+          <button
+            className={terminalPanelOpen ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title={terminalPanelOpen ? 'Hide terminal' : 'Open terminal'}
+            onClick={() => setTerminalPanelOpen((current) => !current)}
+          >
+            <Terminal size={14} />
+            {Object.keys(terminalSessions).length > 0 && <span className={styles.railBadge}>{Object.keys(terminalSessions).length}</span>}
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'changes' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Changes"
+            onClick={() => openRightTool('changes')}
+          >
+            <FileDiff size={14} />
+            {patchPreview.length > 0 && <span className={styles.railBadge}>{Math.min(patchPreview.length, 9)}</span>}
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'jobs' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Jobs"
+            onClick={() => openRightTool('jobs')}
+          >
+            <Workflow size={14} />
+            {jobs.some((job) => ['running', 'queued', 'failed', 'timeout'].includes(job.status || '')) && <span className={styles.railDot} />}
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'preview' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Preview"
+            onClick={() => openRightTool('preview')}
+          >
+            <Play size={14} />
+            {previewChecks.some((check) => check.status !== 'passed') && <span className={styles.railDot} />}
+          </button>
+          <button
+            className={rightPanelOpen && rightPanelView === 'git' ? styles.rightRailButtonActive : styles.rightRailButton}
+            type="button"
+            title="Git / PR"
+            onClick={() => openRightTool('git')}
+          >
+            <GitPullRequest size={14} />
           </button>
           <button
             className={rightPanelOpen && rightPanelView === 'apps' ? styles.rightRailButtonActive : styles.rightRailButton}
             type="button"
             title="Apps / Connectors"
-            onClick={() => {
-              setRightPanelView('apps');
-              setRightPanelOpen(true);
-            }}
+            onClick={() => openRightTool('apps')}
           >
             <AppWindow size={14} />
           </button>
@@ -2057,12 +3839,10 @@ export default function WorkspacePage() {
             className={rightPanelOpen && rightPanelView === 'tasks' ? styles.rightRailButtonActive : styles.rightRailButton}
             type="button"
             title="Suggested Tasks"
-            onClick={() => {
-              setRightPanelView('tasks');
-              setRightPanelOpen(true);
-            }}
+            onClick={() => openRightTool('tasks')}
           >
             <ListChecks size={14} />
+            {workspaceTasks.length > 0 && <span className={styles.railBadge}>{Math.min(workspaceTasks.length, 9)}</span>}
           </button>
           <button
             className={styles.rightRailButton}
@@ -2074,6 +3854,16 @@ export default function WorkspacePage() {
           </button>
         </div>
       </div>
+      {folderWatchError && (
+        <div className={styles.watchErrorToast} role="status">
+          <div>
+            <strong>Folder watcher paused</strong>
+            <span>{folderWatchError.message}</span>
+          </div>
+          <button type="button" onClick={retryFolderWatch}>Retry watching</button>
+          <button type="button" aria-label="Dismiss folder watcher warning" onClick={() => setFolderWatchError(null)}>×</button>
+        </div>
+      )}
       {filesOpen && (
         <div className={styles.filesDrawerBackdrop} role="presentation" onMouseDown={() => setFilesOpen(false)}>
           <div className={styles.filesDrawer} role="dialog" aria-label="Project files" onMouseDown={(event) => event.stopPropagation()}>
@@ -2082,8 +3872,9 @@ export default function WorkspacePage() {
               <button type="button" onClick={() => setFilesOpen(false)}>Close</button>
             </div>
             <FileExplorer
-              files={files}
+              files={visibleFiles}
               selectedIds={selectedFileIds}
+              activePath={openFile?.filename || ''}
               searchQuery={searchQuery}
               searchMatches={searchMatches}
               busy={busy}
@@ -2096,10 +3887,60 @@ export default function WorkspacePage() {
               onSearchChange={setSearchQuery}
               onSearch={searchWorkspace}
               onUpload={uploadFiles}
+              onCreateItem={trustedLocalPath ? createLocalWorkspaceItem : undefined}
+              onCreateItemAtPath={trustedLocalPath ? createLocalWorkspaceItem : undefined}
+              onRenameFile={trustedLocalPath ? renameLocalWorkspaceFile : undefined}
+              onDeleteFile={trustedLocalPath ? deleteLocalWorkspaceFile : undefined}
+              onRevealPath={trustedLocalPath ? revealLocalWorkspacePath : undefined}
+              dirtyIds={openTabs.filter((tab) => tab.dirty).map((tab) => tab.id)}
+              dirtyPaths={openTabs.filter((tab) => tab.dirty).map((tab) => tab.filename)}
+              rootPath={trustedLocalPath}
               searchFocusKey={searchFocusKey}
             />
           </div>
         </div>
+      )}
+      {pendingProjectOpen && (
+        <div className={styles.replaceDialogBackdrop} role="presentation" onMouseDown={() => setPendingProjectOpen(null)}>
+          <div className={styles.replaceDialog} role="dialog" aria-label="Replace open project" onMouseDown={(event) => event.stopPropagation()}>
+            <strong>Three projects are already open</strong>
+            <p>Close one open project tab to open the next workspace. This will not delete any files or archive the project.</p>
+            <div className={styles.replaceProjectList}>
+              {openProjects.map((project) => (
+                <button key={project.id} type="button" onClick={() => void replaceOpenProject(project.id)}>
+                  <span>{project.name}</span>
+                  <em>{project.local_workspace_path || `${project.file_count ?? project.file_ids?.length ?? 0} files`}</em>
+                </button>
+              ))}
+            </div>
+            <button type="button" className={styles.replaceCancel} onClick={() => setPendingProjectOpen(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {upgradePrompt && (
+        <div className={styles.replaceDialogBackdrop} role="presentation" onMouseDown={() => setUpgradePrompt(null)}>
+          <div className={styles.upgradeDialog} role="dialog" aria-label="Upgrade required" onMouseDown={(event) => event.stopPropagation()}>
+            <span className={styles.upgradeEyebrow}>{upgradePrompt.code || 'LIMIT_REACHED'}</span>
+            <strong>{upgradePrompt.upgrade_prompt || upgradePrompt.message || 'Upgrade required to continue.'}</strong>
+            <p>{upgradePrompt.message || 'This action is protected by your current Arceus plan limits.'}</p>
+            <div className={styles.upgradeUsageGrid}>
+              <div><span>Plan</span><em>{upgradePrompt.plan || 'free'}</em></div>
+              <div><span>Action</span><em>{upgradePrompt.action || upgradePrompt.feature || 'workspace action'}</em></div>
+              <div><span>Used</span><em>{upgradePrompt.used ?? '-'}</em></div>
+              <div><span>Limit</span><em>{upgradePrompt.limit ?? 'locked'}</em></div>
+            </div>
+            <div className={styles.upgradeActions}>
+              <button type="button" onClick={() => setUpgradePrompt(null)}>Not now</button>
+              <button type="button" onClick={() => { window.location.href = upgradePrompt.upgrade_url || '/settings?tab=billing'; }}>Upgrade Now</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {onboardingOpen && (
+        <OnboardingWizard
+          onComplete={handleOnboardingComplete}
+          onSelectDirectory={() => void importLocalDirectory('')}
+        />
       )}
       <input
         ref={fileInputRef}

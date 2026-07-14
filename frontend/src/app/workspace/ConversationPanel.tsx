@@ -1,7 +1,8 @@
 'use client';
 
-import { Bot, ChevronDown, Code2, Layers, Mic, Paperclip, Plus, X, ArrowUp } from 'lucide-react';
+import { ArrowUp, Bot, ChevronDown, Code2, Layers, Mic, Paperclip, Plus, X } from 'lucide-react';
 import styles from './Workspace.module.css';
+import WorkReceipt, { type WorkspaceWorkReceipt } from './WorkReceipt';
 import type { WorkspaceSuggestion } from './workspaceSuggestions';
 
 export type WorkspaceMode = 'auto' | 'code' | 'plan' | 'design' | 'deploy' | 'research';
@@ -10,6 +11,7 @@ export type WorkspaceMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  receipt?: WorkspaceWorkReceipt;
 };
 
 type Props = {
@@ -19,12 +21,17 @@ type Props = {
   busy: boolean;
   selectedFileCount: number;
   suggestions: WorkspaceSuggestion[];
+  activeProjectName?: string;
+  activeSessionLabel?: string;
   onModeChange: (mode: WorkspaceMode) => void;
   onPromptChange: (value: string) => void;
   onTypeSuggestion: (suggestion: WorkspaceSuggestion) => void;
   onSubmit: () => void;
   onSubmitBackground: () => void;
   onAttachClick: () => void;
+  onOpenTool?: (tool: 'terminal' | 'changes' | 'jobs' | 'preview') => void;
+  onOpenFile?: (filename: string) => void | Promise<void>;
+  onRollback?: () => void | Promise<void>;
 };
 
 const modes: { id: WorkspaceMode; label: string }[] = [
@@ -81,20 +88,34 @@ function parseAssistantContent(value: string) {
   }
 }
 
-function MessageBody({ message }: { message: WorkspaceMessage }) {
+function MessageBody({
+  message,
+  onTypeSuggestion,
+  onOpenTool,
+  onOpenFile,
+  onRollback,
+  busy,
+}: {
+  message: WorkspaceMessage;
+  onTypeSuggestion: (suggestion: WorkspaceSuggestion) => void;
+  onOpenTool?: (tool: 'terminal' | 'changes' | 'jobs' | 'preview') => void;
+  onOpenFile?: (filename: string) => void | Promise<void>;
+  onRollback?: () => void | Promise<void>;
+  busy: boolean;
+}) {
   const files = extractFileMentions(message.content);
   const parsed = message.role === 'assistant' ? parseAssistantContent(message.content) : null;
   const taskType = inferTaskType(message.content);
   const content = parsed ? parsed.content : message.content;
-  const isLong = content.length > 260 || lineCount(content) > 5;
+  const isLong = !message.receipt && (content.length > 260 || lineCount(content) > 5);
   const primary = parsed && !parsed.content
-    ? 'NEXUS returned a structured draft without visible content. Check Activity for the generated plan, files, and job state.'
+    ? 'Arceus prepared a structured draft. Open Changes or Jobs to inspect the generated files and execution state.'
     : content;
 
   return (
     <div className={styles.messageContent}>
       <div className={styles.messageHeaderRow}>
-        <strong>{message.role === 'user' ? 'You' : 'NEXUS Code'}</strong>
+        <strong>{message.role === 'user' ? 'You' : 'Arceus Code'}</strong>
         <span>
           {message.role === 'user' ? `${taskType} request` : parsed ? `${parsed.status} · ${parsed.outputType}` : 'Agent response'}
         </span>
@@ -107,9 +128,26 @@ function MessageBody({ message }: { message: WorkspaceMessage }) {
           {files.length > 0 && <span>{files.length} file refs</span>}
         </div>
       )}
-      <div className={isLong ? styles.messagePreview : styles.messageText}>
-        {isLong ? compactText(primary, 260) : primary}
-      </div>
+      {message.receipt ? (
+        <WorkReceipt
+          receipt={message.receipt}
+          onTypeSuggestion={onTypeSuggestion}
+          onOpenTool={onOpenTool}
+          onOpenFile={onOpenFile}
+          onRollback={onRollback}
+          busy={busy}
+        />
+      ) : (
+        <div className={isLong ? styles.messagePreview : styles.messageText}>
+          {isLong ? compactText(primary, 260) : primary}
+        </div>
+      )}
+      {message.receipt && primary.trim() && primary.trim() !== message.receipt.summary.trim() && (
+        <details className={styles.messageDetails}>
+          <summary>View explanation</summary>
+          <pre>{primary}</pre>
+        </details>
+      )}
       {isLong && (
         <details className={styles.messageDetails}>
           <summary>{message.role === 'user' ? 'Show full prompt' : 'Show full response'}</summary>
@@ -132,19 +170,25 @@ export default function ConversationPanel({
   busy,
   selectedFileCount,
   suggestions,
+  activeProjectName,
+  activeSessionLabel,
   onModeChange,
   onPromptChange,
   onTypeSuggestion,
   onSubmit,
   onSubmitBackground,
   onAttachClick,
+  onOpenTool,
+  onOpenFile,
+  onRollback,
 }: Props) {
   return (
     <section className={styles.conversation}>
       <div className={styles.agentHeader}>
         <div className={styles.agentTitle}>
           <Bot size={15} />
-          <span>New Agent</span>
+          <span>{activeProjectName ? `${activeProjectName} Agent` : 'New Agent'}</span>
+          {activeSessionLabel && <em>{activeSessionLabel}</em>}
         </div>
         <div className={styles.agentHeaderActions}>
           <button type="button" title="New agent" disabled={busy}>
@@ -160,7 +204,7 @@ export default function ConversationPanel({
           <div className={styles.emptyState}>
             <div>
               <h1>What would you like to build or fix?</h1>
-              <p>NEXUS Code can read files, plan, code, design, research, and prepare deployment from one prompt.</p>
+              <p>Open a folder or describe what you want to build. Arceus will suggest the next 3 actions before execution.</p>
             </div>
           </div>
         ) : (
@@ -169,8 +213,15 @@ export default function ConversationPanel({
               className={`${styles.message} ${message.role === 'user' ? styles.userMessage : styles.assistantMessage}`}
               key={message.id}
             >
-              <span className={styles.messageAvatar}>{message.role === 'user' ? 'U' : 'N'}</span>
-              <MessageBody message={message} />
+              <span className={styles.messageAvatar}>{message.role === 'user' ? 'U' : 'A'}</span>
+              <MessageBody
+                message={message}
+                onTypeSuggestion={onTypeSuggestion}
+                onOpenTool={onOpenTool}
+                onOpenFile={onOpenFile}
+                onRollback={onRollback}
+                busy={busy}
+              />
             </article>
           ))
         )}
@@ -179,7 +230,7 @@ export default function ConversationPanel({
         {prompt.trim().length > 0 && suggestions.length > 0 && (
           <div className={styles.nextMoveStrip}>
             <div className={styles.nextMoveHeader}>
-              <span>NEXUS suggests</span>
+              <span>Arceus suggests</span>
               <em>Pick a direction before execution</em>
             </div>
             <div className={styles.nextMoveGrid}>
@@ -208,7 +259,7 @@ export default function ConversationPanel({
                 onSubmit();
               }
             }}
-            placeholder="Plan, Build, / for skills, @ for context"
+            placeholder="Plan, build, debug, or ask anything. / for skills, @ for context"
             rows={1}
           />
           <div className={styles.agentToolbar}>
@@ -223,7 +274,7 @@ export default function ConversationPanel({
             </div>
             <select className={styles.modelSelect} defaultValue="composer-2.5-fast" title="Agent model">
               <option value="composer-2.5-fast">Composer 2.5 Fast</option>
-              <option value="nexus-agent-pro">NEXUS Agent Pro</option>
+              <option value="nexus-agent-pro">Arceus Agent Pro</option>
               <option value="autonomus-ai">Autonomus AI</option>
             </select>
             <span className={styles.contextCount}>{selectedFileCount} ctx</span>

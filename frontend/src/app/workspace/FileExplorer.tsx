@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { FileCode2, FileText, FolderOpen, GitBranch, Plus, RefreshCw, Search, Upload } from 'lucide-react';
+import { FolderOpen, GitBranch, FolderPlus, Plus, RefreshCw, Search, Upload } from 'lucide-react';
+import FileTree from './FileTree';
 import styles from './Workspace.module.css';
 
 export type WorkspaceFile = {
@@ -24,6 +25,7 @@ export type WorkspaceSearchMatch = {
 type Props = {
   files: WorkspaceFile[];
   selectedIds: string[];
+  activePath?: string;
   searchQuery: string;
   searchMatches: WorkspaceSearchMatch[];
   busy?: boolean;
@@ -33,16 +35,16 @@ type Props = {
   onSearchChange: (value: string) => void;
   onSearch: () => void;
   onUpload: (files: FileList | null) => void;
+  onCreateItem?: (type: 'file' | 'folder') => void;
+  onCreateItemAtPath?: (type: 'file' | 'folder', basePath?: string) => void;
+  onRenameFile?: (file: WorkspaceFile, nextPath?: string) => void;
+  onDeleteFile?: (file: WorkspaceFile) => void;
+  onRevealPath?: (relativePath: string) => void;
   searchFocusKey?: number;
+  dirtyIds?: string[];
+  dirtyPaths?: string[];
+  rootPath?: string;
 };
-
-function fileIcon(filename: string) {
-  const lower = filename.toLowerCase();
-  if (lower.endsWith('.py') || lower.endsWith('.ts') || lower.endsWith('.tsx') || lower.endsWith('.js') || lower.endsWith('.css') || lower.endsWith('.html')) {
-    return <FileCode2 size={15} />;
-  }
-  return <FileText size={15} />;
-}
 
 function searchKindLabel(kind?: WorkspaceSearchMatch['kind']) {
   if (kind === 'symbol') return 'Symbol';
@@ -55,6 +57,7 @@ function searchKindLabel(kind?: WorkspaceSearchMatch['kind']) {
 export default function FileExplorer({
   files,
   selectedIds,
+  activePath,
   searchQuery,
   searchMatches,
   busy,
@@ -64,7 +67,15 @@ export default function FileExplorer({
   onSearchChange,
   onSearch,
   onUpload,
+  onCreateItem,
+  onCreateItemAtPath,
+  onRenameFile,
+  onDeleteFile,
+  onRevealPath,
   searchFocusKey,
+  dirtyIds = [],
+  dirtyPaths = [],
+  rootPath,
 }: Props) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -80,8 +91,11 @@ export default function FileExplorer({
       <div className={styles.panelHeader}>
         <span>MY AI</span>
         <div className={styles.fileToolbar}>
-          <button className={styles.iconButton} type="button" disabled={busy} title="New file">
+          <button className={styles.iconButton} type="button" onClick={() => onCreateItem?.('file')} disabled={busy || !onCreateItem} title="New file">
             <Plus size={14} />
+          </button>
+          <button className={styles.iconButton} type="button" onClick={() => onCreateItem?.('folder')} disabled={busy || !onCreateItem} title="New folder">
+            <FolderPlus size={14} />
           </button>
           <button className={styles.iconButton} type="button" onClick={() => searchInputRef.current?.focus()} title="Search files">
             <Search size={14} />
@@ -133,25 +147,23 @@ export default function FileExplorer({
         <div className={styles.meta} style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0 10px' }}>
           <FolderOpen size={14} /> Uploaded workspace
         </div>
-        {files.map((file) => {
-          const active = selectedIds.includes(file.id);
-          return (
-            <button
-              key={file.id}
-              className={`${styles.fileItem} ${active ? styles.fileItemActive : ''}`}
-              type="button"
-              onClick={() => {
-                onToggleFile(file.id);
-                onOpenFile(file);
-              }}
-              title={file.filename}
-            >
-              {fileIcon(file.filename)}
-              <span className={styles.fileName}>{file.filename}</span>
-            </button>
-          );
-        })}
-        {files.length === 0 && <div className={styles.meta}>Upload files, PDFs, docs, or code to make NEXUS read them internally.</div>}
+        <FileTree
+          files={files}
+          selectedIds={selectedIds}
+          activePath={activePath}
+          dirtyIds={dirtyIds}
+          dirtyPaths={dirtyPaths}
+          rootPath={rootPath}
+          filter={searchQuery}
+          busy={busy}
+          onOpenFile={onOpenFile}
+          onToggleFile={onToggleFile}
+          onCreateItem={onCreateItemAtPath || ((type) => onCreateItem?.(type))}
+          onRenameFile={onRenameFile}
+          onDeleteFile={onDeleteFile}
+          onRevealPath={onRevealPath}
+        />
+        {files.length === 0 && <div className={styles.meta}>Upload files, PDFs, docs, or code to make Arceus read them internally.</div>}
       </div>
       <div className={styles.uploadBox}>
         <label className={styles.uploadLabel}>

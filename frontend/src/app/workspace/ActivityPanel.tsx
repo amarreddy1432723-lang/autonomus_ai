@@ -1,7 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, CircleDot, Eye, FileCode2, FilePenLine, Rocket, Search, Sparkles, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, CircleDot, Eye, FileCode2, FilePenLine, Rocket, Search, Sparkles, Terminal, X } from 'lucide-react';
+import DiffViewer from './DiffViewer';
+import PreviewPanel from './PreviewPanel';
+import GitPanel from './GitPanel';
 import styles from './Workspace.module.css';
 
 export type ActivityEvent = {
@@ -32,12 +35,48 @@ export type AgentJob = {
   completed_at?: string;
 };
 
+export type WorkerStatus = {
+  enabled?: boolean;
+  alive?: boolean;
+  backend?: string;
+  celery_enabled?: boolean;
+  celery_workers?: string[];
+  worker_id?: string;
+  queued_jobs?: number;
+  claimed_jobs?: number;
+  running_jobs?: number;
+  cancel_requested_jobs?: number;
+  interrupted_jobs?: number;
+  poll_seconds?: number;
+  job_timeout_seconds?: number;
+  job_stale_seconds?: number;
+  max_retries?: number;
+};
+
 export type PatchPreviewItem = {
+  operation_id?: string;
+  operation?: 'create' | 'modify' | 'delete' | 'rename' | 'folder' | string;
   file_id: string;
   filename: string;
+  new_filename?: string;
   diff: string;
   additions?: number;
   deletions?: number;
+  conflict?: boolean;
+  base_checksum?: string;
+  current_checksum?: string;
+  status?: string;
+  hunks?: Array<{
+    id: string;
+    index: number;
+    header?: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    lines?: string[];
+    old_lines?: string[];
+    new_lines?: string[];
+  }>;
 };
 
 export type WorkspaceCommand = {
@@ -55,6 +94,12 @@ export type GitHubRepository = {
   html_url?: string;
 };
 
+export type GitHubBranch = {
+  name: string;
+  sha?: string;
+  protected?: boolean;
+};
+
 export type GitHubStatus = {
   configured?: boolean;
   connected?: boolean;
@@ -66,6 +111,7 @@ export type GitHubStatus = {
   latest_commit_sha?: string;
   pull_request_url?: string;
   checks?: Array<{ name?: string; status?: string; conclusion?: string; html_url?: string }>;
+  check_summary?: { total?: number; passed?: number; failed?: number; running?: number };
 };
 
 export type RuntimeStatus = {
@@ -96,6 +142,17 @@ export type RuntimeStatus = {
   };
 };
 
+export type TerminalSession = {
+  id: string;
+  status?: string;
+  cwd?: string;
+  backend?: string;
+  history?: string[];
+  logs?: Array<Record<string, any> | string>;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type PreviewLogs = {
   logs?: string;
   issues?: string[];
@@ -113,6 +170,28 @@ export type PreviewCheck = {
   issues?: string[];
   checked_at?: string;
   content_type?: string;
+  browser?: string;
+  screenshot_path?: string;
+  screenshot_url?: string;
+  screenshot_base64?: string;
+  html_snapshot_path?: string;
+  html_snapshot_url?: string;
+  artifacts?: Array<{ name?: string; path?: string; url?: string; kind?: string; size_bytes?: number; entropy?: number }>;
+  console_errors?: Array<string | { type?: string; text?: string; args?: string[]; url?: string; line?: number; column?: number }>;
+  page_errors?: string[];
+  network_failures?: Array<{ url?: string; failure?: any; error?: string; method?: string; resource_type?: string }>;
+  blank_page?: boolean;
+  first_contentful_paint_ms?: number | null;
+  playwright_error?: string;
+  verification_report?: {
+    browser?: string;
+    blank_page?: boolean;
+    first_contentful_paint_ms?: number | null;
+    console_error_count?: number;
+    page_error_count?: number;
+    network_failure_count?: number;
+  };
+  fix_suggestion_prompt?: string;
 };
 
 export type WorkspaceAnalysis = {
@@ -140,17 +219,26 @@ export type RollbackSnapshot = {
   applied_at?: string;
   summary?: string;
   file_count?: number;
-  files?: Array<{ file_id?: string; filename?: string }>;
+  operation_types?: string[];
+  impact?: {
+    created_files?: string[];
+    deleted_files?: string[];
+    renamed_files?: Array<{ from?: string; to?: string }>;
+    folders_created?: string[];
+  };
+  files?: Array<{ file_id?: string; filename?: string; operation?: string }>;
 };
 
 type Props = {
   events: ActivityEvent[];
   jobs: AgentJob[];
+  workerStatus?: WorkerStatus | null;
   patchPreview: PatchPreviewItem[];
   commands: WorkspaceCommand[];
   runtimeStatus: RuntimeStatus | null;
   githubStatus: GitHubStatus | null;
   githubRepositories: GitHubRepository[];
+  githubBranches?: GitHubBranch[];
   selectedGithubRepo: string;
   analysis: WorkspaceAnalysis | null;
   rollbackSnapshots: RollbackSnapshot[];
@@ -158,8 +246,11 @@ type Props = {
   canApply: boolean;
   onApply: () => void;
   onReject: () => void;
-  onApplyFile: (fileId: string) => void;
-  onRejectFile: (fileId: string) => void;
+  onApplySelection: (selection: { fileIds?: string[]; operationIds?: string[]; hunkIds?: string[] }) => void;
+  onRejectSelection: (selection: { fileIds?: string[]; operationIds?: string[] }) => void;
+  onApproveHunk: (hunkId: string) => void;
+  onRejectHunk: (hunkId: string) => void;
+  onResetPatchReview: () => void;
   onRollback: () => void;
   onRollbackSnapshot: (snapshotId: string) => void;
   onLoadRollbackSnapshots: () => void;
@@ -169,7 +260,18 @@ type Props = {
   onInstallRuntime: () => void;
   onRefreshJobs: () => void;
   onCancelJob: (jobId: string) => void;
+  onPauseJob: (jobId: string) => void;
+  onResumeJob: (jobId: string) => void;
   onRetryJob: (jobId: string) => void;
+  terminalSessions: TerminalSession[];
+  activeTerminalId: string;
+  terminalCommand: string;
+  onCreateTerminal: () => void;
+  onSelectTerminal: (terminalId: string) => void;
+  onTerminalCommandChange: (value: string) => void;
+  onSendTerminalInput: () => void;
+  onKillTerminal: (terminalId: string) => void;
+  canUseTerminal: boolean;
   onSyncRuntime: () => void;
   onAnalyzeWorkspace: () => void;
   previewUrl: string;
@@ -177,7 +279,7 @@ type Props = {
   onPreviewUrlChange: (value: string) => void;
   onCheckPreview: () => void;
   canCheckPreview: boolean;
-  onFixPreview: () => void;
+  onFixPreview: (instruction?: string) => void;
   canFixPreview: boolean;
   onStartPreview: () => void;
   onStopPreview: () => void;
@@ -185,20 +287,27 @@ type Props = {
   canStartPreview: boolean;
   previewLogs: PreviewLogs | null;
   repoUrl: string;
+  githubBaseBranch: string;
   githubBranchName: string;
   onRepoUrlChange: (value: string) => void;
   onGithubRepoChange: (value: string) => void;
+  onGithubBaseBranchChange: (value: string) => void;
   onGithubBranchNameChange: (value: string) => void;
   onConnectGithubApp: () => void;
   onRefreshGithub: () => void;
   onCreateGithubBranch: () => void;
-  onCommitGithubChanges: () => void;
+  onCommitGithubChanges: (message?: string, filenames?: string[]) => void;
   onCheckGithubPrStatus: () => void;
   onConnectRepo: () => void;
   onImportRepo: () => void;
   onPreparePr: () => void;
-  onOpenPr: () => void;
+  onOpenPr: (title?: string, body?: string) => void;
+  onCommitAndOpenPr: (payload: { commit_message?: string; title?: string; body?: string; branch_name?: string; filenames?: string[] }) => void;
   canUseGit: boolean;
+  initialTab?: ActivityTab;
+  onClose?: () => void;
+  showTabs?: boolean;
+  terminalHelp?: string;
 };
 
 function Icon({ kind }: { kind: ActivityEvent['kind'] }) {
@@ -245,25 +354,57 @@ const commands: WorkspaceCommand[] = [
   { label: 'Typecheck', command: 'npm run typecheck' },
 ];
 
-type ActivityTab = 'changes' | 'jobs' | 'preview' | 'git' | 'checks' | 'rollback';
+type ActivityTab = 'changes' | 'jobs' | 'terminal' | 'preview' | 'git' | 'checks' | 'rollback';
 
 const tabs: Array<{ id: ActivityTab; label: string }> = [
   { id: 'changes', label: 'Changes' },
   { id: 'jobs', label: 'Jobs' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'preview', label: 'Preview' },
   { id: 'git', label: 'Git' },
   { id: 'checks', label: 'Checks' },
   { id: 'rollback', label: 'Rollback' },
 ];
 
+function operationLabel(operation?: string) {
+  switch ((operation || 'modify').toLowerCase()) {
+    case 'create':
+      return 'Create file';
+    case 'delete':
+      return 'Delete file';
+    case 'rename':
+      return 'Rename';
+    case 'folder':
+      return 'Create folder';
+    default:
+      return 'Modify';
+  }
+}
+
+function operationTone(operation?: string) {
+  switch ((operation || 'modify').toLowerCase()) {
+    case 'create':
+    case 'folder':
+      return styles.reviewBadgeCreate;
+    case 'delete':
+      return styles.reviewBadgeDelete;
+    case 'rename':
+      return styles.reviewBadgeRename;
+    default:
+      return styles.reviewBadgeModify;
+  }
+}
+
 export default function ActivityPanel({
   events,
   jobs,
+  workerStatus,
   patchPreview,
   commands: workspaceCommands,
   runtimeStatus,
   githubStatus,
   githubRepositories,
+  githubBranches,
   selectedGithubRepo,
   analysis,
   rollbackSnapshots,
@@ -271,8 +412,11 @@ export default function ActivityPanel({
   canApply,
   onApply,
   onReject,
-  onApplyFile,
-  onRejectFile,
+  onApplySelection,
+  onRejectSelection,
+  onApproveHunk,
+  onRejectHunk,
+  onResetPatchReview,
   onRollback,
   onRollbackSnapshot,
   onLoadRollbackSnapshots,
@@ -282,7 +426,18 @@ export default function ActivityPanel({
   onInstallRuntime,
   onRefreshJobs,
   onCancelJob,
+  onPauseJob,
+  onResumeJob,
   onRetryJob,
+  terminalSessions,
+  activeTerminalId,
+  terminalCommand,
+  onCreateTerminal,
+  onSelectTerminal,
+  onTerminalCommandChange,
+  onSendTerminalInput,
+  onKillTerminal,
+  canUseTerminal,
   onSyncRuntime,
   onAnalyzeWorkspace,
   previewUrl,
@@ -298,9 +453,11 @@ export default function ActivityPanel({
   canStartPreview,
   previewLogs,
   repoUrl,
+  githubBaseBranch,
   githubBranchName,
   onRepoUrlChange,
   onGithubRepoChange,
+  onGithubBaseBranchChange,
   onGithubBranchNameChange,
   onConnectGithubApp,
   onRefreshGithub,
@@ -311,35 +468,60 @@ export default function ActivityPanel({
   onImportRepo,
   onPreparePr,
   onOpenPr,
+  onCommitAndOpenPr,
   canUseGit,
+  initialTab = 'changes',
+  onClose,
+  showTabs = true,
+  terminalHelp,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<ActivityTab>('changes');
+  const [activeTab, setActiveTab] = useState<ActivityTab>(initialTab);
   const [selectedPatchFileId, setSelectedPatchFileId] = useState('');
   const commandButtons = workspaceCommands.length ? workspaceCommands : commands;
-  const selectedPatch = patchPreview.find((item) => item.file_id === selectedPatchFileId) || patchPreview[0] || null;
-  const selectedStats = selectedPatch ? diffStats(selectedPatch.diff || '') : { additions: 0, deletions: 0 };
+  const patchKey = (item: PatchPreviewItem) => item.operation_id || item.file_id || item.filename;
+  const selectedPatch = patchPreview.find((item) => patchKey(item) === selectedPatchFileId) || patchPreview[0] || null;
+  const allPatchHunksRejected = patchPreview.length > 0 && patchPreview.every((item) => {
+    if (!item.hunks?.length) return false;
+    return item.hunks.every((hunk) => hunk.status === 'rejected');
+  });
+  const activeTerminal = terminalSessions.find((terminal) => terminal.id === activeTerminalId) || terminalSessions[0] || null;
+  const activeLabel = tabs.find((tab) => tab.id === activeTab)?.label || 'Workspace';
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   return (
     <aside className={styles.activity}>
       <div className={styles.panelHeader}>
-        <span>Activity / Changes</span>
-        <Eye size={15} />
+        <span>{activeLabel}</span>
+        <div className={styles.panelHeaderActions}>
+          <Eye size={14} />
+          {onClose && (
+            <button className={styles.panelIconButton} type="button" onClick={onClose} title="Hide panel">
+              <X size={13} />
+            </button>
+          )}
+        </div>
       </div>
-      <div className={styles.activityTabs}>
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={activeTab === tab.id ? styles.activityTabActive : styles.activityTab}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-            {tab.id === 'changes' && patchPreview.length > 0 && <strong>{patchPreview.length}</strong>}
-            {tab.id === 'jobs' && jobs.length > 0 && <strong>{jobs.length}</strong>}
-            {tab.id === 'rollback' && rollbackSnapshots.length > 0 && <strong>{rollbackSnapshots.length}</strong>}
-          </button>
-        ))}
-      </div>
+      {showTabs && (
+        <div className={styles.activityTabs}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={activeTab === tab.id ? styles.activityTabActive : styles.activityTab}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+              {tab.id === 'changes' && patchPreview.length > 0 && <strong>{patchPreview.length}</strong>}
+              {tab.id === 'jobs' && jobs.length > 0 && <strong>{jobs.length}</strong>}
+              {tab.id === 'terminal' && terminalSessions.length > 0 && <strong>{terminalSessions.length}</strong>}
+              {tab.id === 'rollback' && rollbackSnapshots.length > 0 && <strong>{rollbackSnapshots.length}</strong>}
+            </button>
+          ))}
+        </div>
+      )}
       <div className={styles.activityList}>
         {activeTab === 'changes' && (
           <div className={styles.changesPanel}>
@@ -347,7 +529,7 @@ export default function ActivityPanel({
               <span>Pending Changes</span>
               <strong>{patchPreview.length}</strong>
             </div>
-            {patchPreview.length === 0 && <div className={styles.meta}>No pending changes. Ask NEXUS to edit code, then review diffs here.</div>}
+            {patchPreview.length === 0 && <div className={styles.meta}>No pending changes. Ask Arceus to edit code, then review diffs here.</div>}
             {patchPreview.length > 0 && (
               <>
                 <div className={styles.reviewSummary}>
@@ -357,41 +539,46 @@ export default function ActivityPanel({
                 <div className={styles.reviewFileList}>
                   {patchPreview.map((item) => {
                     const stats = diffStats(item.diff || '');
-                    const active = selectedPatch?.file_id === item.file_id;
+                    const active = selectedPatch ? patchKey(selectedPatch) === patchKey(item) : false;
+                    const operation = item.operation || 'modify';
+                    const hunkCount = item.hunks?.length || 0;
                     return (
                       <button
-                        key={item.file_id}
+                        key={patchKey(item)}
                         className={active ? styles.reviewFileActive : styles.reviewFile}
                         type="button"
-                        onClick={() => setSelectedPatchFileId(item.file_id)}
+                        onClick={() => setSelectedPatchFileId(patchKey(item))}
                       >
-                        <span><FileCode2 size={14} /> {item.filename}</span>
-                        <em>+{item.additions || stats.additions} / -{item.deletions || stats.deletions}</em>
+                        <span><FileCode2 size={14} /> {item.new_filename || item.filename}</span>
+                        <em>
+                          <small className={`${styles.reviewBadge} ${operationTone(operation)}`}>{operationLabel(operation)}</small>
+                          {item.conflict && <small className={`${styles.reviewBadge} ${styles.reviewBadgeConflict}`}>Conflict</small>}
+                          {item.status && <small className={styles.reviewBadge}>{item.status}</small>}
+                          {hunkCount ? ` ${hunkCount} hunk${hunkCount === 1 ? '' : 's'} · ` : ' '}
+                          +{item.additions || stats.additions} / -{item.deletions || stats.deletions}
+                        </em>
                       </button>
                     );
                   })}
                 </div>
                 {selectedPatch && (
                   <div className={styles.reviewDetail}>
-                    <div className={styles.reviewDetailHeader}>
-                      <span>{selectedPatch.filename}</span>
-                      <em>+{selectedPatch.additions || selectedStats.additions} / -{selectedPatch.deletions || selectedStats.deletions}</em>
-                    </div>
-                    <Diff diff={selectedPatch.diff} />
-                    <div className={styles.changeActions}>
-                      <button type="button" onClick={() => onApplyFile(selectedPatch.file_id)} disabled={!canApply}>
-                        <Check size={14} /> Apply selected
-                      </button>
-                      <button type="button" onClick={() => onRejectFile(selectedPatch.file_id)} disabled={!hasPatch}>
-                        <X size={14} /> Reject selected
-                      </button>
-                    </div>
+                    <DiffViewer
+                      patch={selectedPatch}
+                      canApply={canApply}
+                      hasPatch={hasPatch}
+                      onApplySelection={onApplySelection}
+                      onRejectSelection={onRejectSelection}
+                      onApproveHunk={onApproveHunk}
+                      onRejectHunk={onRejectHunk}
+                      onResetPatchReview={onResetPatchReview}
+                    />
                   </div>
                 )}
               </>
             )}
             <div className={styles.tabActionStack}>
-              <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply}>
+              <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply || allPatchHunksRejected} title={allPatchHunksRejected ? 'All hunks rejected' : undefined}>
                 <Check size={15} /> Approve all changes
               </button>
               <button className={styles.rejectButton} type="button" onClick={onReject} disabled={!hasPatch}>
@@ -519,7 +706,25 @@ export default function ActivityPanel({
             <div className={styles.rollbackItem} key={snapshot.snapshot_id}>
               <div>
                 <strong>{snapshot.summary || 'Applied patch'}</strong>
-                <span>{snapshot.file_count || snapshot.files?.length || 0} file(s) {snapshot.applied_at ? `- ${new Date(snapshot.applied_at).toLocaleString()}` : ''}</span>
+                <span>
+                  {(snapshot.operation_types || ['modify']).join(', ')} · {snapshot.file_count || snapshot.files?.length || 0} item(s)
+                  {snapshot.applied_at ? ` - ${new Date(snapshot.applied_at).toLocaleString()}` : ''}
+                </span>
+                {(snapshot.impact?.created_files?.length || snapshot.impact?.deleted_files?.length || snapshot.impact?.renamed_files?.length || snapshot.impact?.folders_created?.length) ? (
+                  <em>
+                    {(snapshot.impact?.created_files?.length || 0)} created · {(snapshot.impact?.deleted_files?.length || 0)} deleted · {(snapshot.impact?.renamed_files?.length || 0)} renamed · {(snapshot.impact?.folders_created?.length || 0)} folders
+                  </em>
+                ) : null}
+                {!!snapshot.files?.length && (
+                  <div className={styles.rollbackFiles}>
+                    {snapshot.files.slice(0, 4).map((file) => (
+                      <small key={`${snapshot.snapshot_id}-${file.file_id || file.filename}`}>
+                        {operationLabel(file.operation)} · {file.filename}
+                      </small>
+                    ))}
+                    {snapshot.files.length > 4 && <small>+{snapshot.files.length - 4} more</small>}
+                  </div>
+                )}
               </div>
               <button type="button" onClick={() => onRollbackSnapshot(snapshot.snapshot_id)} disabled={!canRunCommand}>
                 Restore
@@ -534,152 +739,45 @@ export default function ActivityPanel({
         )}
 
         {activeTab === 'preview' && (
-          <div className={styles.previewPanel}>
-          <div className={styles.changesHeader}>
-            <span>Preview</span>
-            <strong>{previewChecks.length}</strong>
-          </div>
-          <div className={styles.previewInputRow}>
-            <input
-              className={styles.previewInput}
-              value={previewUrl}
-              onChange={(event) => onPreviewUrlChange(event.target.value)}
-              placeholder="https://your-preview-url.app"
-            />
-            <button className={styles.commandButton} type="button" onClick={onCheckPreview} disabled={!canCheckPreview}>
-              Check
-            </button>
-          </div>
-          <button className={styles.fullWidthButton} type="button" onClick={onFixPreview} disabled={!canFixPreview}>
-            Fix preview issue
-          </button>
-          <div className={styles.previewButtonRow}>
-            <button className={styles.commandButton} type="button" onClick={onStartPreview} disabled={!canStartPreview}>
-              Start live
-            </button>
-            <button className={styles.commandButton} type="button" onClick={onStopPreview} disabled={!canStartPreview}>
-              Stop
-            </button>
-          </div>
-          <button className={styles.fullWidthButton} type="button" onClick={onLoadPreviewLogs} disabled={!canStartPreview}>
-            Load preview logs
-          </button>
-          {previewChecks.length > 0 && (
-            <div className={styles.previewEvidence}>
-              {previewChecks.slice(-4).reverse().map((check, index) => (
-                <div className={check.status === 'passed' ? styles.previewEvidencePass : styles.previewEvidenceFail} key={`${check.url}-${check.checked_at || index}`}>
-                  <div>
-                    <strong>{check.status || 'unknown'} {check.status_code ? `HTTP ${check.status_code}` : ''}</strong>
-                    <span>{check.title || check.url}</span>
-                  </div>
-                  {check.issues?.length ? <em>{check.issues.join(', ')}</em> : <em>No issue markers</em>}
-                </div>
-              ))}
-            </div>
-          )}
-          {previewLogs?.logs && (
-            <div className={styles.previewLogs}>
-              <div className={styles.meta}>
-                {previewLogs.status || 'preview'} {previewLogs.issues?.length ? `- ${previewLogs.issues.join(', ')}` : ''}
-              </div>
-              {previewLogs.excerpts?.length ? (
-                <div className={styles.previewExcerpts}>
-                  {previewLogs.excerpts.map((line, index) => <span key={`${line}-${index}`}>{line}</span>)}
-                </div>
-              ) : null}
-              <pre>{previewLogs.logs}</pre>
-            </div>
-          )}
-          {previewUrl.trim() && (
-            <iframe className={styles.previewFrame} src={previewUrl.trim()} title="Workspace preview" sandbox="allow-scripts allow-same-origin allow-forms" />
-          )}
-        </div>
+          <PreviewPanel
+            previewUrl={previewUrl}
+            previewChecks={previewChecks}
+            previewLogs={previewLogs}
+            canCheckPreview={canCheckPreview}
+            canFixPreview={canFixPreview}
+            canStartPreview={canStartPreview}
+            onPreviewUrlChange={onPreviewUrlChange}
+            onCheckPreview={onCheckPreview}
+            onFixPreview={onFixPreview}
+            onStartPreview={onStartPreview}
+            onStopPreview={onStopPreview}
+            onLoadPreviewLogs={onLoadPreviewLogs}
+          />
         )}
 
         {activeTab === 'git' && (
-          <div className={styles.previewPanel}>
-          <div className={styles.changesHeader}>
-            <span>GitHub App</span>
-            <strong>{githubStatus?.connected ? 'connected' : githubStatus?.configured ? 'ready' : 'not configured'}</strong>
-          </div>
-          {githubStatus?.connected ? (
-            <div className={styles.gitConnectionCard}>
-              <strong>{githubStatus.account?.login || 'GitHub connected'}</strong>
-              <span>{githubStatus.account?.type || 'installation'} · {githubRepositories.length} repo(s)</span>
-            </div>
-          ) : (
-            <button className={styles.fullWidthButton} type="button" onClick={onConnectGithubApp}>
-              Connect GitHub
-            </button>
-          )}
-          <button className={styles.fullWidthButton} type="button" onClick={onRefreshGithub}>
-            Refresh GitHub
-          </button>
-          <label className={styles.formLabel}>
-            Choose repo
-            <select className={styles.previewInput} value={selectedGithubRepo} onChange={(event) => onGithubRepoChange(event.target.value)} disabled={!githubStatus?.connected}>
-              <option value="">Select repository</option>
-              {githubRepositories.map((repo) => (
-                <option key={repo.full_name} value={repo.full_name}>
-                  {repo.full_name}{repo.private ? ' · private' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className={styles.fullWidthButton} type="button" onClick={onImportRepo} disabled={!selectedGithubRepo || !canUseGit}>
-            Import repo
-          </button>
-          <label className={styles.formLabel}>
-            Working branch
-            <input
-              className={styles.previewInput}
-              value={githubBranchName}
-              onChange={(event) => onGithubBranchNameChange(event.target.value)}
-              placeholder="nexus/workspace-update"
-            />
-          </label>
-          <button className={styles.fullWidthButton} type="button" onClick={onCreateGithubBranch} disabled={!selectedGithubRepo || !canUseGit}>
-            Create branch
-          </button>
-          <button className={styles.fullWidthButton} type="button" onClick={onPreparePr} disabled={!canUseGit}>
-            Prepare PR
-          </button>
-          <button className={styles.fullWidthButton} type="button" onClick={onCommitGithubChanges} disabled={!canUseGit}>
-            Commit approved changes
-          </button>
-          <button className={styles.fullWidthButton} type="button" onClick={onOpenPr} disabled={!canUseGit}>
-            Open PR
-          </button>
-          <button className={styles.fullWidthButton} type="button" onClick={onCheckGithubPrStatus} disabled={!canUseGit}>
-            View PR/check status
-          </button>
-          {githubStatus?.selected_repo && <div className={styles.contextMemory}>Repo: {githubStatus.selected_repo}</div>}
-          {githubStatus?.working_branch && <div className={styles.contextMemory}>Branch: {githubStatus.working_branch}</div>}
-          {githubStatus?.latest_commit_sha && <div className={styles.contextMemory}>Commit: {githubStatus.latest_commit_sha.slice(0, 12)}</div>}
-          {githubStatus?.pull_request_url && (
-            <a className={styles.contextMemory} href={githubStatus.pull_request_url} target="_blank" rel="noreferrer">Open pull request</a>
-          )}
-          {(githubStatus?.checks || []).slice(0, 5).map((check) => (
-            <div className={styles.contextLine} key={`${check.name}-${check.html_url}`}>
-              <strong>{check.name || 'check'}</strong>
-              <span>{check.conclusion || check.status || 'queued'}</span>
-            </div>
-          ))}
-          <details className={styles.advancedBox}>
-            <summary>Advanced manual URL fallback</summary>
-            <div className={styles.previewInputRow}>
-              <input
-                className={styles.previewInput}
-                value={repoUrl}
-                onChange={(event) => onRepoUrlChange(event.target.value)}
-                placeholder="https://github.com/org/repo"
-              />
-              <button className={styles.commandButton} type="button" onClick={onConnectRepo} disabled={!repoUrl.trim() || !canUseGit}>
-                Connect
-              </button>
-            </div>
-          </details>
-        </div>
+          <GitPanel
+            githubStatus={githubStatus}
+            githubRepositories={githubRepositories}
+            githubBranches={githubBranches || []}
+            selectedGithubRepo={selectedGithubRepo}
+            githubBaseBranch={githubBaseBranch}
+            githubBranchName={githubBranchName}
+            patchPreview={patchPreview}
+            canUseGit={canUseGit}
+            busy={false}
+            onGithubRepoChange={onGithubRepoChange}
+            onGithubBaseBranchChange={onGithubBaseBranchChange}
+            onGithubBranchNameChange={onGithubBranchNameChange}
+            onConnectGithubApp={onConnectGithubApp}
+            onRefreshGithub={onRefreshGithub}
+            onImportRepo={onImportRepo}
+            onCreateGithubBranch={onCreateGithubBranch}
+            onCommitGithubChanges={onCommitGithubChanges}
+            onOpenPr={onOpenPr}
+            onCommitAndOpenPr={onCommitAndOpenPr}
+            onCheckGithubPrStatus={onCheckGithubPrStatus}
+          />
         )}
 
         {activeTab === 'jobs' && (
@@ -688,13 +786,27 @@ export default function ActivityPanel({
               <span>Durable Jobs</span>
               <strong>{jobs.length}</strong>
             </div>
+            <div className={styles.workerHealthCard}>
+              <div>
+                <span>{workerStatus?.alive ? 'Worker online' : workerStatus?.enabled === false ? 'Worker disabled' : 'Worker offline'}</span>
+                <strong>{workerStatus?.backend || 'worker'} · {workerStatus?.celery_workers?.[0] || workerStatus?.worker_id || 'unassigned'}</strong>
+              </div>
+              <div>
+                <small>{workerStatus?.queued_jobs || 0} queued</small>
+                <small>{workerStatus?.claimed_jobs || 0} claimed</small>
+                <small>{workerStatus?.running_jobs || 0} running</small>
+                <small>{workerStatus?.cancel_requested_jobs || 0} cancelling</small>
+                <small>{workerStatus?.interrupted_jobs || 0} failed</small>
+              </div>
+            </div>
             <button className={styles.fullWidthButton} type="button" onClick={onRefreshJobs}>
               Refresh jobs
             </button>
             {jobs.length === 0 && <div className={styles.meta}>No durable jobs yet.</div>}
             {jobs.slice(0, 8).map((job) => {
-              const running = ['running', 'queued'].includes(job.status);
-              const failed = ['failed', 'cancelled', 'timeout', 'blocked', 'interrupted'].includes(job.status);
+              const running = ['queued', 'retrying', 'claimed', 'running', 'cancel_requested'].includes(job.status);
+              const paused = job.status === 'paused';
+              const failed = ['failed', 'cancelled', 'timeout', 'blocked', 'interrupted', 'dead_letter'].includes(job.status);
               const retryable = failed && job.mode?.startsWith('background_');
               const statusClass = running ? styles.jobStatusRunning : failed ? styles.jobStatusError : styles.jobStatusDone;
               return (
@@ -747,9 +859,24 @@ export default function ActivityPanel({
                   </div>
                 )}
                 {running && (
-                  <button className={styles.rejectButton} type="button" onClick={() => onCancelJob(job.id)}>
-                    Cancel job
-                  </button>
+                  <div className={styles.previewButtonRow}>
+                    <button className={styles.fullWidthButton} type="button" onClick={() => onPauseJob(job.id)}>
+                      Pause
+                    </button>
+                    <button className={styles.rejectButton} type="button" onClick={() => onCancelJob(job.id)}>
+                      Cancel job
+                    </button>
+                  </div>
+                )}
+                {paused && (
+                  <div className={styles.previewButtonRow}>
+                    <button className={styles.fullWidthButton} type="button" onClick={() => onResumeJob(job.id)}>
+                      Resume
+                    </button>
+                    <button className={styles.rejectButton} type="button" onClick={() => onCancelJob(job.id)}>
+                      Cancel job
+                    </button>
+                  </div>
                 )}
                 {retryable && (
                   <button className={styles.fullWidthButton} type="button" onClick={() => onRetryJob(job.id)}>
@@ -759,6 +886,80 @@ export default function ActivityPanel({
               </details>
               );
             })}
+          </div>
+        )}
+
+        {activeTab === 'terminal' && (
+          <div className={styles.previewPanel}>
+            <div className={styles.changesHeader}>
+              <span>Terminal</span>
+              <strong>{activeTerminal?.status || 'idle'}</strong>
+            </div>
+            <button className={styles.fullWidthButton} type="button" onClick={onCreateTerminal} disabled={!canUseTerminal}>
+              <Terminal size={14} /> New terminal
+            </button>
+            {terminalHelp && <div className={styles.meta}>{terminalHelp}</div>}
+            {terminalSessions.length > 0 && (
+              <div className={styles.previewButtonRow}>
+                {terminalSessions.slice(0, 4).map((terminal) => (
+                  <button
+                    key={terminal.id}
+                    className={terminal.id === activeTerminal?.id ? styles.activityTabActive : styles.commandButton}
+                    type="button"
+                    title={terminal.cwd || terminal.id}
+                    onClick={() => onSelectTerminal(terminal.id)}
+                  >
+                    {terminal.id.slice(0, 6)}
+                  </button>
+                ))}
+              </div>
+            )}
+            {activeTerminal ? (
+              <>
+                <div className={styles.runtimeGrid}>
+                  <span>CWD</span>
+                  <strong title={activeTerminal.cwd || ''}>{activeTerminal.cwd || 'workspace runtime'}</strong>
+                  <span>Status</span>
+                  <strong>{activeTerminal.status || 'active'}</strong>
+                  <span>Commands</span>
+                  <strong>{activeTerminal.history?.length || 0}</strong>
+                </div>
+                <div className={styles.previewLogs}>
+                  {(activeTerminal.logs || []).length === 0 && <div className={styles.meta}>No command output yet. Type a safe command below to run it in the workspace runtime.</div>}
+                  {(activeTerminal.logs || []).slice(-8).map((log, index) => {
+                    const logObject = typeof log === 'string' ? { output_excerpt: log } : log;
+                    const output = logObject.output_excerpt || logObject.output || logObject.stderr || logObject.stdout || logObject.detail || '';
+                    return (
+                      <div className={styles.jobLogLine} key={`${activeTerminal.id}-terminal-${index}`}>
+                        <span>{logObject.status || 'command'}</span>
+                        <strong>{logObject.command || activeTerminal.history?.[index] || 'terminal'}</strong>
+                        {typeof logObject.return_code === 'number' && <em>exit {logObject.return_code}</em>}
+                        {output && <em>{String(output).slice(0, 900)}</em>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className={styles.previewInputRow}>
+                  <input
+                    className={styles.previewInput}
+                    value={terminalCommand}
+                    onChange={(event) => onTerminalCommandChange(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') onSendTerminalInput();
+                    }}
+                    placeholder="npm test, npm run build, git status..."
+                  />
+                  <button className={styles.commandButton} type="button" onClick={onSendTerminalInput} disabled={!canUseTerminal || !terminalCommand.trim()}>
+                    Run
+                  </button>
+                </div>
+                <button className={styles.rejectButton} type="button" onClick={() => onKillTerminal(activeTerminal.id)} disabled={!canUseTerminal || activeTerminal.status === 'killed'}>
+                  Kill terminal
+                </button>
+              </>
+            ) : (
+              <div className={styles.meta}>Create a terminal to run safe workspace commands with logs tied to jobs and activity.</div>
+            )}
           </div>
         )}
 
@@ -776,7 +977,7 @@ export default function ActivityPanel({
           ))}
           {events.length === 0 && (
             <div className={styles.meta}>
-              Activity appears here as NEXUS reads files, researches, designs, edits, and prepares deployment steps.
+              Activity appears here as Arceus reads files, researches, designs, edits, and prepares deployment steps.
             </div>
           )}
         </div>

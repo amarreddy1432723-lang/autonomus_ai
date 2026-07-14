@@ -21,7 +21,7 @@ export default function WorkspaceTaskPanel({ suggestions, activeSuggestionId, on
       <div className={styles.taskList}>
         <div className={styles.taskIntro}>
           <strong>Choose the next move. Nothing runs until you send it.</strong>
-          <span>NEXUS converts vague descriptions into clear paths so you spend less time deciding what to ask.</span>
+          <span>Arceus converts vague descriptions into clear paths so you spend less time deciding what to ask.</span>
         </div>
         {suggestions.length === 0 && (
           <div className={styles.taskEmpty}>
