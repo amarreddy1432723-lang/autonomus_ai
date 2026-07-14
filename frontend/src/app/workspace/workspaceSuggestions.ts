@@ -27,6 +27,7 @@ export type WorkspaceSuggestion = {
   status?: string;
   createdAt?: string;
   updatedAt?: string;
+  metadata?: Record<string, any>;
 };
 
 export function normalizeWorkspaceSuggestion(raw: any): WorkspaceSuggestion {
@@ -57,6 +58,7 @@ export function normalizeWorkspaceSuggestion(raw: any): WorkspaceSuggestion {
     status: raw?.status,
     createdAt: raw?.created_at || raw?.createdAt,
     updatedAt: raw?.updated_at || raw?.updatedAt,
+    metadata: raw?.metadata || {},
   };
 }
 

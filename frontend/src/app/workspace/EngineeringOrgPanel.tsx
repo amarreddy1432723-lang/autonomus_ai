@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, GitBranch, Network, RefreshCw, Send, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, GitBranch, Network, RefreshCw, Send, ShieldCheck, Wand2 } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type EngineeringProposal = {
@@ -42,6 +42,8 @@ type Props = {
   onRefresh: () => void;
   onSelectProposal: (proposalId: string) => void;
   onApproveArchitecture: () => void;
+  onMaterializeTasks: () => void;
+  onTypeTask: (taskId: string) => void;
 };
 
 function stageLabel(stage?: string) {
@@ -58,6 +60,8 @@ export default function EngineeringOrgPanel({
   onRefresh,
   onSelectProposal,
   onApproveArchitecture,
+  onMaterializeTasks,
+  onTypeTask,
 }: Props) {
   const proposals = state?.proposals || [];
   const selectedId = state?.selected_proposal_id;
@@ -154,11 +158,28 @@ export default function EngineeringOrgPanel({
               Approve architecture
             </button>
           )}
+          {architecture?.approval?.approved && (
+            <button className={styles.commandButtonPrimary} type="button" onClick={onMaterializeTasks} disabled={busy || tasks.length === 0}>
+              <Wand2 size={13} />
+              Sync task rail
+            </button>
+          )}
           <div className={styles.orgTaskList}>
             {tasks.map((task) => (
               <div key={task.id || task.title}>
-                <strong>{task.id}. {task.title}</strong>
-                <small>{task.assigned_role} · {task.status} · depends on {(task.depends_on || []).join(', ') || 'none'}</small>
+                <header>
+                  <strong>{task.id}. {task.title}</strong>
+                  <button
+                    type="button"
+                    onClick={() => onTypeTask(String(task.id))}
+                    disabled={busy || task.status === 'blocked'}
+                    title={task.status === 'blocked' ? 'Complete prerequisite tasks first' : 'Type this task into the composer'}
+                  >
+                    Type
+                  </button>
+                </header>
+                <small>{task.assigned_role} · {task.workspace_status || task.status} · depends on {(task.depends_on || []).join(', ') || 'none'}</small>
+                {!!task.suggested_prompt && <em>Prompt ready</em>}
               </div>
             ))}
           </div>

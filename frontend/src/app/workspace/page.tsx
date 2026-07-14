@@ -307,6 +307,63 @@ export default function WorkspacePage() {
     }
   };
 
+  const materializeEngineeringTasks = async () => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/tasks/materialize`, {
+        method: 'POST',
+      });
+      setEngineeringOrgState(data.orchestration);
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        localStorage.setItem('nexus.code.session_id', data.session_id);
+      }
+      const syncedTasks: WorkspaceSuggestion[] = (data.workspace_tasks || []).map(normalizeWorkspaceSuggestion);
+      if (syncedTasks.length) {
+        setWorkspaceTasks((current) => {
+          const ids = new Set(syncedTasks.map((task) => task.id));
+          return [...syncedTasks, ...current.filter((task) => !ids.has(task.id))].slice(0, 20);
+        });
+      }
+      setRightPanelView('tasks');
+      setRightPanelOpen(true);
+      addEvent({ kind: 'code', message: 'Engineering tasks synced', detail: `${syncedTasks.length} execution task(s) are now in the task rail.` });
+    } catch (error) {
+      reportWorkspaceError(error, 'Engineering task sync failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const typeEngineeringTask = async (taskIdValue: string) => {
+    if (!projectId || busy || !taskIdValue) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/tasks/type`, {
+        method: 'POST',
+        body: JSON.stringify({ task_id: taskIdValue, status: 'typed' }),
+      });
+      setEngineeringOrgState(data.orchestration);
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        localStorage.setItem('nexus.code.session_id', data.session_id);
+      }
+      const normalized = normalizeWorkspaceSuggestion(data.workspace_task);
+      setPrompt(normalized.prompt);
+      setMode(normalized.mode);
+      setTypedSuggestionId(normalized.id);
+      setWorkspaceTasks((current) => [normalized, ...current.filter((task) => task.id !== normalized.id)].slice(0, 20));
+      setRightPanelView('tasks');
+      setRightPanelOpen(true);
+      addEvent({ kind: 'code', message: `Typed engineering task: ${normalized.title}`, detail: normalized.summary });
+    } catch (error) {
+      reportWorkspaceError(error, 'Engineering task handoff failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!trustedLocalPath) {
       setLocalTreeFiles([]);
@@ -2310,8 +2367,10 @@ export default function WorkspacePage() {
       return;
     }
     const activeTask = workspaceTasks.find((task) => task.id === typedSuggestionId);
+    const activeTaskMetadata = activeTask?.metadata || {};
+    const activeTaskAcceptance = Array.isArray(activeTaskMetadata.acceptance_criteria) ? activeTaskMetadata.acceptance_criteria : [];
     const activeTaskContext = activeTask
-      ? `\n\nSelected Arceus task:\n- Title: ${activeTask.title}\n- Mode: ${activeTask.mode}\n- Risk: ${activeTask.risk || 'medium'}\n- Approval required: ${activeTask.requiresApproval ? 'yes' : 'no'}\n- Expected files: ${(activeTask.files || []).join(', ') || 'infer from workspace'}\n- Planned steps: ${(activeTask.steps || []).join(' | ') || 'inspect, plan, execute safely'}\n- Expected commands: ${(activeTask.expectedCommands || activeTask.commands || []).join(', ') || 'recommend checks'}`
+      ? `\n\nSelected Arceus task:\n- Title: ${activeTask.title}\n- Mode: ${activeTask.mode}\n- Risk: ${activeTask.risk || 'medium'}\n- Approval required: ${activeTask.requiresApproval ? 'yes' : 'no'}\n- Expected files: ${(activeTask.files || []).join(', ') || 'infer from workspace'}\n- Planned steps: ${(activeTask.steps || []).join(' | ') || 'inspect, plan, execute safely'}\n- Expected commands: ${(activeTask.expectedCommands || activeTask.commands || []).join(', ') || 'recommend checks'}\n- Orchestration source: ${activeTaskMetadata.source || 'workspace'}\n- Orchestration task id: ${activeTaskMetadata.orchestration_task_id || 'none'}\n- Assigned role: ${activeTaskMetadata.assigned_role || 'agent'}\n- Acceptance criteria: ${activeTaskAcceptance.join(' | ') || 'use the task summary'}`
       : '';
     const agentInstruction = `${instruction}${activeTaskContext}`;
     const effectiveFileIds = resolveEffectiveFileIds(instruction);
@@ -3734,6 +3793,8 @@ export default function WorkspacePage() {
             onRefresh={() => loadEngineeringOrg()}
             onSelectProposal={selectEngineeringProposal}
             onApproveArchitecture={approveEngineeringArchitecture}
+            onMaterializeTasks={materializeEngineeringTasks}
+            onTypeTask={typeEngineeringTask}
           />
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (

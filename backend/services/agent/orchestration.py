@@ -16,7 +16,13 @@ from services.shared.models import (
     CodeSolutionProposal,
 )
 
-from .code_workspace import get_code_project
+from .code_workspace import (
+    active_session_for_project,
+    create_code_session,
+    get_code_project,
+    require_project_role,
+    upsert_workspace_task,
+)
 from .deps import get_current_user_id
 
 router = APIRouter(prefix="/api/v1/code/projects/{project_id}/orchestration", tags=["code-orchestration"])
@@ -39,6 +45,11 @@ class ProposalSelectionRequest(BaseModel):
 class ArchitectureApprovalRequest(BaseModel):
     approved: bool = True
     notes: str = ""
+
+
+class ExecutionTaskRequest(BaseModel):
+    task_id: str
+    status: str = "typed"
 
 
 PERSPECTIVES = [
@@ -280,6 +291,7 @@ def _architecture_from(proposal: CodeSolutionProposal, state: CodeProjectOrchest
 
 def _tasks_from(proposal: CodeSolutionProposal, state: CodeProjectOrchestration) -> list[dict[str, Any]]:
     criteria = state.acceptance_criteria or []
+    selected_components = [line for line in (proposal.architecture or "").splitlines() if line.strip()]
     return [
         {
             "id": "T1",
@@ -287,6 +299,10 @@ def _tasks_from(proposal: CodeSolutionProposal, state: CodeProjectOrchestration)
             "assigned_role": "product_lead",
             "depends_on": [],
             "status": "ready",
+            "mode": "plan",
+            "risk": "low",
+            "expected_files": [],
+            "expected_commands": [],
             "acceptance_criteria": criteria[:4] or ["Problem statement is clarified"],
         },
         {
@@ -294,16 +310,32 @@ def _tasks_from(proposal: CodeSolutionProposal, state: CodeProjectOrchestration)
             "title": "Create architecture skeleton",
             "assigned_role": "solution_architect",
             "depends_on": ["T1"],
-            "status": "blocked",
-            "acceptance_criteria": ["Architecture matches selected proposal", "Risks and trade-offs are documented"],
+            "status": "ready",
+            "mode": "plan",
+            "risk": "medium",
+            "expected_files": ["architecture notes", "folder structure"],
+            "expected_commands": [],
+            "acceptance_criteria": [
+                "Architecture matches selected proposal",
+                "Risks and trade-offs are documented",
+                *selected_components[:3],
+            ],
         },
         {
             "id": "T3",
             "title": "Implement first bounded task",
             "assigned_role": "coding_agent",
             "depends_on": ["T2"],
-            "status": "blocked",
-            "acceptance_criteria": ["Files changed are reviewable", "Focused checks pass", "Rollback remains available"],
+            "status": "ready",
+            "mode": "code",
+            "risk": "medium",
+            "expected_files": ["smallest impacted files after inspection"],
+            "expected_commands": ["Run discovered build/test/lint checks"],
+            "acceptance_criteria": [
+                "Files changed are reviewable",
+                "Focused checks pass",
+                "Rollback remains available",
+            ],
         },
         {
             "id": "T4",
@@ -311,9 +343,107 @@ def _tasks_from(proposal: CodeSolutionProposal, state: CodeProjectOrchestration)
             "assigned_role": "review_board",
             "depends_on": ["T3"],
             "status": "blocked",
+            "mode": "plan",
+            "risk": "low",
+            "expected_files": [],
+            "expected_commands": ["Run focused checks if not already run"],
             "acceptance_criteria": ["Requirements, security, tests, and maintainability reviewed"],
         },
     ]
+
+
+def _task_prompt(state: CodeProjectOrchestration, task: dict[str, Any]) -> str:
+    architecture = state.architecture_document or {}
+    components = architecture.get("components") or []
+    criteria = task.get("acceptance_criteria") or state.acceptance_criteria or []
+    steps = [
+        f"Execute Arceus engineering task {task.get('id')}: {task.get('title')}",
+        "",
+        f"Project goal: {state.clarified_problem or state.original_problem}",
+        f"Role lens: {task.get('assigned_role') or 'coding_agent'}",
+        "",
+        "Selected architecture:",
+        *[f"- {item}" for item in components[:8]],
+        "",
+        "Acceptance criteria:",
+        *[f"- {item}" for item in criteria[:8]],
+        "",
+        "Execution rules:",
+        "- Inspect the relevant files before changing anything.",
+        "- Keep the change bounded to this task.",
+        "- Produce a work receipt with inspected files, changed files, line impact, commands, checks, and next actions.",
+        "- Prepare reviewable patches only; do not apply without approval.",
+    ]
+    commands = task.get("expected_commands") or []
+    if commands:
+        steps.extend(["", "Expected checks or commands:", *[f"- {item}" for item in commands]])
+    return "\n".join(steps).strip()
+
+
+def _workspace_task_payload(state: CodeProjectOrchestration, task: dict[str, Any]) -> dict[str, Any]:
+    prompt = task.get("suggested_prompt") or _task_prompt(state, task)
+    criteria = task.get("acceptance_criteria") or []
+    return {
+        "id": task.get("workspace_task_id") or task.get("id"),
+        "title": task.get("title") or "Engineering task",
+        "description": f"{task.get('assigned_role') or 'agent'} task from the approved Arceus engineering plan.",
+        "summary": "; ".join(criteria[:2]) or task.get("title") or "",
+        "mode": task.get("mode") or ("code" if task.get("assigned_role") == "coding_agent" else "plan"),
+        "risk": task.get("risk") or "medium",
+        "requires_approval": True,
+        "files": task.get("expected_files") or [],
+        "folders": task.get("expected_folders") or [],
+        "steps": [
+            f"Confirm task scope: {task.get('title')}",
+            "Inspect relevant files and current project state",
+            "Prepare the smallest reviewable output",
+            "Report work receipt and recommended checks",
+        ],
+        "commands": task.get("expected_commands") or [],
+        "expected_commands": task.get("expected_commands") or [],
+        "suggested_prompt": prompt,
+        "prompt": prompt,
+        "impact": "Links approved architecture to one bounded agent execution.",
+        "file_hint": ", ".join(task.get("expected_files") or []) or "Infer from project files",
+        "check_hint": ", ".join(task.get("expected_commands") or []) or "Recommend focused checks",
+        "confidence": 0.82,
+        "decision_reason": "Generated from the selected architecture and task graph.",
+        "tradeoffs": ["Keeps execution bounded", "Requires user approval before applying changes"],
+        "thinking_prompt": "What file evidence proves this task is complete?",
+        "coach_lens": ["architecture", "maintainability", "verification"],
+        "alternatives": ["Split this task smaller", "Run review board first"],
+        "next_after_done": "Review the work receipt, apply approved changes, then run focused checks.",
+        "metadata": {
+            "source": "engineering_org",
+            "orchestration_id": str(state.id),
+            "orchestration_task_id": task.get("id"),
+            "selected_proposal_id": str(state.selected_proposal_id) if state.selected_proposal_id else None,
+            "assigned_role": task.get("assigned_role"),
+            "acceptance_criteria": criteria,
+            "depends_on": task.get("depends_on") or [],
+        },
+    }
+
+
+def _ensure_active_session(db: Session, user_id: UUID, project_id: UUID):
+    project = get_code_project(db, user_id, project_id)
+    require_project_role(db, user_id, project_id, "editor")
+    session = active_session_for_project(db, user_id, project)
+    if session:
+        return session
+    return create_code_session(db, user_id, f"{project.name} Agent", project.file_ids or [], project_id=project.id)
+
+
+def _update_task_in_state(state: CodeProjectOrchestration, task_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    tasks = list(state.tasks or [])
+    for index, task in enumerate(tasks):
+        if str(task.get("id")) != task_id:
+            continue
+        next_task = {**task, **updates, "updated_at": _now()}
+        tasks[index] = next_task
+        state.tasks = tasks
+        return next_task
+    raise HTTPException(status_code=404, detail="Engineering task not found")
 
 
 @router.get("/state")
@@ -464,3 +594,106 @@ def approve_project_architecture(
     db.commit()
     db.refresh(state)
     return _serialize_state(db, state)
+
+
+@router.post("/tasks/materialize")
+def materialize_project_tasks(
+    project_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session = _ensure_active_session(db, user_id, project_id)
+    state = _get_or_create_state(db, user_id, project_id)
+    if not state.selected_proposal_id or not (state.architecture_document or {}).get("approval", {}).get("approved"):
+        raise HTTPException(status_code=409, detail="Approve an architecture before materializing execution tasks")
+    materialized = []
+    tasks = list(state.tasks or [])
+    for index, task in enumerate(tasks):
+        payload = _workspace_task_payload(state, task)
+        workspace_task = upsert_workspace_task(db, user_id, session, payload, status=task.get("workspace_status") or "suggested")
+        task = {
+            **task,
+            "workspace_task_id": workspace_task["id"],
+            "workspace_session_id": str(session.id),
+            "suggested_prompt": payload["suggested_prompt"],
+            "workspace_status": workspace_task["status"],
+            "handoff_ready": True,
+            "updated_at": _now(),
+        }
+        tasks[index] = task
+        materialized.append(workspace_task)
+    state.stage = "execution_ready"
+    state.tasks = tasks
+    state.implementation_plan = {
+        **(state.implementation_plan or {}),
+        "workspace_session_id": str(session.id),
+        "materialized_at": _now(),
+        "task_count": len(materialized),
+    }
+    db.add(AuditLog(
+        user_id=user_id,
+        event_type="code.orchestration.materialize_tasks",
+        entity_type="code_project",
+        entity_id=project_id,
+        actor_type="user",
+        actor_id=str(user_id),
+        action="Materialized engineering tasks into workspace task rail",
+        new_value={"session_id": str(session.id), "task_count": len(materialized)},
+    ))
+    db.commit()
+    db.refresh(state)
+    return {
+        "session_id": str(session.id),
+        "workspace_tasks": materialized,
+        "orchestration": _serialize_state(db, state),
+    }
+
+
+@router.post("/tasks/type")
+def type_project_execution_task(
+    project_id: UUID,
+    request: ExecutionTaskRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    if request.status not in {"typed", "accepted"}:
+        raise HTTPException(status_code=400, detail="Task handoff status must be typed or accepted")
+    session = _ensure_active_session(db, user_id, project_id)
+    state = _get_or_create_state(db, user_id, project_id)
+    if not state.selected_proposal_id:
+        raise HTTPException(status_code=409, detail="Select a proposal before handing off execution")
+    task = next((item for item in (state.tasks or []) if str(item.get("id")) == request.task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Engineering task not found")
+    if task.get("status") == "blocked":
+        raise HTTPException(status_code=409, detail="This engineering task is blocked by an earlier dependency")
+    payload = _workspace_task_payload(state, task)
+    workspace_task = upsert_workspace_task(db, user_id, session, payload, status=request.status)
+    updated_task = _update_task_in_state(state, request.task_id, {
+        "workspace_task_id": workspace_task["id"],
+        "workspace_session_id": str(session.id),
+        "suggested_prompt": payload["suggested_prompt"],
+        "workspace_status": workspace_task["status"],
+        "status": "typed" if request.status == "typed" else "running",
+        "handoff_ready": True,
+        "last_handoff_at": _now(),
+    })
+    state.stage = "execution"
+    db.add(CodeProjectDecision(
+        orchestration_id=state.id,
+        project_id=project_id,
+        user_id=user_id,
+        decision_type="task_handoff",
+        title=f"Typed {updated_task.get('id')}: {updated_task.get('title')}",
+        selected_option_id=state.selected_proposal_id,
+        rationale="Prepared this engineering task for agent execution.",
+        payload={"workspace_task": workspace_task, "engineering_task": updated_task},
+    ))
+    db.commit()
+    db.refresh(state)
+    return {
+        "session_id": str(session.id),
+        "workspace_task": workspace_task,
+        "engineering_task": updated_task,
+        "orchestration": _serialize_state(db, state),
+    }
