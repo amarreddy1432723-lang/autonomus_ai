@@ -10,6 +10,8 @@ export type WorkspaceFile = {
   filename: string;
   content_type?: string;
   size_bytes?: number;
+  kind?: 'file' | 'folder';
+  source?: 'backend' | 'local';
 };
 
 export type WorkspaceSearchMatch = {

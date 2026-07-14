@@ -71,6 +71,15 @@ function buildTree(files: WorkspaceFile[]): TreeNode[] {
 
   for (const file of files) {
     const parts = file.filename.replace(/\\/g, '/').split('/').filter(Boolean);
+    if (file.kind === 'folder') {
+      let parent = root;
+      let currentPath = '';
+      for (const part of parts) {
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+        parent = ensureFolder(currentPath, part, parent);
+      }
+      continue;
+    }
     let parent = root;
     let currentPath = '';
     for (let index = 0; index < parts.length; index += 1) {

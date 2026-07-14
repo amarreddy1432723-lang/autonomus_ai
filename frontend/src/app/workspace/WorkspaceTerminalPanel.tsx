@@ -107,12 +107,15 @@ export default function WorkspaceTerminalPanel({
     searchAddon: SearchAddon;
     socket: WebSocket | null;
     lastRawOutputLength: number;
+    lastResize?: { cols: number; rows: number };
   }>>({});
 
   const pendingCloudFramesRef = useRef<string[]>([]);
   const cloudByteOffsetRef = useRef<Record<string, number>>({});
   const reconnectAttemptRef = useRef<Record<string, number>>({});
-  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<Record<string, number>>({});
+  const disposedTerminalIdsRef = useRef<Set<string>>(new Set());
+  const fitFrameRef = useRef<number | null>(null);
   const terminalBufferRef = useRef<Record<string, string>>({});
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -194,7 +197,12 @@ export default function WorkspaceTerminalPanel({
     Object.keys(terminalsRef.current).forEach((id) => {
       if (!sessionIds.has(id)) {
         const cache = terminalsRef.current[id];
-        cache.socket?.close();
+        disposedTerminalIdsRef.current.add(id);
+        if (reconnectTimerRef.current[id]) {
+          window.clearTimeout(reconnectTimerRef.current[id]);
+          delete reconnectTimerRef.current[id];
+        }
+        cache.socket?.close(1000, 'terminal removed');
         cache.terminal.dispose();
         delete terminalsRef.current[id];
         delete terminalBufferRef.current[id];
@@ -217,12 +225,22 @@ export default function WorkspaceTerminalPanel({
     };
 
     const resizeObserver = new ResizeObserver(() => {
-      fitAll();
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+      }
+      fitFrameRef.current = window.requestAnimationFrame(() => {
+        fitFrameRef.current = null;
+        fitAll();
+      });
     });
     resizeObserver.observe(viewportRef.current);
 
     return () => {
       resizeObserver.disconnect();
+      if (fitFrameRef.current !== null) {
+        window.cancelAnimationFrame(fitFrameRef.current);
+        fitFrameRef.current = null;
+      }
     };
   }, [open]);
 
@@ -231,15 +249,34 @@ export default function WorkspaceTerminalPanel({
     if (!activeTerminal?.id || !isLocalPtyTerminal) return;
     const cache = terminalsRef.current[activeTerminal.id];
     if (!cache) return;
+    if (!rawOutput) return;
+
+    const buffered = terminalBufferRef.current[activeTerminal.id] || '';
+    if (rawOutput === buffered) {
+      cache.lastRawOutputLength = rawOutput.length;
+      return;
+    }
+
+    if (rawOutput.startsWith(buffered)) {
+      const chunk = rawOutput.slice(buffered.length);
+      if (chunk) {
+        cache.terminal.write(chunk);
+        appendTerminalBuffer(activeTerminal.id, chunk);
+      }
+      cache.lastRawOutputLength = rawOutput.length;
+      return;
+    }
 
     const previousLength = cache.lastRawOutputLength;
     if (rawOutput.length >= previousLength) {
       const chunk = rawOutput.slice(previousLength);
-      cache.terminal.write(chunk);
-      appendTerminalBuffer(activeTerminal.id, chunk);
+      if (chunk) {
+        cache.terminal.write(chunk);
+        appendTerminalBuffer(activeTerminal.id, chunk);
+      }
     } else {
       cache.terminal.clear();
-      cache.terminal.write(rawOutput);
+      if (rawOutput) cache.terminal.write(rawOutput);
       terminalBufferRef.current[activeTerminal.id] = rawOutput;
     }
     cache.lastRawOutputLength = rawOutput.length;
@@ -267,6 +304,7 @@ export default function WorkspaceTerminalPanel({
 
   // Dynamic initializer called by React ref callback per terminal container
   const initializeTerminalInstance = (id: string, el: HTMLDivElement, isCloud: boolean) => {
+    disposedTerminalIdsRef.current.delete(id);
     if (terminalsRef.current[id]) {
       if (id === activeTerminal?.id) {
         terminalsRef.current[id].terminal.focus();
@@ -321,6 +359,7 @@ export default function WorkspaceTerminalPanel({
     const initialOutput = terminalBufferRef.current[id] || (sessions.find((s) => s.id === id) ? terminalOutput(sessions.find((s) => s.id === id)!) : '');
     if (initialOutput) {
       terminal.write(initialOutput);
+      terminalBufferRef.current[id] = initialOutput.slice(-250000);
     }
 
     let socket: WebSocket | null = null;
@@ -380,20 +419,29 @@ export default function WorkspaceTerminalPanel({
           };
 
           const scheduleReconnect = () => {
+            if (disposedTerminalIdsRef.current.has(id)) return;
+            const currentSession = sessions.find((s) => s.id === id);
+            if (['killed', 'exited', 'failed'].includes(currentSession?.status || '')) return;
             const attempt = (reconnectAttemptRef.current[id] || 0) + 1;
             reconnectAttemptRef.current[id] = attempt;
             const delay = Math.min(2 ** attempt * 500, 10000);
             terminal.writeln(`\r\n[Reconnecting in ${Math.ceil(delay / 1000)}s...]\r\n`);
-            reconnectTimerRef.current = window.setTimeout(connect, delay);
+            if (reconnectTimerRef.current[id]) {
+              window.clearTimeout(reconnectTimerRef.current[id]);
+            }
+            reconnectTimerRef.current[id] = window.setTimeout(() => {
+              delete reconnectTimerRef.current[id];
+              connect();
+            }, delay);
           };
 
           ws.onerror = () => {
             callbacksRef.current.onCloudFrame?.(id, { type: 'error', message: 'Terminal WebSocket failed.' });
           };
 
-          ws.onclose = () => {
+          ws.onclose = (event) => {
             callbacksRef.current.onCloudFrame?.(id, { type: 'exit' });
-            scheduleReconnect();
+            if (event.code !== 1000) scheduleReconnect();
           };
         };
         connect();
@@ -409,6 +457,9 @@ export default function WorkspaceTerminalPanel({
     });
 
     terminal.onResize(({ cols, rows }) => {
+      const cache = terminalsRef.current[id];
+      if (cache?.lastResize?.cols === cols && cache.lastResize.rows === rows) return;
+      if (cache) cache.lastResize = { cols, rows };
       if (isCloud) {
         sendCloudFrame(id, { type: 'resize', cols, rows });
       } else {

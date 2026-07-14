@@ -111,6 +111,7 @@ export default function WorkspacePage() {
   const [pendingProjectOpen, setPendingProjectOpen] = useState<PendingProjectOpen>(null);
   const [mergeSelection, setMergeSelection] = useState<string[]>([]);
   const [localWorkspacePath, setLocalWorkspacePath] = useState('');
+  const [localTreeFiles, setLocalTreeFiles] = useState<WorkspaceFile[]>([]);
   const [folderWatchError, setFolderWatchError] = useState<{ rootPath: string; message: string } | null>(null);
   const [terminalSessions, setTerminalSessions] = useState<Record<string, TerminalSession>>({});
   const [activeTerminalId, setActiveTerminalId] = useState('');
@@ -122,6 +123,9 @@ export default function WorkspacePage() {
   const terminalStreamFlushTimerRef = useRef<number | null>(null);
   const terminalLastSeqRef = useRef<Record<string, number>>({});
   const localWorkspacePathRef = useRef('');
+  const directorySyncTimerRef = useRef<number | null>(null);
+  const directorySyncQueueRef = useRef<any[]>([]);
+  const directorySyncRunningRef = useRef(false);
 
   const selectedFileIds = useMemo(
     () => Object.entries(selected).filter(([, value]) => value).map(([fileId]) => fileId),
@@ -193,13 +197,46 @@ export default function WorkspacePage() {
     return true;
   };
 
+  const refreshLocalTree = useCallback(async (pathValue = trustedLocalPath) => {
+    const electron = typeof window !== 'undefined' ? (window as any).electron : null;
+    if (!pathValue || !electron?.readDirectoryTree) {
+      setLocalTreeFiles([]);
+      return;
+    }
+    try {
+      const result = await electron.readDirectoryTree(pathValue);
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setLocalTreeFiles(items.map((item: any) => ({
+        id: `local-${item.type || 'file'}:${item.path}`,
+        filename: String(item.path || '').replace(/\\/g, '/'),
+        kind: item.type === 'folder' ? 'folder' : 'file',
+        source: 'local',
+        size_bytes: item.size_bytes,
+      })).filter((item: WorkspaceFile) => item.filename));
+    } catch (error) {
+      setFolderWatchError({
+        rootPath: pathValue,
+        message: error instanceof Error ? error.message : 'Could not read the trusted folder tree.',
+      });
+    }
+  }, [trustedLocalPath]);
+
   const retryFolderWatch = () => {
     const root = folderWatchError?.rootPath || trustedLocalPath;
     if (!root) return;
     if (startFolderWatch(root)) {
       addEvent({ kind: 'read', message: 'Retrying folder watcher', detail: root });
+      void refreshLocalTree(root);
     }
   };
+
+  useEffect(() => {
+    if (!trustedLocalPath) {
+      setLocalTreeFiles([]);
+      return;
+    }
+    void refreshLocalTree(trustedLocalPath);
+  }, [refreshLocalTree, trustedLocalPath]);
 
   const persistOpenProjects = (nextIds: string[], activeId?: string) => {
     const unique = nextIds.filter((idValue, index) => idValue && nextIds.indexOf(idValue) === index).slice(0, MAX_OPEN_PROJECTS);
@@ -467,8 +504,13 @@ export default function WorkspacePage() {
   );
 
   const visibleFiles = useMemo(
-    () => files,
-    [files]
+    () => {
+      if (!localTreeFiles.length) return files;
+      const byPath = new Map(files.map((file) => [file.filename.replace(/\\/g, '/').toLowerCase(), file]));
+      const localOnly = localTreeFiles.filter((file) => !byPath.has(file.filename.replace(/\\/g, '/').toLowerCase()));
+      return [...files, ...localOnly];
+    },
+    [files, localTreeFiles]
   );
 
   const recentItems = useMemo<WorkspaceRecentItem[]>(() => {
@@ -1706,23 +1748,31 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && (window as any).electron && sessionId) {
-      const unsubscribe = (window as any).electron.onDirectoryChanged(async (change: any) => {
-        const changes = Array.isArray(change?.changes) ? change.changes : [change].filter(Boolean);
-        if (!changes.length) return;
+      const flushDirectorySync = async () => {
+        if (directorySyncRunningRef.current) return;
+        directorySyncRunningRef.current = true;
+        directorySyncTimerRef.current = null;
+        const queued = directorySyncQueueRef.current.splice(0);
+        const latestByPath = new Map<string, any>();
+        for (const item of queued) {
+          if (!item?.path) continue;
+          latestByPath.set(String(item.path), item);
+        }
+        const changes = Array.from(latestByPath.values());
+        if (!changes.length) {
+          directorySyncRunningRef.current = false;
+          return;
+        }
         try {
           let latestSession: any = null;
-          for (const item of changes) {
-            if (!item?.path) continue;
-            if (item.event === 'addDir' || item.event === 'unlinkDir') {
-              latestSession = null;
-              continue;
-            }
+          const syncableChanges = changes.filter((item) => item.event !== 'addDir' && item.event !== 'unlinkDir').slice(0, 120);
+          for (const item of syncableChanges) {
             latestSession = await apiRequest(`/api/v1/code/sessions/${sessionId}/sync-local-file`, {
               method: 'POST',
               body: JSON.stringify({
                 action: item.event,
-                relative_path: item.path
-              })
+                relative_path: item.path,
+              }),
             });
             if (latestSession?.status === 'skipped' && latestSession?.skipped) {
               const reason = latestSession.skipped.reason === 'file_too_large'
@@ -1735,11 +1785,15 @@ export default function WorkspacePage() {
             setSelected(Object.fromEntries((latestSession.file_ids || []).map((fileId: string) => [fileId, true])));
           }
           await loadFiles();
+          await refreshLocalTree();
           if (!latestSession && sessionId) await hydrateSession(sessionId);
+          setFolderWatchError(null);
           addEvent({
             kind: 'done',
             message: 'Workspace synced',
-            detail: changes.length === 1 ? `${changes[0].event} file: ${changes[0].path}` : `${changes.length} local file changes synced.`
+            detail: changes.length === 1
+              ? `${changes[0].event} file: ${changes[0].path}`
+              : `${changes.length} local file changes synced from disk.`,
           });
         } catch (err) {
           addEvent({
@@ -1747,11 +1801,33 @@ export default function WorkspacePage() {
             message: 'Local folder sync skipped',
             detail: err instanceof Error ? err.message : 'A local file change could not be synced.',
           });
+        } finally {
+          directorySyncRunningRef.current = false;
+          if (directorySyncQueueRef.current.length > 0 && directorySyncTimerRef.current === null) {
+            directorySyncTimerRef.current = window.setTimeout(flushDirectorySync, 250);
+          }
         }
+      };
+
+      const unsubscribe = (window as any).electron.onDirectoryChanged((change: any) => {
+        const changes = Array.isArray(change?.changes) ? change.changes : [change].filter(Boolean);
+        if (!changes.length) return;
+        directorySyncQueueRef.current.push(...changes);
+        if (directorySyncTimerRef.current !== null) {
+          window.clearTimeout(directorySyncTimerRef.current);
+        }
+        directorySyncTimerRef.current = window.setTimeout(flushDirectorySync, 250);
       });
-      return () => unsubscribe();
+      return () => {
+        if (directorySyncTimerRef.current !== null) {
+          window.clearTimeout(directorySyncTimerRef.current);
+          directorySyncTimerRef.current = null;
+        }
+        directorySyncQueueRef.current = [];
+        unsubscribe();
+      };
     }
-  }, [sessionId]);
+  }, [refreshLocalTree, sessionId]);
 
   const uploadFiles = async (fileList: FileList | null) => {
     if (!fileList?.length) return;
@@ -1932,6 +2008,7 @@ export default function WorkspacePage() {
           : `${result.size_bytes} bytes written to workspace storage.`,
       });
       await loadFiles();
+      await refreshLocalTree();
       if (sessionId) {
         await hydrateSession(sessionId);
       }
@@ -1961,10 +2038,12 @@ export default function WorkspacePage() {
           : `${relativePath} could not be loaded into chat context.`,
       });
       await loadFiles();
+      await refreshLocalTree();
       return;
     }
     setSelected(Object.fromEntries((updatedSession.file_ids || []).map((fileId: string) => [fileId, true])));
     await loadFiles();
+    await refreshLocalTree();
     await hydrateSession(updatedSession.id || sessionId);
   };
 
@@ -1983,7 +2062,10 @@ export default function WorkspacePage() {
     try {
       const result = await electron.createItem(trustedPath, relativePath, type, type === 'file' ? '' : undefined);
       if (type === 'file') await syncLocalFileReference('add', result.path || relativePath);
-      else if (sessionId) await hydrateSession(sessionId);
+      else {
+        await refreshLocalTree(trustedPath);
+        if (sessionId) await hydrateSession(sessionId);
+      }
       addEvent({ kind: 'done', message: `${type === 'folder' ? 'Folder' : 'File'} created`, detail: result.path || relativePath });
     } catch (error) {
       reportWorkspaceError(error, `Create ${type} failed`);
@@ -3443,7 +3525,10 @@ export default function WorkspacePage() {
               searchQuery={searchQuery}
               searchMatches={searchMatches}
               busy={busy}
-              onRefresh={loadFiles}
+              onRefresh={async () => {
+                await loadFiles();
+                await refreshLocalTree();
+              }}
               onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
               onOpenFile={(file) => {
                 openWorkspaceFile(file);
@@ -3626,7 +3711,10 @@ export default function WorkspacePage() {
               searchQuery={searchQuery}
               searchMatches={searchMatches}
               busy={busy}
-              onRefresh={loadFiles}
+              onRefresh={async () => {
+                await loadFiles();
+                await refreshLocalTree();
+              }}
               onToggleFile={(fileId) => setSelected((current) => ({ ...current, [fileId]: !current[fileId] }))}
               onOpenFile={(file) => {
                 openWorkspaceFile(file);
