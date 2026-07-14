@@ -1,0 +1,18 @@
+# Default owners for all production code.
+* @arceus-ai/engineering
+
+# Product surfaces.
+/frontend/ @arceus-ai/frontend
+/desktop/ @arceus-ai/desktop
+/backend/services/agent/ @arceus-ai/code-platform
+/backend/services/auth/ @arceus-ai/platform
+/backend/services/goals/ @arceus-ai/platform
+
+# Deployment and security-critical files.
+/.github/ @arceus-ai/platform
+/backend/migrations/ @arceus-ai/platform
+/backend/services/shared/security.py @arceus-ai/platform
+/backend/services/shared/production.py @arceus-ai/platform
+/docker-compose.yml @arceus-ai/platform
+/render.yaml @arceus-ai/platform
+/backend/railway.json @arceus-ai/platform

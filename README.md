@@ -47,6 +47,7 @@ The Phase 13 future roadmap lives in [phase13.json](./phase13.json) and is expos
 For compatibility, the same Phase 13 manifest is also exposed at `/api/v1/evaluation/status`.
 Production launch checks are exposed at `/api/v1/production/readiness`.
 Deployment steps live in [DEPLOYMENT.md](./DEPLOYMENT.md).
+Production operations, release, rollback, and branch protection guidance live in [docs/OPERATIONS.md](./docs/OPERATIONS.md), [docs/production-hardening.md](./docs/production-hardening.md), [RELEASE.md](./RELEASE.md), and [docs/BRANCH_PROTECTION.md](./docs/BRANCH_PROTECTION.md).
 
 ## Ports
 
@@ -65,6 +66,18 @@ Start database services:
 
 ```bash
 docker compose up -d
+```
+
+Run the production-like smoke stack:
+
+```bash
+docker compose -f docker-compose.prod-smoke.yml up --build
+```
+
+Run local smoke checks:
+
+```powershell
+.\scripts\smoke-test.ps1 -BackendUrl http://localhost:8003
 ```
 
 Install backend dependencies:

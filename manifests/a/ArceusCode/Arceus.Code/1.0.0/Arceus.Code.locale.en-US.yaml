@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: ArceusCode.ArceusCode
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Arceus
+PublisherUrl: https://github.com/arceus-ai
+PublisherSupportUrl: https://github.com/arceus-ai/arceus-code/issues
+PackageName: Arceus Code
+PackageUrl: https://github.com/arceus-ai/arceus-code
+License: Proprietary
+ShortDescription: Desktop-first AI coding workspace for local projects, terminal workflows, patches, previews, and PRs.
+Description: Arceus Code is a desktop AI engineering workspace with trusted local folder access, bottom terminal, work receipts, patch review, preview verification, and GitHub PR flow.
+Tags:
+  - ai
+  - code
+  - developer-tools
+  - electron
+  - ide
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

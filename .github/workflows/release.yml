@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "arceus-code-v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        required: true
+        options:
+          - staging
+          - production
+      version:
+        description: Release version, for example arceus-code-v1.2.3
+        required: true
+
+jobs:
+  build-images:
+    name: build-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/arceus-backend:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/arceus-backend:${{ env.RELEASE_VERSION }}
+      - name: Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/arceus-frontend:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/arceus-frontend:${{ env.RELEASE_VERSION }}
+
+  deploy:
+    name: deploy-${{ inputs.environment || 'production' }}
+    runs-on: ubuntu-latest
+    needs: build-images
+    environment: ${{ inputs.environment || 'production' }}
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deployment gate
+        run: |
+          echo "Images are built and tagged."
+          echo "Release version: ${{ env.RELEASE_VERSION }}"
+      - name: Deploy Railway project
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        shell: pwsh
+        env:
+          RAILWAY_PROJECT: ${{ vars.RAILWAY_PROJECT }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+          RAILWAY_ENVIRONMENT: ${{ inputs.environment || 'production' }}
+          SMOKE_BACKEND_URL: ${{ vars.SMOKE_BACKEND_URL }}
+          SMOKE_FRONTEND_URL: ${{ vars.SMOKE_FRONTEND_URL }}
+          SMOKE_ADMIN_USER_ID: ${{ secrets.SMOKE_ADMIN_USER_ID }}
+        run: |
+          npm install -g @railway/cli
+          ./scripts/deploy-railway.ps1
+      - name: Smoke test
+        if: ${{ vars.SMOKE_BACKEND_URL != '' }}
+        shell: pwsh
+        env:
+          SMOKE_BACKEND_URL: ${{ vars.SMOKE_BACKEND_URL }}
+          SMOKE_FRONTEND_URL: ${{ vars.SMOKE_FRONTEND_URL }}
+          SMOKE_ADMIN_USER_ID: ${{ secrets.SMOKE_ADMIN_USER_ID }}
+        run: ./scripts/smoke-test.ps1
+
+  desktop-release:
+    name: desktop-release-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: deploy
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK || secrets.CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD || secrets.CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE_SUBJECT_NAME: ${{ secrets.WINDOWS_CERTIFICATE_SUBJECT_NAME }}
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Sync desktop package version
+        shell: pwsh
+        working-directory: .
+        run: ./scripts/prepare-desktop-release.ps1 -ReleaseVersion "${{ env.RELEASE_VERSION }}"
+      - run: npm ci
+      - name: Build and publish desktop artifacts
+        run: npm run dist -- --publish always
+      - name: Generate release download env
+        shell: pwsh
+        working-directory: .
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DESKTOP_RELEASE_SIGNED: ${{ (secrets.CSC_LINK != '' || secrets.WIN_CSC_LINK != '' || secrets.APPLE_ID != '') }}
+        run: |
+          $signed = "${env:DESKTOP_RELEASE_SIGNED}" -eq "true"
+          ./scripts/generate-release-download-env.ps1 `
+            -ArtifactsDir desktop/dist `
+            -ReleaseVersion "${{ env.RELEASE_VERSION }}" `
+            -OwnerRepo "${{ github.repository }}" `
+            -OutputPath "desktop/dist/release-download-env-${{ runner.os }}.ps1" `
+            -Signed:$signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arceus-desktop-${{ matrix.os }}-${{ env.RELEASE_VERSION }}
+          path: desktop/dist/**

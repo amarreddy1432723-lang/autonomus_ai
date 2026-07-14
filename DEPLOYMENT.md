@@ -1,6 +1,25 @@
-# my-ai Live Deployment Runbook
+# Arceus Live Deployment Runbook
 
-This runbook moves the local autonomous personal AI app toward a private alpha.
+This runbook moves Arceus toward a private alpha with GitHub-controlled CI, staging, smoke tests, and production approval.
+
+## Production Engineering Workflow
+
+Arceus uses GitHub as the source of truth. Production changes should flow through:
+
+```text
+feature branch -> pull request -> CI -> staging -> smoke tests -> production approval -> release
+```
+
+Required release gates:
+
+- Backend compile, tests, and Alembic migration check.
+- Frontend lint and production build.
+- Desktop syntax checks.
+- Secret/dependency scans.
+- Immutable Docker image build.
+- Staging smoke tests against `/api/v1/health`, `/api/v1/ready`, and `/hub`.
+
+See [RELEASE.md](./RELEASE.md) for rollback and release checklists.
 
 ## 1. Required Accounts
 
@@ -17,6 +36,10 @@ This repository now includes:
 
 - `render.yaml` for Render Blueprint deployment of auth, goals, agent, Postgres, and Redis.
 - `frontend/vercel.json` for the Next.js Vercel project.
+- `.github/workflows/ci.yml` for PR validation.
+- `.github/workflows/release.yml` for image builds, environment gates, and smoke tests.
+- `backend/Dockerfile` and `frontend/Dockerfile` for immutable container artifacts.
+- `docker-compose.prod-smoke.yml` for production-like local smoke testing.
 
 ## 2. Production Environment
 

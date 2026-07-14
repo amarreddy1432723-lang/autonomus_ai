@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: my_ai_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d my_ai_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  auth:
+    build:
+      context: ./backend
+    environment:
+      APP_SERVICE: auth
+      APP_ENV: staging
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: smoke-jwt-secret-change-in-production
+      APP_ENCRYPTION_KEY: smoke-field-encryption-key-change-in-production
+      ALLOW_DEMO_USER: "false"
+      ALLOW_DEV_AUTH_FALLBACK: "false"
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  goals:
+    build:
+      context: ./backend
+    environment:
+      APP_SERVICE: goals
+      APP_ENV: staging
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: smoke-jwt-secret-change-in-production
+      APP_ENCRYPTION_KEY: smoke-field-encryption-key-change-in-production
+      ALLOW_DEMO_USER: "false"
+      ALLOW_DEV_AUTH_FALLBACK: "false"
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      RUN_MIGRATIONS: "false"
+    ports:
+      - "8002:8000"
+    depends_on:
+      auth:
+        condition: service_started
+
+  agent:
+    build:
+      context: ./backend
+    environment:
+      APP_SERVICE: agent
+      APP_ENV: staging
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: smoke-jwt-secret-change-in-production
+      APP_ENCRYPTION_KEY: smoke-field-encryption-key-change-in-production
+      ALLOW_DEMO_USER: "false"
+      ALLOW_DEV_AUTH_FALLBACK: "false"
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      RUN_MIGRATIONS: "false"
+    ports:
+      - "8003:8000"
+    depends_on:
+      auth:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles:
+      - observability
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/arceus-alerts.yml:/etc/prometheus/rules/arceus-alerts.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      auth:
+        condition: service_started
+      goals:
+        condition: service_started
+      agent:
+        condition: service_started
