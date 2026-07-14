@@ -2,6 +2,7 @@ param(
   [string]$BackendUrl = $env:SMOKE_BACKEND_URL,
   [string]$FrontendUrl = $env:SMOKE_FRONTEND_URL,
   [string]$AdminUserId = $env:SMOKE_ADMIN_USER_ID,
+  [string]$SummaryPath = $env:FULL_VERIFY_SUMMARY_PATH,
   [switch]$SkipFrontendBuild,
   [switch]$SkipPytest,
   [switch]$SkipMigrationCheck,
@@ -16,6 +17,7 @@ $results = New-Object System.Collections.Generic.List[object]
 
 if (-not $BackendUrl) { $BackendUrl = "http://localhost:8003" }
 if (-not $FrontendUrl) { $FrontendUrl = "http://localhost:3000" }
+if (-not $SummaryPath) { $SummaryPath = Join-Path $repoRoot ".verify\full-verify-summary.json" }
 
 function Add-Result {
   param(
@@ -65,6 +67,30 @@ function Invoke-JsonHealth {
     throw "$Uri returned $($response.StatusCode)"
   }
   return $response
+}
+
+function Invoke-JsonObject {
+  param([string]$Uri, [hashtable]$Headers = @{})
+  $response = Invoke-JsonHealth $Uri $Headers
+  return $response.Content | ConvertFrom-Json
+}
+
+function Require-Ready {
+  param($Payload, [string]$Name)
+  if ($null -eq $Payload.ready) {
+    throw "$Name response is missing ready field."
+  }
+  if ($Payload.ready -ne $true) {
+    $detail = if ($Payload.summary) { ($Payload.summary | ConvertTo-Json -Compress) } elseif ($Payload.blockers) { ($Payload.blockers | ConvertTo-Json -Compress) } else { ($Payload | ConvertTo-Json -Compress) }
+    throw "$Name is not ready: $detail"
+  }
+}
+
+function Require-Field {
+  param($Payload, [string]$Field, [string]$Name)
+  if ($null -eq $Payload.$Field) {
+    throw "$Name response missing $Field."
+  }
 }
 
 function Resolve-ArceusFrontendUrl {
@@ -147,12 +173,58 @@ Step "Production readiness endpoint" {
   Write-Host $prod.Content
 } -Optional
 
-Step "Admin release readiness endpoint" {
+Step "Admin release readiness gate" {
   if (-not $AdminUserId) {
     throw "Set SMOKE_ADMIN_USER_ID or pass -AdminUserId to verify admin release readiness."
   }
-  $admin = Invoke-JsonHealth "$BackendUrl/api/v1/admin/release-readiness" -Headers @{"x-user-id"=$AdminUserId}
-  Write-Host $admin.Content
+  $admin = Invoke-JsonObject "$BackendUrl/api/v1/admin/release-readiness" -Headers @{"x-user-id"=$AdminUserId}
+  Require-Field $admin "checks" "Admin release readiness"
+  Require-Field $admin "runbook" "Admin release readiness"
+  Require-Ready $admin "Admin release readiness"
+  Write-Host ($admin | ConvertTo-Json -Depth 6)
+} -Optional
+
+Step "Admin billing gate" {
+  if (-not $AdminUserId) {
+    throw "Set SMOKE_ADMIN_USER_ID or pass -AdminUserId to verify admin billing health."
+  }
+  $billing = Invoke-JsonObject "$BackendUrl/api/v1/admin/billing-health" -Headers @{"x-user-id"=$AdminUserId}
+  Require-Field $billing "stripe_secret_configured" "Admin billing health"
+  Require-Ready $billing "Admin billing health"
+  Write-Host ($billing | ConvertTo-Json -Depth 6)
+} -Optional
+
+Step "Admin observability gate" {
+  if (-not $AdminUserId) {
+    throw "Set SMOKE_ADMIN_USER_ID or pass -AdminUserId to verify admin observability health."
+  }
+  $observability = Invoke-JsonObject "$BackendUrl/api/v1/admin/observability-health" -Headers @{"x-user-id"=$AdminUserId}
+  Require-Field $observability "checks" "Admin observability health"
+  Require-Field $observability "prometheus" "Admin observability health"
+  Require-Field $observability "grafana" "Admin observability health"
+  Require-Ready $observability "Admin observability health"
+  Write-Host ($observability | ConvertTo-Json -Depth 8)
+} -Optional
+
+Step "Admin rate-limit gate" {
+  if (-not $AdminUserId) {
+    throw "Set SMOKE_ADMIN_USER_ID or pass -AdminUserId to verify admin rate-limit health."
+  }
+  $limits = Invoke-JsonObject "$BackendUrl/api/v1/admin/rate-limits" -Headers @{"x-user-id"=$AdminUserId}
+  Require-Field $limits "profiles" "Admin rate-limit health"
+  $profileNames = @($limits.profiles | ForEach-Object { $_.name })
+  foreach ($required in @("auth", "model", "upload", "code_runtime", "pa", "interview", "admin", "default")) {
+    if ($profileNames -notcontains $required) {
+      throw "Admin rate-limit health missing route class '$required'."
+    }
+  }
+  if ($limits.enabled -ne $true) {
+    throw "Rate limits are disabled."
+  }
+  if ($StrictSmoke -and $limits.enforcing -ne $true) {
+    throw "Rate limits are not enforcing. Configure Redis or enable fail-closed before production."
+  }
+  Write-Host ($limits | ConvertTo-Json -Depth 8)
 } -Optional
 
 Step "Frontend route smoke" {
@@ -223,7 +295,25 @@ if ($failed.Count -gt 0) {
   throw "$($failed.Count) verification step(s) failed."
 }
 
+$summaryDir = Split-Path -Parent $SummaryPath
+if ($summaryDir) {
+  New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
+}
+$summary = [pscustomobject]@{
+  generated_at = (Get-Date).ToUniversalTime().ToString("o")
+  backend_url = $BackendUrl
+  frontend_url = $FrontendUrl
+  strict_smoke = [bool]$StrictSmoke
+  status = if ($warnings.Count -gt 0) { "warnings" } else { "ready" }
+  failed = $failed.Count
+  warnings = $warnings.Count
+  elapsed_seconds = [math]::Round($elapsed.TotalSeconds, 2)
+  results = $results
+}
+$summary | ConvertTo-Json -Depth 6 | Set-Content -Path $SummaryPath -Encoding UTF8
+
 Write-Host "Completed in $([math]::Round($elapsed.TotalMinutes, 2)) minutes." -ForegroundColor Green
+Write-Host "Summary written to $SummaryPath" -ForegroundColor Green
 if ($warnings.Count -gt 0) {
   Write-Host "Warnings remain. Run with -StrictSmoke to make smoke/readiness warnings fail the script." -ForegroundColor Yellow
 }

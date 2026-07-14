@@ -15,6 +15,7 @@ out/
 build/
 uploads/
 runtime/
+.verify/
 *.db
 
 # Local env files

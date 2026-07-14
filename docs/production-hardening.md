@@ -72,6 +72,18 @@ The dashboard shows whether the limiter is enforced, fail-open because Redis is 
 Use GitHub Actions release workflow or locally:
 
 ```powershell
+.\scripts\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -StrictSmoke
+```
+
+`full-verify.ps1` writes a release summary to:
+
+```text
+.verify/full-verify-summary.json
+```
+
+In `-StrictSmoke` mode, admin release readiness, billing health, observability health, and rate-limit enforcement must all pass. Without `-StrictSmoke`, these live-service gates remain warnings so local development can still run the checks.
+
+```powershell
 $env:RAILWAY_TOKEN="..."
 $env:RAILWAY_PROJECT="..."
 $env:RAILWAY_SERVICE="..."

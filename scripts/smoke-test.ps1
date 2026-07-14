@@ -48,6 +48,15 @@ $prod = Invoke-WithRetry -Uri "$BackendUrl/api/v1/production/readiness"
 if ($AdminUserId) {
   Write-Host "Checking admin release readiness"
   $admin = Invoke-WithRetry -Uri "$BackendUrl/api/v1/admin/release-readiness" -Headers @{"x-user-id"=$AdminUserId}
+
+  Write-Host "Checking admin billing health"
+  $billing = Invoke-WithRetry -Uri "$BackendUrl/api/v1/admin/billing-health" -Headers @{"x-user-id"=$AdminUserId}
+
+  Write-Host "Checking admin observability health"
+  $observability = Invoke-WithRetry -Uri "$BackendUrl/api/v1/admin/observability-health" -Headers @{"x-user-id"=$AdminUserId}
+
+  Write-Host "Checking admin rate-limit policy"
+  $rateLimits = Invoke-WithRetry -Uri "$BackendUrl/api/v1/admin/rate-limits" -Headers @{"x-user-id"=$AdminUserId}
 }
 
 if ($FrontendUrl) {
