@@ -20,9 +20,9 @@ import { apiRequest } from '../../utils/api';
 import styles from '../nexus.module.css';
 
 const products = [
-  { name: 'NEXUS Code', href: '/workspace', icon: Cpu, detail: 'Code, design, research, deploy, and review from one workspace' },
-  { name: 'NEXUS PA', href: '/pa', icon: BriefcaseBusiness, detail: 'Always-on personal assistant OS layer', live: true },
-  { name: 'NEXUS Interview', href: '/interview', icon: Mic, detail: 'Resume-aware live coaching and interview preparation' },
+  { name: 'Arceus Code', href: '/workspace', icon: Cpu, detail: 'Code, design, research, deploy, and review from one workspace' },
+  { name: 'Arceus PA', href: '/pa', icon: BriefcaseBusiness, detail: 'Always-on personal assistant OS layer', live: true },
+  { name: 'Arceus Interview', href: '/interview', icon: Mic, detail: 'Resume-aware live coaching and interview preparation' },
 ];
 
 type PAStatus = {
@@ -60,7 +60,7 @@ const fallbackStatus: PAStatus = {
   pending_delegations: 0,
   unread_alerts: 0,
   active_schedules: 0,
-  daily_brief: 'NEXUS PA is ready. Connect calendar, tasks, and memories for a stronger daily brief.',
+  daily_brief: 'Arceus PA is ready. Connect calendar, tasks, and memories for a stronger daily brief.',
 };
 
 export default function HubPage() {
@@ -129,7 +129,7 @@ export default function HubPage() {
       <main className={styles.page}>
         <section className={styles.osTopBar}>
           <div>
-            <div className={styles.eyebrow}>NEXUS PA OS</div>
+            <div className={styles.eyebrow}>Arceus PA OS</div>
             <h1 className={styles.title}>Home Screen</h1>
           </div>
           <div className={styles.osControls}>
@@ -167,9 +167,9 @@ export default function HubPage() {
         {error && <section className={styles.errorStrip}>{error}</section>}
 
         <section className={styles.hubHero}>
-          <div className={styles.eyebrow}>NEXUS AI Platform</div>
+          <div className={styles.eyebrow}>Arceus AI Platform</div>
           <h2 className={styles.title}>Choose the workspace you need</h2>
-          <p className={styles.subtitle}>A focused signed-in hub for Code, PA, and Interview. Design, research, deploy, and planning agents now live inside NEXUS Code instead of separate public products.</p>
+          <p className={styles.subtitle}>A focused signed-in hub for Code, PA, and Interview. Design, research, deploy, and planning agents now live inside Arceus Code instead of separate public products.</p>
         </section>
 
         <section className={styles.productGrid}>
@@ -210,7 +210,7 @@ export default function HubPage() {
             <div className={styles.commandHeader}>
               <div>
                 <div className={styles.eyebrow}>Competitive Position</div>
-                <h2 className={styles.compactTitle}>Where NEXUS stands now</h2>
+                <h2 className={styles.compactTitle}>Where Arceus stands now</h2>
               </div>
               <Link className={styles.secondaryButton} href="/settings">View system settings</Link>
             </div>

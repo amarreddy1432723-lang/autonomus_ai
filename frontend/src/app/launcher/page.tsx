@@ -92,7 +92,7 @@ export default function LauncherPage() {
       return;
     }
 
-    setStatus('Running command through NEXUS PA...');
+    setStatus('Running command through Arceus PA...');
     try {
       const result = await apiRequest('/api/v1/pa/command', {
         method: 'POST',

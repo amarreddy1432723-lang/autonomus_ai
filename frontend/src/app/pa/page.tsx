@@ -46,10 +46,21 @@ type PAToday = {
   notifications?: PAItem[];
   memories?: PAItem[];
   context_used?: Record<string, number>;
+  settings?: PASettings;
+  daily_brief_cached?: boolean;
   unread_alerts?: number;
   active_schedules?: number;
   pending_delegations?: number;
   access?: { plan?: string; reason?: string; upgrade_target?: string };
+};
+
+type PASettings = {
+  voice_enabled: boolean;
+  daily_brief_enabled: boolean;
+  notification_enabled: boolean;
+  automation_mode: 'confirm' | 'notify' | 'auto';
+  emergency_paused: boolean;
+  preferred_brief_time: string;
 };
 
 const formatTime = (value?: string | null) => {
@@ -68,9 +79,11 @@ export default function PAPage() {
   const [automationTitle, setAutomationTitle] = useState('');
   const [message, setMessage] = useState('');
   const [listening, setListening] = useState(false);
+  const [settings, setSettings] = useState<PASettings | null>(null);
+  const [refreshingBrief, setRefreshingBrief] = useState(false);
 
   const locked = !!today?.locked;
-  const isPaused = today?.state === 'paused' || today?.state === 'stopped';
+  const isPaused = today?.state === 'paused' || today?.state === 'stopped' || !!settings?.emergency_paused;
   const contextCount = useMemo(
     () => Object.values(today?.context_used || {}).reduce((sum, value) => sum + Number(value || 0), 0),
     [today?.context_used]
@@ -79,14 +92,16 @@ export default function PAPage() {
   const loadToday = async () => {
     setLoading(true);
     try {
-      setToday(await apiRequest('/api/v1/pa/today'));
+      const data = await apiRequest('/api/v1/pa/today');
+      setToday(data);
+      if (data.settings) setSettings(data.settings);
       setMessage('');
     } catch (error: any) {
       const detail = String(error?.message || '');
-      if (detail.includes('NEXUS PA requires')) {
+      if (detail.includes('Arceus PA requires')) {
         setToday({ locked: true, access: { reason: 'pa_requires_pro', upgrade_target: 'pro' } });
       } else {
-        setMessage(detail || 'Could not load NEXUS PA.');
+        setMessage(detail || 'Could not load Arceus PA.');
       }
     } finally {
       setLoading(false);
@@ -114,6 +129,33 @@ export default function PAPage() {
     }
   };
 
+  const updateSetting = async (patch: Partial<PASettings>) => {
+    const data = await apiRequest('/api/v1/pa/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    setSettings(data.settings);
+    await loadToday();
+  };
+
+  const refreshDailyBrief = async () => {
+    setRefreshingBrief(true);
+    try {
+      const data = await apiRequest('/api/v1/pa/daily-brief', { method: 'POST' });
+      setToday((current) => current ? {
+        ...current,
+        brief: data,
+        daily_brief: data.insight || current.daily_brief,
+        daily_brief_cached: Boolean(data.cached),
+      } as any : current);
+      setMessage(data.cached ? 'Daily brief loaded from cache.' : 'Daily brief refreshed.');
+    } catch (error: any) {
+      setMessage(error?.message || 'Could not refresh daily brief.');
+    } finally {
+      setRefreshingBrief(false);
+    }
+  };
+
   const createTask = async () => {
     if (!taskTitle.trim()) return;
     await apiRequest('/api/v1/pa/tasks', {
@@ -136,16 +178,20 @@ export default function PAPage() {
 
   const createAutomation = async () => {
     if (!automationTitle.trim()) return;
-    await apiRequest('/api/v1/pa/automations', {
-      method: 'POST',
-      body: JSON.stringify({ title: automationTitle, trigger: 'recurring', permission: 'confirm' }),
-    });
-    setAutomationTitle('');
-    await loadToday();
+    try {
+      await apiRequest('/api/v1/pa/automations', {
+        method: 'POST',
+        body: JSON.stringify({ title: automationTitle, trigger: 'recurring', permission: settings?.automation_mode || 'confirm' }),
+      });
+      setAutomationTitle('');
+      await loadToday();
+    } catch (error: any) {
+      setMessage(error?.message || 'Automation could not be created.');
+    }
   };
 
   const togglePause = async () => {
-    await apiRequest(isPaused ? '/api/v1/pa/resume' : '/api/v1/pa/pause', { method: 'POST' });
+    await apiRequest(isPaused ? '/api/v1/pa/emergency-resume' : '/api/v1/pa/emergency-pause', { method: 'POST' });
     await loadToday();
   };
 
@@ -163,6 +209,10 @@ export default function PAPage() {
   };
 
   const startVoice = () => {
+    if (settings && !settings.voice_enabled) {
+      setMessage('Voice is disabled in PA settings.');
+      return;
+    }
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setMessage('Voice input is not supported in this browser. Type the command instead.');
@@ -191,7 +241,7 @@ export default function PAPage() {
         <main className={styles.page}>
           <section className={styles.lockPanel}>
             <Lock size={34} />
-            <h1>NEXUS PA requires Pro</h1>
+            <h1>Arceus PA requires Pro</h1>
             <p>Unlock the personal OS: tasks, reminders, automations, command center, memory context, and phone-ready daily brief.</p>
             <Link className={styles.button} href="/settings">Open settings</Link>
           </section>
@@ -205,7 +255,7 @@ export default function PAPage() {
       <main className={styles.page}>
         <section className={styles.osTopBar}>
           <div>
-            <span className={styles.eyebrow}>NEXUS PA OS</span>
+            <span className={styles.eyebrow}>Arceus PA OS</span>
             <h1 className={styles.compactTitle}>What needs attention?</h1>
           </div>
           <div className={styles.osControls}>
@@ -216,7 +266,7 @@ export default function PAPage() {
             <button className={styles.secondaryButton} onClick={loadToday} type="button"><RefreshCw size={15} /> Refresh</button>
             <button className={isPaused ? styles.button : styles.dangerButton} onClick={togglePause} type="button">
               {isPaused ? <PlayCircle size={15} /> : <PauseCircle size={15} />}
-              {isPaused ? 'Resume' : 'Pause'}
+              {isPaused ? 'Resume PA' : 'Emergency Pause'}
             </button>
           </div>
         </section>
@@ -239,7 +289,7 @@ export default function PAPage() {
           </label>
           <button className={styles.voiceButton} type="button" onClick={startVoice}>
             <Mic size={16} />
-            {listening ? 'Listening' : 'Voice'}
+            {listening ? 'Listening' : settings?.voice_enabled === false ? 'Voice off' : 'Voice'}
           </button>
         </section>
 
@@ -259,9 +309,40 @@ export default function PAPage() {
           </div>
           <div className={styles.briefStats}>
             <span>Plan {today?.access?.plan || 'pro'}</span>
-            <span>Voice local</span>
+            <span>{today?.daily_brief_cached ? 'Brief cached' : 'Brief fresh'}</span>
+            <span>{settings?.voice_enabled === false ? 'Voice off' : 'Voice local'}</span>
             <span>No cross-product auto-read</span>
+            <button className={styles.tinyButton} type="button" onClick={refreshDailyBrief} disabled={refreshingBrief || settings?.daily_brief_enabled === false}>
+              {refreshingBrief ? 'Refreshing...' : 'Refresh brief'}
+            </button>
           </div>
+        </section>
+
+        <section className={styles.paSettingsPanel}>
+          <div>
+            <span className={styles.eyebrow}>PA settings</span>
+            <h2 className={styles.compactTitle}>Personal OS controls</h2>
+          </div>
+          <label>
+            <input type="checkbox" checked={settings?.voice_enabled ?? true} onChange={(event) => updateSetting({ voice_enabled: event.target.checked })} />
+            Voice command
+          </label>
+          <label>
+            <input type="checkbox" checked={settings?.daily_brief_enabled ?? true} onChange={(event) => updateSetting({ daily_brief_enabled: event.target.checked })} />
+            Daily brief
+          </label>
+          <label>
+            <input type="checkbox" checked={settings?.notification_enabled ?? true} onChange={(event) => updateSetting({ notification_enabled: event.target.checked })} />
+            Notifications
+          </label>
+          <label>
+            Automation
+            <select value={settings?.automation_mode || 'confirm'} onChange={(event) => updateSetting({ automation_mode: event.target.value as PASettings['automation_mode'] })}>
+              <option value="confirm">Confirm</option>
+              <option value="notify">Notify</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
         </section>
 
         <section className={styles.paOsGrid}>
@@ -372,7 +453,7 @@ export default function PAPage() {
           </div>
         </section>
 
-        <nav className={styles.mobilePaDock} aria-label="NEXUS PA mobile navigation">
+        <nav className={styles.mobilePaDock} aria-label="Arceus PA mobile navigation">
           <Link href="/pa"><Sparkles size={17} /> Today</Link>
           <Link href="/tasks"><CheckCircle2 size={17} /> Tasks</Link>
           <Link href="/calendar"><Calendar size={17} /> Calendar</Link>

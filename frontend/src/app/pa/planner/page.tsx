@@ -31,7 +31,7 @@ export default function PAPlannerPage() {
         <section className={styles.commandPanel}>
           <div className={styles.commandHeader}>
             <div>
-              <span className={styles.eyebrow}>NEXUS PA</span>
+              <span className={styles.eyebrow}>Arceus PA</span>
               <h1 className={styles.compactTitle}>Smart scheduling</h1>
             </div>
             <button className={styles.button} onClick={optimize}><CalendarClock size={16} /> Optimize</button>

@@ -16,7 +16,7 @@ export default function PAReflectionPage() {
     <AppShell>
       <main className={styles.page}>
         <section className={styles.commandPanel}>
-          <span className={styles.eyebrow}>NEXUS PA</span>
+          <span className={styles.eyebrow}>Arceus PA</span>
           <h1 className={styles.compactTitle}>Weekly reflection</h1>
         </section>
         {reflection?.locked && <section className={styles.lockPanel}>Upgrade to Pro to unlock weekly reflections.</section>}
