@@ -127,6 +127,10 @@ jobs:
         shell: pwsh
         working-directory: .
         run: ./scripts/prepare-desktop-release.ps1 -ReleaseVersion "${{ env.RELEASE_VERSION }}"
+      - name: Verify desktop release surface
+        shell: pwsh
+        working-directory: .
+        run: ./scripts/verify-desktop-release.ps1
       - run: npm ci
       - name: Build and publish desktop artifacts
         run: npm run dist -- --publish always

@@ -50,6 +50,12 @@ Step "Desktop syntax" {
   Pop-Location
 }
 
+Step "Desktop release surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-desktop-release.ps1
+  Pop-Location
+}
+
 Step "Frontend production build" {
   Push-Location (Join-Path $repoRoot "frontend")
   npm run build
@@ -96,7 +102,11 @@ Step "Acceptance surface files exist" {
     "backend/worker/celery_app.py",
     "backend/Dockerfile.sandbox",
     ".github/workflows/ci.yml",
-    ".github/workflows/release.yml"
+    ".github/workflows/release.yml",
+    "scripts/verify-desktop-release.ps1",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.yaml",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.installer.yaml",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.locale.en-US.yaml"
   )
   foreach ($relative in $required) {
     $path = Join-Path $repoRoot $relative

@@ -116,6 +116,12 @@ Step "Desktop syntax" {
   Pop-Location
 }
 
+Step "Desktop release surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-desktop-release.ps1
+  Pop-Location
+}
+
 if (-not $SkipFrontendBuild) {
   Step "Frontend production build" {
     Push-Location (Join-Path $repoRoot "frontend")
@@ -171,7 +177,12 @@ Step "Acceptance surface files exist" {
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     "ops/prometheus/prometheus.yml",
-    "ops/prometheus/arceus-alerts.yml"
+    "ops/prometheus/arceus-alerts.yml",
+    "ops/grafana/arceus-code-overview.json",
+    "scripts/verify-desktop-release.ps1",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.yaml",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.installer.yaml",
+    "manifests/a/Arceus/Code/1.0.0/Arceus.Code.locale.en-US.yaml"
   )
   foreach ($relative in $required) {
     $path = Join-Path $repoRoot $relative
