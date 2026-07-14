@@ -122,6 +122,12 @@ Step "Desktop release surface" {
   Pop-Location
 }
 
+Step "Database operations surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-database-operations.ps1
+  Pop-Location
+}
+
 if (-not $SkipFrontendBuild) {
   Step "Frontend production build" {
     Push-Location (Join-Path $repoRoot "frontend")
@@ -180,6 +186,9 @@ Step "Acceptance surface files exist" {
     "ops/prometheus/arceus-alerts.yml",
     "ops/grafana/arceus-code-overview.json",
     "scripts/verify-desktop-release.ps1",
+    "scripts/verify-database-operations.ps1",
+    "scripts/backup-postgres.ps1",
+    "scripts/restore-postgres.ps1",
     "manifests/a/Arceus/Code/1.0.0/Arceus.Code.yaml",
     "manifests/a/Arceus/Code/1.0.0/Arceus.Code.installer.yaml",
     "manifests/a/Arceus/Code/1.0.0/Arceus.Code.locale.en-US.yaml"

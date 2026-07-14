@@ -24,6 +24,32 @@
 - Redis: treated as cache/job runtime; durable job records must persist in PostgreSQL.
 - Object storage: versioning enabled for user uploads and job artifacts.
 
+Before any production deploy that includes migrations, run:
+
+```powershell
+.\scripts\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -Tag pre-release
+```
+
+Every backup writes:
+
+- a compressed custom-format dump
+- a matching `.metadata.json` file with SHA256 and size
+- an `arceus-latest.dump` pointer for emergency restore runbooks
+
+Verify a backup file before a restore drill:
+
+```powershell
+.\scripts\restore-postgres.ps1 -BackupFile .\backups\arceus-latest.dump -VerifyOnly
+```
+
+Restore requires an explicit destructive confirmation:
+
+```powershell
+.\scripts\restore-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -BackupFile .\backups\arceus-latest.dump -Confirm RESTORE_ARCEUS_DATABASE
+```
+
+No destructive migration may ship without a fresh backup, a restore note, and a rollback decision in the release notes.
+
 ## Monitoring
 - Alert when API health fails.
 - Alert when readiness is blocked.

@@ -89,11 +89,30 @@ Before releases with migrations:
 .\scripts\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -Tag pre-release
 ```
 
+Dry-run the backup command in CI or before configuring PostgreSQL client tools:
+
+```powershell
+.\scripts\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -Tag pre-release -DryRun
+```
+
+Verify the latest backup input without restoring:
+
+```powershell
+.\scripts\restore-postgres.ps1 -BackupFile .\backups\arceus-latest.dump -VerifyOnly
+```
+
 Restore requires explicit confirmation:
 
 ```powershell
 .\scripts\restore-postgres.ps1 -BackupFile .\backups\arceus-postgres.dump -Confirm RESTORE_ARCEUS_DATABASE
 ```
+
+Migration rollback policy:
+
+- Add a release note for every migration.
+- Run a backup before production migrations.
+- Do not ship destructive migrations unless the restore plan is written and reviewed.
+- Prefer additive migrations with follow-up cleanup releases.
 
 ## Observability
 
