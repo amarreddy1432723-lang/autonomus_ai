@@ -405,6 +405,28 @@ export default function WorkspacePage() {
     }
   };
 
+  const prepareEngineeringDelivery = async () => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/delivery-package`, {
+        method: 'POST',
+        body: JSON.stringify({ target: 'pull_request', include_release_notes: true }),
+      });
+      setEngineeringOrgState(data.orchestration);
+      addEvent({
+        kind: data.delivery_package?.ready ? 'done' : 'code',
+        message: 'Delivery package prepared',
+        detail: `${data.delivery_package?.title || 'PR package'} · ${data.delivery_package?.impact?.files_changed || 0} file(s).`,
+      });
+      setRightPanelView('git');
+    } catch (error) {
+      reportWorkspaceError(error, 'Delivery package preparation failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!trustedLocalPath) {
       setLocalTreeFiles([]);
@@ -3838,6 +3860,7 @@ export default function WorkspacePage() {
             onTypeTask={typeEngineeringTask}
             onSyncProgress={syncEngineeringProgress}
             onRunReviewBoard={runEngineeringReviewBoard}
+            onPrepareDelivery={prepareEngineeringDelivery}
           />
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (

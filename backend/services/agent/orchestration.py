@@ -57,6 +57,11 @@ class ReviewBoardRequest(BaseModel):
     approve_ready: bool = False
 
 
+class DeliveryPackageRequest(BaseModel):
+    include_release_notes: bool = True
+    target: str = "pull_request"
+
+
 PERSPECTIVES = [
     {
         "key": "pragmatic",
@@ -626,6 +631,103 @@ def _review_board_findings(state: CodeProjectOrchestration, notes: str = "") -> 
     return findings
 
 
+def _delivery_package(state: CodeProjectOrchestration, session, target: str = "pull_request") -> dict[str, Any]:
+    tasks = state.tasks or []
+    architecture = state.architecture_document or {}
+    progress = (state.implementation_plan or {}).get("progress") or {}
+    findings = state.review_findings or []
+    completed = [task for task in tasks if task.get("status") == "done"]
+    waiting = [task for task in tasks if task.get("status") == "waiting_approval"]
+    failed = [task for task in tasks if task.get("status") == "failed"]
+    files_changed: list[dict[str, Any]] = []
+    total_additions = 0
+    total_deletions = 0
+    commands: list[Any] = []
+    checks: list[Any] = []
+    for task in tasks:
+        evidence = task.get("execution_evidence") or {}
+        for file_item in evidence.get("files_changed") or []:
+            if isinstance(file_item, dict):
+                files_changed.append(file_item)
+                total_additions += int(file_item.get("additions") or 0)
+                total_deletions += int(file_item.get("deletions") or 0)
+        for command in evidence.get("commands") or []:
+            commands.append(command)
+        for check in evidence.get("checks") or []:
+            checks.append(check)
+
+    title_base = architecture.get("title") or state.clarified_problem or state.original_problem or "Arceus engineering update"
+    pr_title = f"{title_base}".strip()[:88]
+    checklist = [
+        {"label": "Architecture approved", "done": bool((architecture.get("approval") or {}).get("approved"))},
+        {"label": "Execution tasks synced", "done": bool((state.implementation_plan or {}).get("last_synced_at"))},
+        {"label": "No failed engineering tasks", "done": not failed},
+        {"label": "No pending approval tasks", "done": not waiting},
+        {"label": "Review board completed", "done": bool(findings)},
+    ]
+    risk_summary = [
+        finding.get("message")
+        for finding in findings
+        if finding.get("severity") in {"warning", "error"}
+    ] or ["No review-board blockers recorded."]
+    changed_lines = f"+{total_additions} / -{total_deletions}"
+    body_lines = [
+        "## Summary",
+        state.clarified_problem or state.original_problem or "Prepared reviewed Arceus Code workspace changes.",
+        "",
+        "## Engineering Plan",
+        f"- Stage: {state.stage}",
+        f"- Architecture: {architecture.get('title') or 'Selected architecture'}",
+        f"- Progress: {progress.get('completed', 0)}/{progress.get('total', len(tasks))} tasks complete ({progress.get('percent', 0)}%)",
+        "",
+        "## Task Evidence",
+        *[
+            f"- {task.get('id')}: {task.get('title')} — {task.get('status')} ({(task.get('progress') or {}).get('files_changed', 0)} files)"
+            for task in tasks
+        ],
+        "",
+        "## Impact",
+        f"- Files changed: {len(files_changed)}",
+        f"- Line impact: {changed_lines}",
+        f"- Commands/checks captured: {len(commands)} commands, {len(checks)} checks",
+        "",
+        "## Review Board",
+        *[f"- [{item.get('severity', 'info')}] {item.get('message')}" for item in findings[:10]],
+        "",
+        "## Checklist",
+        *[f"- [{'x' if item['done'] else ' '}] {item['label']}" for item in checklist],
+    ]
+    release_notes = [
+        "### Changed",
+        *[f"- {task.get('title')}" for task in completed[:8]],
+        "",
+        "### Validation",
+        f"- Captured {len(checks)} check item(s) and {len(commands)} command item(s).",
+        "",
+        "### Risks",
+        *[f"- {item}" for item in risk_summary[:6]],
+    ]
+    return {
+        "target": target,
+        "title": pr_title,
+        "commit_message": pr_title[:72],
+        "body": "\n".join(body_lines).strip(),
+        "release_notes": "\n".join(release_notes).strip(),
+        "checklist": checklist,
+        "risk_summary": risk_summary,
+        "impact": {
+            "files_changed": len(files_changed),
+            "additions": total_additions,
+            "deletions": total_deletions,
+            "commands": len(commands),
+            "checks": len(checks),
+        },
+        "ready": all(item["done"] for item in checklist),
+        "session_id": str(session.id),
+        "created_at": _now(),
+    }
+
+
 @router.get("/state")
 def get_orchestration_state(project_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     get_code_project(db, user_id, project_id)
@@ -954,5 +1056,54 @@ def run_project_review_board(
         "findings": findings,
         "blockers": len(blockers),
         "warnings": len(warnings),
+        "orchestration": _serialize_state(db, state),
+    }
+
+
+@router.post("/delivery-package")
+def prepare_project_delivery_package(
+    project_id: UUID,
+    request: DeliveryPackageRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session = _ensure_active_session(db, user_id, project_id)
+    state = _get_or_create_state(db, user_id, project_id)
+    progress = _sync_tasks_from_workspace(state, session)
+    if not state.review_findings:
+        state.review_findings = _review_board_findings(state)
+    package = _delivery_package(state, session, request.target)
+    state.stage = "delivery_ready" if package["ready"] else "delivery_review"
+    state.implementation_plan = {
+        **(state.implementation_plan or {}),
+        "progress": progress,
+        "delivery_package": package,
+        "delivery_prepared_at": _now(),
+    }
+    db.add(CodeProjectDecision(
+        orchestration_id=state.id,
+        project_id=project_id,
+        user_id=user_id,
+        decision_type="delivery_package",
+        title=f"Prepared {request.target} package",
+        selected_option_id=state.selected_proposal_id,
+        rationale="Generated delivery package from architecture, task receipts, review findings, and checks.",
+        payload=package,
+    ))
+    db.add(AuditLog(
+        user_id=user_id,
+        event_type="code.orchestration.delivery_package",
+        entity_type="code_project",
+        entity_id=project_id,
+        actor_type="user",
+        actor_id=str(user_id),
+        action="Prepared orchestration delivery package",
+        new_value={"ready": package["ready"], "impact": package["impact"], "target": request.target},
+    ))
+    db.commit()
+    db.refresh(state)
+    return {
+        "session_id": str(session.id),
+        "delivery_package": package,
         "orchestration": _serialize_state(db, state),
     }

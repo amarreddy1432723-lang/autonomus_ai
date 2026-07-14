@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, GitBranch, ListChecks, Network, RefreshCw, Send, ShieldCheck, Wand2 } from 'lucide-react';
+import { CheckCircle2, FileText, GitBranch, ListChecks, Network, RefreshCw, Send, ShieldCheck, Wand2 } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type EngineeringProposal = {
@@ -47,6 +47,7 @@ type Props = {
   onTypeTask: (taskId: string) => void;
   onSyncProgress: () => void;
   onRunReviewBoard: () => void;
+  onPrepareDelivery: () => void;
 };
 
 function stageLabel(stage?: string) {
@@ -67,12 +68,14 @@ export default function EngineeringOrgPanel({
   onTypeTask,
   onSyncProgress,
   onRunReviewBoard,
+  onPrepareDelivery,
 }: Props) {
   const proposals = state?.proposals || [];
   const selectedId = state?.selected_proposal_id;
   const architecture = state?.architecture_document || {};
   const tasks = state?.tasks || [];
   const progress = state?.implementation_plan?.progress || {};
+  const deliveryPackage = state?.implementation_plan?.delivery_package || null;
   const findings = state?.review_findings || [];
 
   return (
@@ -231,6 +234,49 @@ export default function EngineeringOrgPanel({
               </article>
             ))}
           </div>
+        </section>
+      )}
+
+      {selectedId && architecture?.approval?.approved && (
+        <section className={styles.appsPanelSection}>
+          <div className={styles.panelTitleRow}>
+            <FileText size={14} />
+            <div>
+              <strong>Delivery package</strong>
+              <small>PR title, body, release notes, checklist, and risk summary.</small>
+            </div>
+          </div>
+          <button className={styles.commandButtonPrimary} type="button" onClick={onPrepareDelivery} disabled={busy}>
+            <FileText size={13} />
+            Prepare delivery
+          </button>
+          {deliveryPackage && (
+            <div className={styles.orgDeliveryBox}>
+              <header>
+                <strong>{deliveryPackage.ready ? 'Ready' : 'Needs review'}</strong>
+                <span>{deliveryPackage.impact?.files_changed || 0} files · +{deliveryPackage.impact?.additions || 0} / -{deliveryPackage.impact?.deletions || 0}</span>
+              </header>
+              <label>
+                PR title
+                <input readOnly value={deliveryPackage.title || ''} />
+              </label>
+              <details>
+                <summary>PR body</summary>
+                <pre>{deliveryPackage.body}</pre>
+              </details>
+              <details>
+                <summary>Release notes</summary>
+                <pre>{deliveryPackage.release_notes}</pre>
+              </details>
+              <div className={styles.orgChecklist}>
+                {(deliveryPackage.checklist || []).map((item: any) => (
+                  <span data-done={item.done ? 'true' : 'false'} key={item.label}>
+                    {item.done ? '✓' : '•'} {item.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       )}
     </aside>

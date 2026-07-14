@@ -6201,3 +6201,72 @@
   font-size: 11px;
   line-height: 1.4;
 }
+
+.orgDeliveryBox {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.orgDeliveryBox header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.orgDeliveryBox strong {
+  color: #f3f4f6;
+  font-size: 12px;
+}
+
+.orgDeliveryBox span,
+.orgDeliveryBox label {
+  color: #9ca3af;
+  font-size: 10px;
+}
+
+.orgDeliveryBox label {
+  display: grid;
+  gap: 4px;
+}
+
+.orgDeliveryBox input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: #101116;
+  color: #e5e7eb;
+  padding: 7px 8px;
+  font-size: 11px;
+}
+
+.orgDeliveryBox pre {
+  overflow: auto;
+  max-height: 220px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  color: #d7dbe4;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.orgChecklist {
+  display: grid;
+  gap: 4px;
+}
+
+.orgChecklist span {
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #9ca3af;
+}
+
+.orgChecklist span[data-done="true"] {
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #86efac;
+}
