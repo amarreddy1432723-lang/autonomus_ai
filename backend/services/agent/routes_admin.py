@@ -23,12 +23,40 @@ def _require_admin(user_id: UUID) -> None:
         raise HTTPException(status_code=403, detail={"code": "admin_required", "message": "Admin access required."})
 
 
-def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker") -> dict:
+def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker", action: str | None = None) -> dict:
     return {
         "name": name,
         "ok": bool(ok),
         "detail": detail,
         "severity": "ok" if ok else severity,
+        "action": "" if ok else (action or detail),
+    }
+
+
+def _release_runbook(root: Path, ready: bool) -> dict:
+    verify = ".\\scripts\\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -StrictSmoke"
+    smoke = ".\\scripts\\smoke-test.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
+    deploy = ".\\scripts\\deploy-railway.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
+    backup = ".\\scripts\\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL"
+    restore = ".\\scripts\\restore-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -BackupFile .\\backups\\arceus-latest.dump -Confirm RESTORE_ARCEUS_DATABASE"
+    return {
+        "recommended_next_step": "Deploy staging" if ready else "Clear blockers before deploy",
+        "verify_command": verify,
+        "smoke_command": smoke,
+        "deploy_command": deploy,
+        "backup_command": backup,
+        "restore_command": restore,
+        "rollback_command": "railway rollback",
+        "release_notes": str(root / "RELEASE.md"),
+        "operations_doc": str(root / "docs" / "OPERATIONS.md"),
+        "sequence": [
+            "Run full verification locally or in CI.",
+            "Create a database backup before production migrations.",
+            "Deploy staging and run smoke tests.",
+            "Manually approve production deploy.",
+            "Run post-deploy smoke tests and monitor errors/jobs.",
+            "Rollback by previous Railway deployment/image SHA if smoke fails.",
+        ],
     }
 
 
@@ -41,32 +69,33 @@ def _release_readiness_report() -> dict:
     jwt_default = JWT_SECRET_KEY == "supersecretkeyforlocaldevelopmentonlychangeinprod!"
     billing = billing_configuration_status()
     checks = [
-        _readiness_item("GitHub Actions CI", (root / ".github" / "workflows" / "ci.yml").exists(), ".github/workflows/ci.yml exists"),
-        _readiness_item("Release workflow", (root / ".github" / "workflows" / "release.yml").exists(), ".github/workflows/release.yml exists"),
-        _readiness_item("Backend Dockerfile", (root / "backend" / "Dockerfile").exists(), "backend/Dockerfile exists"),
-        _readiness_item("Frontend Dockerfile", (root / "frontend" / "Dockerfile").exists(), "frontend/Dockerfile exists"),
-        _readiness_item("Railway deploy script", (root / "scripts" / "deploy-railway.ps1").exists(), "scripts/deploy-railway.ps1 exists"),
-        _readiness_item("Production smoke test script", (root / "scripts" / "smoke-test.ps1").exists(), "scripts/smoke-test.ps1 exists"),
-        _readiness_item("Postgres backup script", (root / "scripts" / "backup-postgres.ps1").exists(), "scripts/backup-postgres.ps1 exists"),
-        _readiness_item("Postgres restore script", (root / "scripts" / "restore-postgres.ps1").exists(), "scripts/restore-postgres.ps1 exists"),
-        _readiness_item("Production auth fallback disabled", not production_like or os.getenv("ALLOW_DEMO_USER", "false").lower() != "true", "ALLOW_DEMO_USER must not be true in staging/production"),
-        _readiness_item("Dev auth fallback disabled", not production_like or os.getenv("ALLOW_DEV_AUTH_FALLBACK", "false").lower() != "true", "ALLOW_DEV_AUTH_FALLBACK must not be true in staging/production"),
-        _readiness_item("JWT secret configured", not production_like or not jwt_default, "JWT_SECRET must be set to a non-default value in staging/production"),
-        _readiness_item("Encryption key configured", not production_like or bool(os.getenv("APP_ENCRYPTION_KEY")), "APP_ENCRYPTION_KEY must be set in staging/production"),
-        _readiness_item("Database configured", bool(os.getenv("DATABASE_URL")), "DATABASE_URL is required"),
-        _readiness_item("Redis configured", bool(os.getenv("REDIS_URL")), "REDIS_URL enables durable queues and cache"),
-        _readiness_item("Stripe billing ready", billing["ready"], "; ".join(billing["blockers"] or ["Stripe checkout/webhook basics configured"])),
-        _readiness_item("Sandbox provider selected", bool(os.getenv("SANDBOX_PROVIDER")), "SANDBOX_PROVIDER should be docker for production", "warning"),
-        _readiness_item("Docker sandbox image selected", os.getenv("SANDBOX_PROVIDER", "").lower() != "docker" or bool(os.getenv("SANDBOX_DOCKER_IMAGE")), "SANDBOX_DOCKER_IMAGE should be set when Docker sandbox is enabled", "warning"),
-        _readiness_item("Release identifier", bool(os.getenv("APP_RELEASE") or os.getenv("GIT_SHA")), "APP_RELEASE or GIT_SHA should be set for traceability", "warning"),
-        _readiness_item("Sentry configured", bool(os.getenv("SENTRY_DSN")), "SENTRY_DSN is recommended for production error visibility", "warning"),
-        _readiness_item("Rate limits enabled", os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"}, "RATE_LIMIT_ENABLED should stay enabled in production", "warning"),
-        _readiness_item("Desktop signing configured", bool(os.getenv("WIN_CSC_LINK") or os.getenv("CSC_LINK") or os.getenv("APPLE_ID")), "Signing secrets are needed in CI for trusted installers", "warning"),
+        _readiness_item("GitHub Actions CI", (root / ".github" / "workflows" / "ci.yml").exists(), ".github/workflows/ci.yml exists", action="Add .github/workflows/ci.yml with backend, frontend, desktop, migration, and security checks."),
+        _readiness_item("Release workflow", (root / ".github" / "workflows" / "release.yml").exists(), ".github/workflows/release.yml exists", action="Add .github/workflows/release.yml with staging smoke and manual production approval."),
+        _readiness_item("Backend Dockerfile", (root / "backend" / "Dockerfile").exists(), "backend/Dockerfile exists", action="Add backend/Dockerfile for immutable API/worker images."),
+        _readiness_item("Frontend Dockerfile", (root / "frontend" / "Dockerfile").exists(), "frontend/Dockerfile exists", action="Add frontend/Dockerfile or document the managed frontend deploy path."),
+        _readiness_item("Railway deploy script", (root / "scripts" / "deploy-railway.ps1").exists(), "scripts/deploy-railway.ps1 exists", action="Add scripts/deploy-railway.ps1 and run it only after verification passes."),
+        _readiness_item("Production smoke test script", (root / "scripts" / "smoke-test.ps1").exists(), "scripts/smoke-test.ps1 exists", action="Add scripts/smoke-test.ps1 for health, readiness, frontend, and admin checks."),
+        _readiness_item("Postgres backup script", (root / "scripts" / "backup-postgres.ps1").exists(), "scripts/backup-postgres.ps1 exists", action="Add backup script and run it before migrations/deploy."),
+        _readiness_item("Postgres restore script", (root / "scripts" / "restore-postgres.ps1").exists(), "scripts/restore-postgres.ps1 exists", action="Add restore script with explicit confirmation guard."),
+        _readiness_item("Production auth fallback disabled", not production_like or os.getenv("ALLOW_DEMO_USER", "false").lower() != "true", "ALLOW_DEMO_USER must not be true in staging/production", action="Set ALLOW_DEMO_USER=false in staging/production."),
+        _readiness_item("Dev auth fallback disabled", not production_like or os.getenv("ALLOW_DEV_AUTH_FALLBACK", "false").lower() != "true", "ALLOW_DEV_AUTH_FALLBACK must not be true in staging/production", action="Set ALLOW_DEV_AUTH_FALLBACK=false in staging/production."),
+        _readiness_item("JWT secret configured", not production_like or not jwt_default, "JWT_SECRET must be set to a non-default value in staging/production", action="Generate a strong JWT_SECRET and configure it in the deployment environment."),
+        _readiness_item("Encryption key configured", not production_like or bool(os.getenv("APP_ENCRYPTION_KEY")), "APP_ENCRYPTION_KEY must be set in staging/production", action="Set APP_ENCRYPTION_KEY for encrypted vault/provider secrets."),
+        _readiness_item("Database configured", bool(os.getenv("DATABASE_URL")), "DATABASE_URL is required", action="Set DATABASE_URL to the production PostgreSQL connection string."),
+        _readiness_item("Redis configured", bool(os.getenv("REDIS_URL")), "REDIS_URL enables durable queues and cache", action="Set REDIS_URL to the production Redis instance."),
+        _readiness_item("Stripe billing ready", billing["ready"], "; ".join(billing["blockers"] or ["Stripe checkout/webhook basics configured"]), action="Set Stripe secret, webhook secret, and plan price IDs."),
+        _readiness_item("Sandbox provider selected", bool(os.getenv("SANDBOX_PROVIDER")), "SANDBOX_PROVIDER should be docker for production", "warning", action="Set SANDBOX_PROVIDER=docker for production runtime isolation."),
+        _readiness_item("Docker sandbox image selected", os.getenv("SANDBOX_PROVIDER", "").lower() != "docker" or bool(os.getenv("SANDBOX_DOCKER_IMAGE")), "SANDBOX_DOCKER_IMAGE should be set when Docker sandbox is enabled", "warning", action="Build/push sandbox image and set SANDBOX_DOCKER_IMAGE."),
+        _readiness_item("Release identifier", bool(os.getenv("APP_RELEASE") or os.getenv("GIT_SHA")), "APP_RELEASE or GIT_SHA should be set for traceability", "warning", action="Set APP_RELEASE or GIT_SHA during CI release."),
+        _readiness_item("Sentry configured", bool(os.getenv("SENTRY_DSN")), "SENTRY_DSN is recommended for production error visibility", "warning", action="Set SENTRY_DSN and NEXT_PUBLIC_SENTRY_DSN."),
+        _readiness_item("Rate limits enabled", os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"}, "RATE_LIMIT_ENABLED should stay enabled in production", "warning", action="Keep RATE_LIMIT_ENABLED=true unless explicitly debugging."),
+        _readiness_item("Desktop signing configured", bool(os.getenv("WIN_CSC_LINK") or os.getenv("CSC_LINK") or os.getenv("APPLE_ID")), "Signing secrets are needed in CI for trusted installers", "warning", action="Configure Windows/macOS signing secrets in GitHub Actions."),
     ]
     blockers = [item for item in checks if not item["ok"] and item["severity"] == "blocker"]
     warnings = [item for item in checks if not item["ok"] and item["severity"] == "warning"]
+    ready = not blockers
     return {
-        "ready": not blockers,
+        "ready": ready,
         "environment": app_env,
         "production_like": production_like,
         "release": os.getenv("APP_RELEASE") or os.getenv("GIT_SHA") or "local",
@@ -74,6 +103,8 @@ def _release_readiness_report() -> dict:
         "blockers": blockers,
         "warnings": warnings,
         "billing": billing,
+        "summary": {"blockers": len(blockers), "warnings": len(warnings), "checks": len(checks)},
+        "runbook": _release_runbook(root, ready),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 

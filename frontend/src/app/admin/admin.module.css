@@ -251,6 +251,50 @@
   line-height: 1.4;
 }
 
+.runbookBox {
+  display: grid;
+  gap: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: #111217;
+  padding: 12px;
+}
+
+.runbookBox strong {
+  font-size: 13px;
+}
+
+.runbookBox small,
+.actionHint {
+  color: #c4b5fd;
+}
+
+.runbookBox code {
+  display: block;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: #0b0c10;
+  color: #dbeafe;
+  padding: 7px 8px;
+  font-size: 10px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runbookSteps {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 12px;
+}
+
+.runbookSteps span {
+  color: #a1a1aa;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .row strong {
   display: block;
   font-size: 13px;

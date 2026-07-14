@@ -14,6 +14,35 @@ def get_latest_download_manifest():
     return build_download_manifest()
 
 
+@router.get("/api/v1/production/readiness")
+def get_public_production_readiness():
+    from .routes_admin import _release_readiness_report
+
+    report = _release_readiness_report()
+    checks = [
+        {
+            "name": item.get("name"),
+            "ok": bool(item.get("ok")),
+            "severity": item.get("severity"),
+        }
+        for item in report.get("checks", [])
+    ]
+    return {
+        "service": "agent-service",
+        "status": "ready" if report.get("ready") else "blocked",
+        "ready": bool(report.get("ready")),
+        "environment": report.get("environment"),
+        "release": report.get("release"),
+        "summary": report.get("summary") or {
+            "blockers": len(report.get("blockers") or []),
+            "warnings": len(report.get("warnings") or []),
+            "checks": len(checks),
+        },
+        "checks": checks,
+        "checked_at": report.get("checked_at"),
+    }
+
+
 @router.get("/")
 def service_root():
     return {

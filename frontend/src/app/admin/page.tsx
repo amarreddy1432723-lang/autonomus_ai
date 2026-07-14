@@ -67,6 +67,7 @@ type ReadinessCheck = {
   ok: boolean;
   detail: string;
   severity: 'ok' | 'warning' | 'blocker';
+  action?: string;
 };
 
 type ReleaseReadiness = {
@@ -76,6 +77,19 @@ type ReleaseReadiness = {
   blockers: ReadinessCheck[];
   warnings: ReadinessCheck[];
   checks: ReadinessCheck[];
+  summary?: { blockers: number; warnings: number; checks: number };
+  runbook?: {
+    recommended_next_step?: string;
+    verify_command?: string;
+    smoke_command?: string;
+    deploy_command?: string;
+    backup_command?: string;
+    restore_command?: string;
+    rollback_command?: string;
+    operations_doc?: string;
+    release_notes?: string;
+    sequence?: string[];
+  };
   checked_at: string;
 };
 
@@ -367,19 +381,35 @@ export default function AdminPage() {
             <div className={styles.panel}>
               <div className={styles.panelHeader}>
                 <h2>Release Gate</h2>
-                <span>{readiness?.environment || 'unknown'}</span>
+                <span>{readiness?.runbook?.recommended_next_step || readiness?.environment || 'unknown'}</span>
               </div>
+              {readiness?.runbook && (
+                <div className={styles.runbookBox}>
+                  <strong>{readiness.ready ? 'Ready for staged deploy' : 'Release blocked'}</strong>
+                  <small>{readiness.summary?.blockers || 0} blockers · {readiness.summary?.warnings || 0} warnings · {readiness.release || 'local'}</small>
+                  <code>{readiness.runbook.verify_command}</code>
+                  <code>{readiness.ready ? readiness.runbook.deploy_command : readiness.runbook.smoke_command}</code>
+                </div>
+              )}
               <div className={styles.list}>
                 {(readiness?.checks || []).map((check) => (
                   <div className={styles.readinessRow} data-severity={check.ok ? 'ok' : check.severity} key={check.name}>
                     <div>
                       <strong>{check.name}</strong>
                       <small>{check.detail}</small>
+                      {!check.ok && check.action && <small className={styles.actionHint}>{check.action}</small>}
                     </div>
                     {check.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
                   </div>
                 ))}
               </div>
+              {readiness?.runbook?.sequence?.length ? (
+                <div className={styles.runbookSteps}>
+                  {readiness.runbook.sequence.map((step, index) => (
+                    <span key={`${step}-${index}`}>{index + 1}. {step}</span>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div className={styles.panel}>
