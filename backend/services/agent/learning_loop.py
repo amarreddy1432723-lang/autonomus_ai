@@ -1,5 +1,5 @@
 """
-Continuous learning helpers for NEXUS AI.
+Continuous learning helpers for Arceus AI.
 
 This is retrieval/personalization learning, not live model training. It keeps
 small, non-sensitive behavioral signals that can make the next response more

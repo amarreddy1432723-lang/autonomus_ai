@@ -1,5 +1,5 @@
 """
-NEXUS AI model registry.
+Arceus AI model registry.
 
 The registry gives the app one internal place to choose a model by task type,
 track health, and expose transparent status without leaking provider details
@@ -38,7 +38,7 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
         "capabilities": ["chat", "quick_answer", "extraction", "scheduling"],
         "auto_update": True,
     },
-    "nexus-code": {
+    "Arceus-Code": {
         "primary": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
         "fallback": [
             {"provider": "openai", "model": "gpt-4o"},
@@ -64,9 +64,9 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
 
 TASK_ROUTER: dict[str, str] = {
     "chat": "nexus-fast",
-    "code_generation": "nexus-code",
-    "code_review": "nexus-code",
-    "debugging": "nexus-code",
+    "code_generation": "Arceus-Code",
+    "code_review": "Arceus-Code",
+    "debugging": "Arceus-Code",
     "planning": "nexus-reasoning",
     "design": "nexus-creative",
     "interview": "nexus-reasoning",

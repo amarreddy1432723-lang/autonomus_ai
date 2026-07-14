@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     GITHUB_APP_CLIENT_ID: Optional[str] = os.getenv("GITHUB_APP_CLIENT_ID")
     GITHUB_APP_CLIENT_SECRET: Optional[str] = os.getenv("GITHUB_APP_CLIENT_SECRET")
     GITHUB_APP_WEBHOOK_SECRET: Optional[str] = os.getenv("GITHUB_APP_WEBHOOK_SECRET")
-    GITHUB_APP_NAME: str = os.getenv("GITHUB_APP_NAME", "nexus-ai")
+    GITHUB_APP_NAME: str = os.getenv("GITHUB_APP_NAME", "Arceus-AI")
+    GITHUB_APP_SLUG: Optional[str] = os.getenv("GITHUB_APP_SLUG")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", os.getenv("NEXT_PUBLIC_FRONTEND_URL", "http://localhost:3000"))
 
     # ── Phase 4 Memory System ───────────────────────────────────
@@ -84,17 +85,26 @@ class Settings(BaseSettings):
     # ── Sandbox Runtime ──────────────────────────────────────
     APP_ENV: str = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local"))
     SANDBOX_PROVIDER: str = os.getenv("SANDBOX_PROVIDER", "local")
-    SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.11-slim")
+    SANDBOX_DOCKER_IMAGE: str = os.getenv("SANDBOX_DOCKER_IMAGE", "arceus-code-sandbox:local")
+    SANDBOX_ALLOW_NETWORK: bool = os.getenv("SANDBOX_ALLOW_NETWORK", "false").lower() == "true"
+    SANDBOX_DOCKER_MEMORY: str = os.getenv("SANDBOX_DOCKER_MEMORY", "512m")
+    SANDBOX_DOCKER_CPU_PERIOD: int = int(os.getenv("SANDBOX_DOCKER_CPU_PERIOD", "100000"))
+    SANDBOX_DOCKER_CPU_QUOTA: int = int(os.getenv("SANDBOX_DOCKER_CPU_QUOTA", "50000"))
+    SANDBOX_DOCKER_PIDS_LIMIT: int = int(os.getenv("SANDBOX_DOCKER_PIDS_LIMIT", "64"))
+    SANDBOX_DOCKER_CLEANUP_TTL_SECONDS: int = int(os.getenv("SANDBOX_DOCKER_CLEANUP_TTL_SECONDS", "300"))
     E2B_API_KEY: Optional[str] = os.getenv("E2B_API_KEY")
     ALLOW_LOCAL_SANDBOX: bool = os.getenv("ALLOW_LOCAL_SANDBOX", "false").lower() == "true"
     SANDBOX_COMMAND_MAX_OUTPUT_CHARS: int = int(os.getenv("SANDBOX_COMMAND_MAX_OUTPUT_CHARS", "20000"))
     SANDBOX_COMMAND_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_COMMAND_TIMEOUT_SECONDS", "120"))
     SANDBOX_INSTALL_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_INSTALL_TIMEOUT_SECONDS", "300"))
     AGENT_WORKER_ENABLED: bool = os.getenv("AGENT_WORKER_ENABLED", "true").lower() == "true"
+    CELERY_WORKER_ENABLED: bool = os.getenv("CELERY_WORKER_ENABLED", "false").lower() == "true"
+    CELERY_BROKER_URL: str = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    CELERY_RESULT_BACKEND: str = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
     AGENT_WORKER_POLL_SECONDS: float = float(os.getenv("AGENT_WORKER_POLL_SECONDS", "1.0"))
     AGENT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_JOB_TIMEOUT_SECONDS", "900"))
-    AGENT_JOB_STALE_SECONDS: int = int(os.getenv("AGENT_JOB_STALE_SECONDS", "1800"))
-    AGENT_JOB_MAX_RETRIES: int = int(os.getenv("AGENT_JOB_MAX_RETRIES", "2"))
+    AGENT_JOB_STALE_SECONDS: int = int(os.getenv("AGENT_JOB_STALE_SECONDS", "600"))
+    AGENT_JOB_MAX_RETRIES: int = int(os.getenv("AGENT_JOB_MAX_RETRIES", "3"))
     LOCAL_WORKSPACE_IMPORT_ENABLED: bool = os.getenv("LOCAL_WORKSPACE_IMPORT_ENABLED", "true").lower() == "true"
     LOCAL_WORKSPACE_ALLOWED_ROOTS: str = os.getenv("LOCAL_WORKSPACE_ALLOWED_ROOTS", "")
     LOCAL_WORKSPACE_MAX_FILES: int = int(os.getenv("LOCAL_WORKSPACE_MAX_FILES", "1000"))

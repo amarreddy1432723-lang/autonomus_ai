@@ -2,13 +2,14 @@ import json
 import os
 import urllib.error
 import urllib.request
+import uuid
 import jwt
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, status, File, UploadFile, Request, Response, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
@@ -34,6 +35,8 @@ from .schemas import (
     VaultSetupRequest,
     VaultStatusResponse,
 )
+from .terminal import router as terminal_router
+from .lsp_bridge import router as lsp_router
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkeyforlocaldevelopmentonlychangeinprod!")
 JWT_ALGORITHM = "HS256"
@@ -61,13 +64,21 @@ app = FastAPI(title="my-ai Agent Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "agent-service")
 app.add_middleware(RateLimitHeaderMiddleware)
 register_error_handlers(app)
+app.include_router(terminal_router)
+app.include_router(lsp_router)
+
+@app.get("/api/v1/downloads/latest")
+def get_latest_download_manifest():
+    from .downloads import build_download_manifest
+
+    return build_download_manifest()
 
 @app.get("/")
 def service_root():
     return {
         "service": "agent-service",
         "status": "running",
-        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "message": "This is an Arceus API service. Open the frontend UI instead.",
         "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
         "docs": "/docs",
     }
@@ -78,6 +89,18 @@ def get_current_user_id(
     db: Session = Depends(get_db),
 ) -> UUID:
     return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, JWT_SECRET_KEY, JWT_ALGORITHM)
+
+def require_entitlement_or_402(db: Session, user_id: UUID, feature: str) -> dict:
+    from .billing import require_feature_entitlement
+
+    return require_feature_entitlement(db, user_id, feature)
+
+def require_session_project_role(db: Session, user_id: UUID, session, minimum: str = "editor") -> None:
+    if not getattr(session, "project_id", None):
+        return
+    from .code_workspace import require_project_role
+
+    require_project_role(db, user_id, session.project_id, minimum)
 
 def parse_vault_key(x_vault_key: str | None) -> bytes | None:
     if not x_vault_key:
@@ -109,7 +132,7 @@ EXPOSED_CHAT_MODELS: dict[str, tuple[str, str]] = {
     "autonomus-ai-v1": ("autonomus", "autonomus-ai-v1"),
     "nexus-fast": ("nexus", "nexus-fast"),
     "nexus-reasoning": ("nexus", "nexus-reasoning"),
-    "nexus-code": ("nexus", "nexus-code"),
+    "Arceus-Code": ("nexus", "Arceus-Code"),
     "groq-llama-3.3": ("groq", "llama-3.3-70b-versatile"),
     "openai-gpt-4o-mini": ("openai", "gpt-4o-mini"),
     "gemini-1.5-flash": ("google", "gemini-1.5-flash"),
@@ -165,9 +188,28 @@ class CodeProjectUpdate(BaseModel):
     repo_url: Optional[str] = None
     status: Optional[str] = None
 
+
+class CodeProjectMergeRequest(BaseModel):
+    source_project_ids: List[UUID]
+    name: Optional[str] = None
+
+class CodeProjectInviteRequest(BaseModel):
+    email: str
+    role: str = "viewer"
+
+
+class PluginInstallRequest(BaseModel):
+    manifest: dict[str, Any]
+
+
+class PluginStatusRequest(BaseModel):
+    status: str
+
+
 class CodeBackgroundRunRequest(BaseModel):
     instruction: str
     mode: str = "code"
+    file_ids: List[str] = Field(default_factory=list)
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
@@ -194,8 +236,27 @@ class CodeCompletionRequest(BaseModel):
 class CodeSessionFilesUpdate(BaseModel):
     file_ids: List[str] = Field(default_factory=list)
 
+
+class CodeLocalFileCreateRequest(BaseModel):
+    path: str
+    content: str = ""
+
+
+class CodeLocalFolderCreateRequest(BaseModel):
+    path: str
+
+
+class CodeLocalFileDeleteRequest(BaseModel):
+    path: str
+
+
+class CodeLocalFileRenameRequest(BaseModel):
+    from_path: str
+    to_path: str
+
 class CodeInstructionRequest(BaseModel):
     instruction: str
+    file_ids: List[str] = Field(default_factory=list)
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
 
@@ -203,6 +264,26 @@ class CodeCommandRunRequest(BaseModel):
     command: str
     timeout_seconds: int = 45
     approved: bool = False
+
+class CodeTerminalCreateRequest(BaseModel):
+    command: str = ""
+    timeout_seconds: int = 45
+    approved: bool = False
+
+class CodeTerminalInputRequest(BaseModel):
+    input: str = ""
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    slug: Optional[str] = None
+
+class TeamInviteRequest(BaseModel):
+    email: str
+    role: str = "developer"
+
+class MembershipUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    status: Optional[str] = None
 
 class CodeSuggestNextRequest(BaseModel):
     user_description: str = ""
@@ -299,16 +380,23 @@ class GitHubSessionImportRequest(BaseModel):
     repository: str
     branch: Optional[str] = None
 
+class GitHubBranchesRequest(BaseModel):
+    repository: str
+
 class GitHubBranchRequest(BaseModel):
     branch_name: Optional[str] = None
     base_branch: Optional[str] = None
 
 class GitHubCommitRequest(BaseModel):
     message: Optional[str] = None
+    filenames: Optional[List[str]] = None
 
 class GitHubPullRequestRequest(BaseModel):
     title: Optional[str] = None
     body: Optional[str] = None
+    commit_message: Optional[str] = None
+    branch_name: Optional[str] = None
+    filenames: Optional[List[str]] = None
 
 class CodePreparePullRequest(BaseModel):
     title: Optional[str] = None
@@ -316,6 +404,9 @@ class CodePreparePullRequest(BaseModel):
 
 class CodePatchSelectionRequest(BaseModel):
     file_ids: List[str] = Field(default_factory=list)
+    operation_ids: List[str] = Field(default_factory=list)
+    hunk_ids: List[str] = Field(default_factory=list)
+    allow_conflicts: bool = False
 
 class CodeRollbackRequest(BaseModel):
     snapshot_id: Optional[str] = None
@@ -442,6 +533,14 @@ class PAScheduleItemUpdateRequest(BaseModel):
     next_run_at: Optional[str] = None
     status: Optional[str] = None
     permission: Optional[str] = None
+
+class PASettingsRequest(BaseModel):
+    voice_enabled: Optional[bool] = None
+    daily_brief_enabled: Optional[bool] = None
+    notification_enabled: Optional[bool] = None
+    automation_mode: Optional[str] = None
+    emergency_paused: Optional[bool] = None
+    preferred_brief_time: Optional[str] = None
 
 def build_uploaded_context(db: Session, user_id: UUID, file_ids: List[str], prompt: str) -> str:
     if not file_ids:
@@ -907,43 +1006,44 @@ def record_interview_access(user_id: UUID = Depends(get_current_user_id), db: Se
     return record_interview_session(db, user_id)
 
 @app.post("/api/v1/billing/checkout")
-def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Depends(get_current_user_id)):
+def create_billing_checkout(request: BillingCheckoutRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .billing import create_checkout_session
 
     if request.plan not in {"starter", "pro", "enterprise"}:
         raise HTTPException(status_code=400, detail="Unsupported plan")
     if request.billing_cycle not in {"monthly", "annual"}:
         raise HTTPException(status_code=400, detail="Unsupported billing cycle")
-    return create_checkout_session(request.plan, request.billing_cycle)
+    return create_checkout_session(db, user_id, request.plan, request.billing_cycle)
 
 @app.post("/api/v1/billing/portal")
 def create_billing_portal(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .billing import billing_summary
+    from .billing import create_portal_session
 
-    summary = billing_summary(db, user_id)
-    if not os.getenv("STRIPE_SECRET_KEY"):
-        return {
-            "status": "not_configured",
-            "message": "Stripe Billing Portal is not configured yet.",
-            "billing": summary["plan"],
-        }
-    return {
-        "status": "requires_stripe_sdk",
-        "message": "Stripe key is configured. Wire Stripe Billing Portal SDK to create a hosted portal session.",
-        "customer_id": summary["stripe"].get("customer_id"),
-    }
+    return create_portal_session(db, user_id)
 
 @app.post("/api/v1/billing/webhook")
-async def post_billing_webhook(request: Request, db: Session = Depends(get_db)):
+async def post_billing_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="stripe-signature"), db: Session = Depends(get_db)):
     from services.shared.models import AuditLog
+    from .billing import sync_stripe_webhook_event
 
     body = await request.body()
-    if not os.getenv("STRIPE_WEBHOOK_SECRET"):
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    if not webhook_secret:
         return {"status": "not_configured", "message": "Stripe webhook secret is not configured."}
     try:
-        event = json.loads(body.decode("utf-8") or "{}")
-    except json.JSONDecodeError:
+        import stripe  # type: ignore
+        event = stripe.Webhook.construct_event(body, stripe_signature or "", webhook_secret)
+    except ImportError:
+        try:
+            event = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail={"code": "invalid_webhook", "message": "Webhook body must be valid JSON."})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_signature", "message": str(exc)})
+    if not isinstance(event, dict):
         raise HTTPException(status_code=400, detail={"code": "invalid_webhook", "message": "Webhook body must be valid JSON."})
+
+    result = sync_stripe_webhook_event(db, event)
     db.add(
         AuditLog(
             user_id=UUID("00000000-0000-0000-0000-000000000000"),
@@ -951,11 +1051,11 @@ async def post_billing_webhook(request: Request, db: Session = Depends(get_db)):
             entity_type="stripe_event",
             actor_type="system",
             action="billing.webhook.received",
-            metadata_json={"event_type": event.get("type"), "event_id": event.get("id")},
+            metadata_json=result,
         )
     )
     db.commit()
-    return {"status": "received", "event_type": event.get("type"), "event_id": event.get("id")}
+    return {"status": "received", **result}
 
 def _require_admin(user_id: UUID) -> None:
     raw = os.getenv("NEXUS_ADMIN_USER_IDS", "")
@@ -963,9 +1063,96 @@ def _require_admin(user_id: UUID) -> None:
     if str(user_id) not in allowed:
         raise HTTPException(status_code=403, detail={"code": "admin_required", "message": "Admin access required."})
 
+
+def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker") -> dict:
+    return {
+        "name": name,
+        "ok": bool(ok),
+        "detail": detail,
+        "severity": "ok" if ok else severity,
+    }
+
+
+def _release_readiness_report() -> dict:
+    from .billing import billing_configuration_status
+
+    root = Path(__file__).resolve().parents[3]
+    app_env = os.getenv("APP_ENV", os.getenv("NODE_ENV", "development")).lower()
+    production_like = app_env in {"production", "prod", "staging"}
+    jwt_default = JWT_SECRET_KEY == "supersecretkeyforlocaldevelopmentonlychangeinprod!"
+    billing = billing_configuration_status()
+    checks = [
+        _readiness_item("GitHub Actions CI", (root / ".github" / "workflows" / "ci.yml").exists(), ".github/workflows/ci.yml exists"),
+        _readiness_item("Release workflow", (root / ".github" / "workflows" / "release.yml").exists(), ".github/workflows/release.yml exists"),
+        _readiness_item("Backend Dockerfile", (root / "backend" / "Dockerfile").exists(), "backend/Dockerfile exists"),
+        _readiness_item("Frontend Dockerfile", (root / "frontend" / "Dockerfile").exists(), "frontend/Dockerfile exists"),
+        _readiness_item("Railway deploy script", (root / "scripts" / "deploy-railway.ps1").exists(), "scripts/deploy-railway.ps1 exists"),
+        _readiness_item("Production smoke test script", (root / "scripts" / "smoke-test.ps1").exists(), "scripts/smoke-test.ps1 exists"),
+        _readiness_item("Postgres backup script", (root / "scripts" / "backup-postgres.ps1").exists(), "scripts/backup-postgres.ps1 exists"),
+        _readiness_item("Postgres restore script", (root / "scripts" / "restore-postgres.ps1").exists(), "scripts/restore-postgres.ps1 exists"),
+        _readiness_item("Production auth fallback disabled", not production_like or os.getenv("ALLOW_DEMO_USER", "false").lower() != "true", "ALLOW_DEMO_USER must not be true in staging/production"),
+        _readiness_item("Dev auth fallback disabled", not production_like or os.getenv("ALLOW_DEV_AUTH_FALLBACK", "false").lower() != "true", "ALLOW_DEV_AUTH_FALLBACK must not be true in staging/production"),
+        _readiness_item("JWT secret configured", not production_like or not jwt_default, "JWT_SECRET must be set to a non-default value in staging/production"),
+        _readiness_item("Encryption key configured", not production_like or bool(os.getenv("APP_ENCRYPTION_KEY")), "APP_ENCRYPTION_KEY must be set in staging/production"),
+        _readiness_item("Database configured", bool(os.getenv("DATABASE_URL")), "DATABASE_URL is required"),
+        _readiness_item("Redis configured", bool(os.getenv("REDIS_URL")), "REDIS_URL enables durable queues and cache"),
+        _readiness_item("Stripe billing ready", billing["ready"], "; ".join(billing["blockers"] or ["Stripe checkout/webhook basics configured"])),
+        _readiness_item("Sandbox provider selected", bool(os.getenv("SANDBOX_PROVIDER")), "SANDBOX_PROVIDER should be docker for production", "warning"),
+        _readiness_item("Docker sandbox image selected", os.getenv("SANDBOX_PROVIDER", "").lower() != "docker" or bool(os.getenv("SANDBOX_DOCKER_IMAGE")), "SANDBOX_DOCKER_IMAGE should be set when Docker sandbox is enabled", "warning"),
+        _readiness_item("Release identifier", bool(os.getenv("APP_RELEASE") or os.getenv("GIT_SHA")), "APP_RELEASE or GIT_SHA should be set for traceability", "warning"),
+        _readiness_item("Sentry configured", bool(os.getenv("SENTRY_DSN")), "SENTRY_DSN is recommended for production error visibility", "warning"),
+        _readiness_item("Rate limits enabled", os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"}, "RATE_LIMIT_ENABLED should stay enabled in production", "warning"),
+        _readiness_item("Desktop signing configured", bool(os.getenv("WIN_CSC_LINK") or os.getenv("CSC_LINK") or os.getenv("APPLE_ID")), "Signing secrets are needed in CI for trusted installers", "warning"),
+    ]
+    blockers = [item for item in checks if not item["ok"] and item["severity"] == "blocker"]
+    warnings = [item for item in checks if not item["ok"] and item["severity"] == "warning"]
+    return {
+        "ready": not blockers,
+        "environment": app_env,
+        "production_like": production_like,
+        "release": os.getenv("APP_RELEASE") or os.getenv("GIT_SHA") or "local",
+        "checks": checks,
+        "blockers": blockers,
+        "warnings": warnings,
+        "billing": billing,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _observability_health_report() -> dict:
+    sentry_backend = bool(os.getenv("SENTRY_DSN"))
+    sentry_frontend = bool(os.getenv("NEXT_PUBLIC_SENTRY_DSN") or os.getenv("SENTRY_FRONTEND_DSN"))
+    prometheus_enabled = os.getenv("PROMETHEUS_METRICS_ENABLED", "true").lower() not in {"0", "false", "no"}
+    app_release = os.getenv("APP_RELEASE") or os.getenv("GIT_SHA") or "local"
+    checks = [
+        _readiness_item("Backend Sentry", sentry_backend, "SENTRY_DSN captures backend Python exceptions", "warning"),
+        _readiness_item("Frontend Sentry", sentry_frontend, "NEXT_PUBLIC_SENTRY_DSN captures browser errors", "warning"),
+        _readiness_item("Prometheus metrics", prometheus_enabled, "PROMETHEUS_METRICS_ENABLED exposes /metrics", "warning"),
+        _readiness_item("Release tag", app_release != "local", "APP_RELEASE or GIT_SHA ties errors to a deploy", "warning"),
+        _readiness_item("Prometheus config", (Path(__file__).resolve().parents[3] / "ops" / "prometheus" / "prometheus.yml").exists(), "ops/prometheus/prometheus.yml exists", "warning"),
+        _readiness_item("Alert rules", (Path(__file__).resolve().parents[3] / "ops" / "prometheus" / "arceus-alerts.yml").exists(), "ops/prometheus/arceus-alerts.yml exists", "warning"),
+    ]
+    warnings = [item for item in checks if not item["ok"]]
+    return {
+        "ready": not warnings,
+        "release": app_release,
+        "environment": os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")),
+        "metrics_endpoint": "/metrics" if prometheus_enabled else None,
+        "logging": {
+            "format": "json",
+            "request_id_header": "X-Request-Id",
+            "trace_id_header": "X-Trace-Id",
+            "response_time_header": "X-Response-Time-Ms",
+        },
+        "checks": checks,
+        "warnings": warnings,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 @app.get("/api/v1/admin/users")
 def get_admin_users(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from services.shared.models import Subscription, User
+    from sqlalchemy import Integer, func
+    from services.shared.models import AgentJob, Subscription, UsageEvent, User
 
     _require_admin(user_id)
     rows = (
@@ -974,6 +1161,31 @@ def get_admin_users(user_id: UUID = Depends(get_current_user_id), db: Session = 
         .limit(100)
         .all()
     )
+    subscription_rows = {
+        item.user_id: item
+        for item in (
+            db.query(Subscription)
+            .order_by(Subscription.created_at.desc())
+            .all()
+        )
+    }
+    usage_rows = {
+        row[0]: {"events": int(row[1] or 0), "tokens": int(row[2] or 0), "cost": float(row[3] or 0)}
+        for row in db.query(
+            UsageEvent.user_id,
+            func.count(UsageEvent.id),
+            func.coalesce(func.sum(UsageEvent.total_tokens), 0),
+            func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0),
+        ).group_by(UsageEvent.user_id).all()
+    }
+    job_rows = {
+        row[0]: {"jobs": int(row[1] or 0), "failed": int(row[2] or 0)}
+        for row in db.query(
+            AgentJob.user_id,
+            func.count(AgentJob.id),
+            func.sum(func.cast(AgentJob.status.in_(["failed", "timeout", "dead_letter"]), Integer)),
+        ).group_by(AgentJob.user_id).all()
+    }
     return {
         "users": [
             {
@@ -984,21 +1196,12 @@ def get_admin_users(user_id: UUID = Depends(get_current_user_id), db: Session = 
                 "is_active": item.is_active,
                 "created_at": item.created_at.isoformat() if item.created_at else None,
                 "subscription": {
-                    "plan": (
-                        db.query(Subscription.plan_type, Subscription.status)
-                        .filter(Subscription.user_id == item.id)
-                        .order_by(Subscription.created_at.desc())
-                        .first()
-                        or ("free", "active")
-                    )[0],
-                    "status": (
-                        db.query(Subscription.plan_type, Subscription.status)
-                        .filter(Subscription.user_id == item.id)
-                        .order_by(Subscription.created_at.desc())
-                        .first()
-                        or ("free", "active")
-                    )[1],
+                    "plan": (subscription_rows.get(item.id).plan_type if subscription_rows.get(item.id) else "free"),
+                    "status": (subscription_rows.get(item.id).status if subscription_rows.get(item.id) else "active"),
+                    "provider": (subscription_rows.get(item.id).provider if subscription_rows.get(item.id) else "internal"),
                 },
+                "usage": usage_rows.get(item.id, {"events": 0, "tokens": 0, "cost": 0.0}),
+                "jobs": job_rows.get(item.id, {"jobs": 0, "failed": 0}),
             }
             for item in rows
         ]
@@ -1012,11 +1215,157 @@ def get_admin_usage(user_id: UUID = Depends(get_current_user_id), db: Session = 
 
     _require_admin(user_id)
     usage = db.query(func.count(UsageEvent.id), func.coalesce(func.sum(UsageEvent.total_tokens), 0)).one()
+    route_rows = db.query(
+        UsageEvent.route,
+        func.count(UsageEvent.id),
+        func.coalesce(func.sum(UsageEvent.total_tokens), 0),
+        func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0),
+    ).group_by(UsageEvent.route).order_by(func.count(UsageEvent.id).desc()).limit(25).all()
     return {
         "usage_events": int(usage[0] or 0),
         "total_tokens": int(usage[1] or 0),
+        "routes": [
+            {
+                "route": row[0],
+                "events": int(row[1] or 0),
+                "tokens": int(row[2] or 0),
+                "cost": float(row[3] or 0),
+            }
+            for row in route_rows
+        ],
         "pa": admin_usage_summary(db),
     }
+
+@app.get("/api/v1/admin/summary")
+def get_admin_summary(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from services.shared.models import AgentJob, AuditLog, Subscription, UsageEvent, User
+
+    _require_admin(user_id)
+    usage = db.query(func.count(UsageEvent.id), func.coalesce(func.sum(UsageEvent.total_tokens), 0)).one()
+    plan_rows = db.query(Subscription.plan_type, Subscription.status, func.count(Subscription.id)).group_by(Subscription.plan_type, Subscription.status).all()
+    failed_jobs = int(db.query(func.count(AgentJob.id)).filter(AgentJob.status.in_(["failed", "timeout", "dead_letter"])).scalar() or 0)
+    total_jobs = int(db.query(func.count(AgentJob.id)).scalar() or 0)
+    return {
+        "users": int(db.query(func.count(User.id)).scalar() or 0),
+        "active_subscriptions": int(db.query(func.count(Subscription.id)).filter(Subscription.status == "active").scalar() or 0),
+        "usage_events": int(usage[0] or 0),
+        "total_tokens": int(usage[1] or 0),
+        "estimated_cost_usd": float(db.query(func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0)).scalar() or 0),
+        "jobs": {
+            "queued": int(db.query(func.count(AgentJob.id)).filter(AgentJob.status == "queued").scalar() or 0),
+            "running": int(db.query(func.count(AgentJob.id)).filter(AgentJob.status == "running").scalar() or 0),
+            "failed": failed_jobs,
+            "total": total_jobs,
+        },
+        "error_rate": 0 if total_jobs == 0 else round(failed_jobs / total_jobs * 100, 2),
+        "plans": [
+            {"plan": row[0] or "free", "status": row[1] or "unknown", "count": int(row[2] or 0)}
+            for row in plan_rows
+        ],
+        "audit_events": int(db.query(func.count(AuditLog.id)).scalar() or 0),
+    }
+
+@app.get("/api/v1/admin/system-health")
+def get_admin_system_health(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from sqlalchemy import func, text
+    from services.shared.models import AgentJob
+
+    _require_admin(user_id)
+    db_ok = True
+    db_error = None
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:  # pragma: no cover - defensive health endpoint
+        db_ok = False
+        db_error = str(exc)
+    redis_status = {"configured": bool(os.getenv("REDIS_URL")), "ok": False, "queue_depth": None, "error": None}
+    if os.getenv("REDIS_URL"):
+        try:
+            import redis  # type: ignore
+
+            client = redis.from_url(os.getenv("REDIS_URL"), socket_connect_timeout=1, socket_timeout=1)
+            client.ping()
+            redis_status.update({
+                "ok": True,
+                "queue_depth": int(client.llen(os.getenv("CELERY_QUEUE_NAME", "celery"))),
+            })
+        except Exception as exc:  # pragma: no cover - optional dependency/runtime
+            redis_status["error"] = str(exc)
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stale_jobs = int(db.query(func.count(AgentJob.id)).filter(AgentJob.status.in_(["claimed", "running"]), AgentJob.updated_at < stale_cutoff).scalar() or 0)
+    return {
+        "database": {"ok": db_ok, "error": db_error},
+        "redis": redis_status,
+        "workers": {
+            "queue_depth": redis_status.get("queue_depth"),
+            "stale_jobs": stale_jobs,
+            "configured_mode": "redis" if os.getenv("REDIS_URL") else "in_process_dev_fallback",
+        },
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+@app.get("/api/v1/admin/abuse-flags")
+def get_admin_abuse_flags(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from services.shared.models import AgentJob, UsageEvent, User
+
+    _require_admin(user_id)
+    day_start = datetime.now(timezone.utc) - timedelta(days=1)
+    usage_rows = db.query(
+        UsageEvent.user_id,
+        func.count(UsageEvent.id).label("events"),
+        func.coalesce(func.sum(UsageEvent.total_tokens), 0).label("tokens"),
+        func.coalesce(func.sum(UsageEvent.estimated_cost_usd), 0).label("cost"),
+    ).filter(UsageEvent.created_at >= day_start).group_by(UsageEvent.user_id).all()
+    failed_rows = {
+        row[0]: int(row[1] or 0)
+        for row in db.query(AgentJob.user_id, func.count(AgentJob.id))
+        .filter(AgentJob.created_at >= day_start, AgentJob.status.in_(["failed", "timeout", "dead_letter"]))
+        .group_by(AgentJob.user_id)
+        .all()
+    }
+    users = {item.id: item for item in db.query(User).filter(User.id.in_([row[0] for row in usage_rows] or [user_id])).all()}
+    flags = []
+    for row in usage_rows:
+        reasons = []
+        if int(row.events or 0) >= 500:
+            reasons.append("high request volume")
+        if int(row.tokens or 0) >= 1_000_000:
+            reasons.append("high token volume")
+        if float(row.cost or 0) >= 25:
+            reasons.append("high estimated spend")
+        if failed_rows.get(row.user_id, 0) >= 20:
+            reasons.append("many failed jobs")
+        if reasons:
+            user_row = users.get(row.user_id)
+            flags.append({
+                "user_id": str(row.user_id),
+                "email": user_row.email if user_row else None,
+                "reasons": reasons,
+                "events_24h": int(row.events or 0),
+                "tokens_24h": int(row.tokens or 0),
+                "cost_24h": float(row.cost or 0),
+                "failed_jobs_24h": failed_rows.get(row.user_id, 0),
+            })
+    return {"flags": flags, "window": "24h"}
+
+@app.get("/api/v1/admin/billing-health")
+def get_admin_billing_health(user_id: UUID = Depends(get_current_user_id)):
+    from .billing import billing_configuration_status
+
+    _require_admin(user_id)
+    return billing_configuration_status()
+
+@app.get("/api/v1/admin/release-readiness")
+def get_admin_release_readiness(user_id: UUID = Depends(get_current_user_id)):
+    _require_admin(user_id)
+    return _release_readiness_report()
+
+@app.get("/api/v1/admin/observability-health")
+def get_admin_observability_health(user_id: UUID = Depends(get_current_user_id)):
+    _require_admin(user_id)
+    return _observability_health_report()
 
 @app.get("/api/v1/admin/jobs")
 def get_admin_jobs(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -1038,12 +1387,65 @@ def get_admin_jobs(user_id: UUID = Depends(get_current_user_id), db: Session = D
         ]
     }
 
+@app.post("/api/v1/admin/jobs/{job_id}/kill")
+def kill_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AgentJob, AuditLog
+
+    _require_admin(user_id)
+    job = db.query(AgentJob).filter(AgentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail={"code": "job_not_found", "message": "Job not found."})
+    terminal_states = {"completed", "failed", "cancelled", "dead_letter", "timeout"}
+    previous_status = job.status
+    if job.status not in terminal_states:
+        job.status = "cancelled"
+        job.completed_at = datetime.now(timezone.utc)
+        metadata = dict(job.metadata_json or {})
+        metadata["admin_cancelled_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["admin_cancelled_by"] = str(user_id)
+        job.metadata_json = metadata
+        logs = list(job.logs or [])
+        logs.append({"kind": "cancelled", "message": "Cancelled by admin", "timestamp": datetime.now(timezone.utc).isoformat()})
+        job.logs = logs
+    db.add(AuditLog(
+        user_id=job.user_id,
+        session_id=job.code_session_id,
+        event_type="admin.job.kill",
+        entity_type="agent_job",
+        entity_id=job.id,
+        actor_type="admin",
+        actor_id=str(user_id),
+        action="Admin cancelled job",
+        old_value={"status": previous_status},
+        new_value={"status": job.status},
+    ))
+    db.commit()
+    db.refresh(job)
+    return {"id": str(job.id), "status": job.status, "previous_status": previous_status}
+
 @app.get("/api/v1/admin/audit-logs")
-def get_admin_audit_logs(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def get_admin_audit_logs(
+    audit_user_id: Optional[UUID] = Query(None),
+    event_type: Optional[str] = Query(None),
+    entity_type: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
     from services.shared.models import AuditLog
 
     _require_admin(user_id)
-    rows = db.query(AuditLog).order_by(AuditLog.occurred_at.desc()).limit(100).all()
+    query = db.query(AuditLog)
+    if audit_user_id:
+        query = query.filter(AuditLog.user_id == audit_user_id)
+    if event_type:
+        query = query.filter(AuditLog.event_type == event_type)
+    if entity_type:
+        query = query.filter(AuditLog.entity_type == entity_type)
+    if action:
+        query = query.filter(AuditLog.action.ilike(f"%{action}%"))
+    rows = query.order_by(AuditLog.occurred_at.desc()).limit(limit).all()
     return {
         "audit_logs": [
             {
@@ -1086,7 +1488,7 @@ def _require_pa_access(db: Session, user_id: UUID) -> dict:
             status_code=402,
             detail={
                 "code": "upgrade_required",
-                "message": "NEXUS PA requires Pro access.",
+                "message": "Arceus PA requires Pro access.",
                 "access": access,
             },
         )
@@ -1111,7 +1513,7 @@ def post_pa_os_status(request: PAOSStateRequest, user_id: UUID = Depends(get_cur
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
-        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires access", "access": access})
+        raise HTTPException(status_code=402, detail={"message": "Arceus PA requires access", "access": access})
     set_pa_os_state(user_id, request.state)
     return {"access": access, **pa_os_status(db, user_id)}
 
@@ -1121,18 +1523,18 @@ def post_pa_emergency_stop(user_id: UUID = Depends(get_current_user_id), db: Ses
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
-        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires access", "access": access})
+        raise HTTPException(status_code=402, detail={"message": "Arceus PA requires access", "access": access})
     stop = emergency_stop(user_id)
     return {"access": access, **pa_os_status(db, user_id), "emergency": stop}
 
 @app.get("/api/v1/pa/daily-brief")
 def get_pa_daily_brief(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .jarvis_planner import daily_brief
+    from .pa_service import get_cached_daily_brief
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
         return {"access": access, "locked": True}
-    return {"access": access, **daily_brief(db, user_id)}
+    return {"access": access, **get_cached_daily_brief(db, user_id, force_refresh=False)}
 
 @app.post("/api/v1/pa/schedule")
 def post_pa_schedule(request: PAScheduleRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -1140,7 +1542,7 @@ def post_pa_schedule(request: PAScheduleRequest, user_id: UUID = Depends(get_cur
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
-        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+        raise HTTPException(status_code=402, detail={"message": "Arceus PA requires Pro", "access": access})
     return smart_schedule(db, user_id, request.task, request.duration_minutes, request.deadline)
 
 @app.post("/api/v1/pa/meeting-prep")
@@ -1149,7 +1551,7 @@ def post_pa_meeting_prep(request: PAMeetingPrepRequest, user_id: UUID = Depends(
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
-        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+        raise HTTPException(status_code=402, detail={"message": "Arceus PA requires Pro", "access": access})
     return meeting_prep(db, user_id, request.meeting_context)
 
 @app.get("/api/v1/pa/end-of-day")
@@ -1167,7 +1569,7 @@ def post_pa_delegate(request: PADelegateRequest, user_id: UUID = Depends(get_cur
 
     access = _pa_access(db, user_id)
     if not access["allowed"]:
-        raise HTTPException(status_code=402, detail={"message": "NEXUS PA requires Pro", "access": access})
+        raise HTTPException(status_code=402, detail={"message": "Arceus PA requires Pro", "access": access})
     return delegate_task(db, user_id, request.instruction)
 
 @app.get("/api/v1/pa/weekly-reflection")
@@ -1195,12 +1597,44 @@ def get_pa_today(user_id: UUID = Depends(get_current_user_id), db: Session = Dep
     access = _require_pa_access(db, user_id)
     return {"access": access, **pa_today(db, user_id)}
 
-@app.post("/api/v1/pa/command")
-def post_pa_command(request: PACommandRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .pa_service import handle_command
+@app.get("/api/v1/pa/settings")
+def get_pa_settings_endpoint(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import get_pa_settings
+
+    access = _require_pa_access(db, user_id)
+    return {"access": access, "settings": get_pa_settings(db, user_id)}
+
+@app.patch("/api/v1/pa/settings")
+def patch_pa_settings(request: PASettingsRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import update_pa_settings
+
+    access = _require_pa_access(db, user_id)
+    return {"access": access, "settings": update_pa_settings(db, user_id, request.model_dump(exclude_unset=True))}
+
+@app.post("/api/v1/pa/daily-brief")
+def post_pa_daily_brief_refresh(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .billing import check_entitlement
+    from .pa_service import get_cached_daily_brief
     from .usage import record_usage
 
     access = _require_pa_access(db, user_id)
+    entitlement = check_entitlement(db, user_id, "pa_daily_brief")
+    if not entitlement.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Daily brief refresh limit reached", "access": entitlement})
+    brief = get_cached_daily_brief(db, user_id, force_refresh=True)
+    record_usage(db, user_id, "/api/v1/pa/daily-brief", None, "autonomus-pa", None, "refresh daily brief", json.dumps(brief))
+    return {"access": access, **brief}
+
+@app.post("/api/v1/pa/command")
+def post_pa_command(request: PACommandRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import handle_command
+    from .billing import check_entitlement
+    from .usage import record_usage
+
+    access = _require_pa_access(db, user_id)
+    entitlement = check_entitlement(db, user_id, "pa_command")
+    if not entitlement.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "PA command limit reached", "access": entitlement})
     result = handle_command(db, user_id, request.command)
     record_usage(db, user_id, "/api/v1/pa/command", None, "autonomus-pa", None, request.command, json.dumps(result))
     return {"access": access, **result}
@@ -1251,8 +1685,12 @@ def get_pa_reminders(user_id: UUID = Depends(get_current_user_id), db: Session =
 @app.post("/api/v1/pa/reminders", status_code=201)
 def post_pa_reminder(request: PAScheduleItemRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .pa_service import create_schedule
+    from .billing import check_entitlement
 
     _require_pa_access(db, user_id)
+    entitlement = check_entitlement(db, user_id, "pa_reminder")
+    if not entitlement.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Reminder limit reached", "access": entitlement})
     return create_schedule(db, user_id, title=request.title, pa_type="reminder", next_run_at=request.next_run_at, trigger=request.trigger, permission=request.permission, payload=request.payload)
 
 @app.patch("/api/v1/pa/reminders/{reminder_id}")
@@ -1285,9 +1723,16 @@ def get_pa_automations(user_id: UUID = Depends(get_current_user_id), db: Session
 @app.post("/api/v1/pa/automations", status_code=201)
 def post_pa_automation(request: PAScheduleItemRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .pa_service import create_schedule
+    from .billing import check_entitlement
 
     _require_pa_access(db, user_id)
-    return create_schedule(db, user_id, title=request.title, pa_type="automation", next_run_at=request.next_run_at, trigger=request.trigger, permission=request.permission, payload=request.payload)
+    entitlement = check_entitlement(db, user_id, "pa_automation")
+    if not entitlement.get("allowed"):
+        raise HTTPException(status_code=402, detail={"message": "Automation limit reached", "access": entitlement})
+    try:
+        return create_schedule(db, user_id, title=request.title, pa_type="automation", next_run_at=request.next_run_at, trigger=request.trigger, permission=request.permission, payload=request.payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "pa_paused", "message": str(exc)})
 
 @app.patch("/api/v1/pa/automations/{automation_id}")
 def patch_pa_automation(automation_id: UUID, request: PAScheduleItemUpdateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -1323,8 +1768,22 @@ def post_pa_pause(user_id: UUID = Depends(get_current_user_id), db: Session = De
     _require_pa_access(db, user_id)
     return pause_pa(db, user_id)
 
+@app.post("/api/v1/pa/emergency-pause")
+def post_pa_emergency_pause(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import pause_pa
+
+    _require_pa_access(db, user_id)
+    return pause_pa(db, user_id)
+
 @app.post("/api/v1/pa/resume")
 def post_pa_resume(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .pa_service import resume_pa
+
+    _require_pa_access(db, user_id)
+    return resume_pa(db, user_id)
+
+@app.post("/api/v1/pa/emergency-resume")
+def post_pa_emergency_resume(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .pa_service import resume_pa
 
     _require_pa_access(db, user_id)
@@ -1503,7 +1962,7 @@ def import_local_workspace_session(
     from pathlib import Path
     from services.shared.models import CodeProject, CodeSession, FileReference
     from .file_service import put_object, storage_provider
-    from .code_workspace import refresh_file_tree, serialize_code_session, _activity
+    from .code_workspace import active_session_for_project, create_code_session, find_project_by_local_path, refresh_file_tree, serialize_code_session, _activity
 
     if not settings.LOCAL_WORKSPACE_IMPORT_ENABLED:
         raise HTTPException(status_code=403, detail="Local workspace import is disabled on this deployment.")
@@ -1522,12 +1981,34 @@ def import_local_workspace_session(
     local_path = str(local_root)
     project_name = local_root.name or "Local Project"
 
+    existing_project = find_project_by_local_path(db, user_id, local_path)
+    if existing_project:
+        existing_project.last_opened_at = datetime.now(timezone.utc)
+        db.commit()
+        session = active_session_for_project(db, user_id, existing_project)
+        if not session:
+            session = create_code_session(db, user_id, f"{existing_project.name} workspace", existing_project.file_ids or [], project_id=existing_project.id)
+            metadata = session.metadata_json or {}
+            metadata["local_workspace_path"] = local_path
+            session.metadata_json = metadata
+            db.commit()
+            db.refresh(session)
+        payload = serialize_code_session(db, user_id, session)
+        payload["reused_project"] = True
+        payload["skipped_errors"] = []
+        return payload
+
     # 1. Create project
     project = CodeProject(
         user_id=user_id,
         name=project_name,
         description=f"Local project imported from {local_path}",
-        status="active"
+        status="active",
+        metadata_json={
+            "created_from": "electron_local_folder",
+            "local_workspace_path": local_path,
+            "workspace_mode": "local_trusted",
+        },
     )
     db.add(project)
     db.commit()
@@ -1553,7 +2034,8 @@ def import_local_workspace_session(
     db.refresh(session)
 
     # 3. Recursively scan files and save references
-    ignore_dirs = {".git", "node_modules", ".venv", "venv", ".next", "dist", "build", "__pycache__", ".pytest_cache"}
+    ignore_dirs = {".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".next", "dist", "build", "coverage", "__pycache__", "pycache", ".pytest_cache", ".turbo", ".cache"}
+    ignore_suffixes = {".pyc", ".pyo", ".map"}
     file_ids = []
     skipped_errors = []
 
@@ -1562,6 +2044,8 @@ def import_local_workspace_session(
         dirs[:] = [d for d in dirs if d not in ignore_dirs]
         for file in files:
             filepath = os.path.join(root_dir, file)
+            if Path(file).suffix.lower() in ignore_suffixes or file.lower().endswith(".min.js"):
+                continue
             if os.path.islink(filepath) or os.path.getsize(filepath) > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
                 continue
             try:
@@ -1609,6 +2093,7 @@ def import_local_workspace_session(
             break
 
     session.file_ids = file_ids
+    project.file_ids = file_ids
     db.commit()
     db.refresh(session)
 
@@ -1628,24 +2113,30 @@ def sync_local_workspace_file(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    import os
     import hashlib
     import uuid
     from pathlib import Path
-    from services.shared.models import CodeSession, FileReference
+    from services.shared.models import FileReference
     from .file_service import put_object, storage_provider
-    from .code_workspace import refresh_file_tree, serialize_code_session
+    from .code_workspace import _safe_local_workspace_file, get_code_session, refresh_file_tree, serialize_code_session
     
-    session = db.query(CodeSession).filter(CodeSession.id == session_id, CodeSession.user_id == user_id).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
         
-    local_path = session.metadata_json.get("local_workspace_path")
+    local_path = (session.metadata_json or {}).get("local_workspace_path")
     if not local_path:
         raise HTTPException(status_code=400, detail="Not a local workspace session")
         
     rel_path = request.relative_path.replace("\\", "/")
-    filepath = os.path.join(local_path, rel_path)
+    filepath = _safe_local_workspace_file(session, rel_path)
+    owner_user_id = session.user_id
+
+    def skipped(reason: str, **extra):
+        refresh_file_tree(db, owner_user_id, session)
+        payload = serialize_code_session(db, owner_user_id, session)
+        payload["status"] = "skipped"
+        payload["skipped"] = {"reason": reason, "relative_path": rel_path, **extra}
+        return payload
     
     if request.action == "unlink":
         record = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == rel_path).first()
@@ -1655,29 +2146,34 @@ def sync_local_workspace_file(
                 session.file_ids = [fid for fid in session.file_ids if fid != str(record.id)]
             db.commit()
     else:
-        if not os.path.exists(filepath):
-            raise HTTPException(status_code=404, detail="File does not exist locally")
+        if not filepath.exists() or not filepath.is_file():
+            return skipped("missing")
             
-        if os.path.getsize(filepath) > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
-            raise HTTPException(status_code=400, detail="File too large")
+        size_bytes = filepath.stat().st_size
+        if size_bytes > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
+            return skipped(
+                "file_too_large",
+                size_bytes=size_bytes,
+                max_bytes=settings.LOCAL_WORKSPACE_MAX_FILE_BYTES,
+            )
             
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        with filepath.open("r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
             
         if "\x00" in content:
-            raise HTTPException(status_code=400, detail="Binary files are not supported")
+            return skipped("binary_file", size_bytes=size_bytes)
             
         record = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == rel_path).first()
         if not record:
             record = FileReference(
-                user_id=user_id,
+                user_id=owner_user_id,
                 filename=rel_path,
                 size_bytes=len(content.encode("utf-8")),
                 owner_type="code_workspace",
                 owner_id=session.id,
                 storage_provider=storage_provider(),
                 bucket=settings.S3_BUCKET,
-                object_key=f"users/{user_id}/code/{session.id}/{uuid.uuid4()}{Path(rel_path).suffix or '.txt'}",
+                object_key=f"users/{owner_user_id}/code/{session.id}/{uuid.uuid4()}{Path(rel_path).suffix or '.txt'}",
                 content_type="text/plain",
                 checksum_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 status="active",
@@ -1694,6 +2190,116 @@ def sync_local_workspace_file(
         put_object(record.object_key, content.encode("utf-8"), "text/plain")
         db.commit()
         
+    refresh_file_tree(db, owner_user_id, session)
+    return serialize_code_session(db, owner_user_id, session)
+
+
+def _local_session_for_file_operation(db: Session, user_id: UUID, session_id: UUID):
+    from .code_workspace import _safe_local_workspace_file, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    if not (session.metadata_json or {}).get("local_workspace_path"):
+        raise HTTPException(status_code=400, detail="Not a local trusted workspace session")
+    return session, _safe_local_workspace_file
+
+
+@app.post("/api/v1/code/sessions/{session_id}/files/create", status_code=201)
+def create_local_workspace_file_endpoint(
+    session_id: UUID,
+    request: CodeLocalFileCreateRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session, safe_file = _local_session_for_file_operation(db, user_id, session_id)
+    target = safe_file(session, request.path)
+    if target.exists():
+        raise HTTPException(status_code=409, detail="File already exists")
+    data = request.content.encode("utf-8")
+    if len(data) > settings.LOCAL_WORKSPACE_MAX_FILE_BYTES:
+        raise HTTPException(status_code=400, detail="File is too large")
+    target.write_bytes(data)
+    return sync_local_workspace_file(session_id, CodeSessionSyncLocalFileRequest(action="add", relative_path=request.path), user_id, db)
+
+
+@app.post("/api/v1/code/sessions/{session_id}/files/mkdir", status_code=201)
+def create_local_workspace_folder_endpoint(
+    session_id: UUID,
+    request: CodeLocalFolderCreateRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session, safe_file = _local_session_for_file_operation(db, user_id, session_id)
+    folder_path = request.path.replace("\\", "/").strip("/")
+    target = safe_file(session, f"{folder_path}/.arceus-folder")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    from .code_workspace import refresh_file_tree, serialize_code_session
+
+    refresh_file_tree(db, user_id, session)
+    return serialize_code_session(db, user_id, session)
+
+
+@app.delete("/api/v1/code/sessions/{session_id}/files/delete")
+def delete_local_workspace_item_endpoint(
+    session_id: UUID,
+    request: CodeLocalFileDeleteRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    import shutil
+    from services.shared.models import FileReference
+    from .code_workspace import refresh_file_tree, serialize_code_session
+
+    session, safe_file = _local_session_for_file_operation(db, user_id, session_id)
+    rel_path = request.path.replace("\\", "/").strip("/")
+    target = safe_file(session, rel_path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path does not exist")
+    if target.is_dir():
+        shutil.rmtree(target)
+        records = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename.like(f"{rel_path}/%")).all()
+    else:
+        target.unlink()
+        records = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == rel_path).all()
+    removed_ids = {str(record.id) for record in records}
+    for record in records:
+        db.delete(record)
+    session.file_ids = [file_id for file_id in (session.file_ids or []) if file_id not in removed_ids]
+    db.commit()
+    refresh_file_tree(db, user_id, session)
+    return serialize_code_session(db, user_id, session)
+
+
+@app.patch("/api/v1/code/sessions/{session_id}/files/rename")
+def rename_local_workspace_item_endpoint(
+    session_id: UUID,
+    request: CodeLocalFileRenameRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from services.shared.models import FileReference
+    from .code_workspace import refresh_file_tree, serialize_code_session
+
+    session, safe_file = _local_session_for_file_operation(db, user_id, session_id)
+    from_rel = request.from_path.replace("\\", "/").strip("/")
+    to_rel = request.to_path.replace("\\", "/").strip("/")
+    source = safe_file(session, from_rel)
+    target = safe_file(session, to_rel)
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="Source path does not exist")
+    if target.exists():
+        raise HTTPException(status_code=409, detail="Destination already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+    if target.is_dir():
+        records = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename.like(f"{from_rel}/%")).all()
+        for record in records:
+            record.filename = f"{to_rel}/{record.filename[len(from_rel) + 1:]}"
+    else:
+        record = db.query(FileReference).filter(FileReference.owner_id == session.id, FileReference.filename == from_rel).first()
+        if record:
+            record.filename = to_rel
+    db.commit()
     refresh_file_tree(db, user_id, session)
     return serialize_code_session(db, user_id, session)
 
@@ -1718,6 +2324,21 @@ def list_code_projects_endpoint(
     projects = list_code_projects(db, user_id)
     return [serialize_code_project(project, active_session_for_project(db, user_id, project)) for project in projects]
 
+
+@app.get("/api/v1/code/projects/by-path")
+def get_code_project_by_path_endpoint(
+    path: str = Query(..., min_length=1),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import active_session_for_project, find_project_by_local_path, serialize_code_project
+
+    project = find_project_by_local_path(db, user_id, path)
+    if not project:
+        raise HTTPException(status_code=404, detail="No project is linked to this local path")
+    return serialize_code_project(project, active_session_for_project(db, user_id, project))
+
+
 @app.post("/api/v1/code/projects", status_code=201)
 def create_code_project_endpoint(
     request: CodeProjectCreate,
@@ -1729,6 +2350,22 @@ def create_code_project_endpoint(
     project, session = create_code_project(db, user_id, request.name, request.description, request.repo_url, request.file_ids)
     return {**serialize_code_project(project, session), "session": {"id": str(session.id), "title": session.title}}
 
+
+@app.post("/api/v1/code/projects/merge", status_code=201)
+def merge_code_projects_endpoint(
+    request: CodeProjectMergeRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import merge_code_projects, serialize_code_project, serialize_code_session
+
+    project, session, merge_result = merge_code_projects(db, user_id, request.source_project_ids, request.name)
+    return {
+        **serialize_code_project(project, session),
+        "session": serialize_code_session(db, user_id, session),
+        "merge": merge_result,
+    }
+
 @app.get("/api/v1/code/projects/{project_id}")
 def get_code_project_endpoint(
     project_id: UUID,
@@ -1739,6 +2376,36 @@ def get_code_project_endpoint(
 
     project = get_code_project(db, user_id, project_id)
     return serialize_code_project(project, active_session_for_project(db, user_id, project))
+
+
+@app.get("/api/v1/code/projects/{project_id}/sessions")
+def list_code_project_sessions_endpoint(
+    project_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_project, serialize_code_session, sessions_for_project
+
+    get_code_project(db, user_id, project_id)
+    return [
+        serialize_code_session(db, user_id, session, include_files=False)
+        for session in sessions_for_project(db, user_id, project_id)
+    ]
+
+
+@app.post("/api/v1/code/projects/{project_id}/sessions", status_code=201)
+def create_code_project_session_endpoint(
+    project_id: UUID,
+    request: CodeSessionCreate,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import create_code_session, get_code_project, serialize_code_session
+
+    project = get_code_project(db, user_id, project_id)
+    file_ids = request.file_ids or project.file_ids or []
+    session = create_code_session(db, user_id, request.title or f"{project.name} chat", file_ids, project_id=project.id)
+    return serialize_code_session(db, user_id, session)
 
 @app.patch("/api/v1/code/projects/{project_id}")
 def update_code_project_endpoint(
@@ -1763,6 +2430,112 @@ def archive_code_project_endpoint(
     update_code_project(db, user_id, project_id, status="archived")
     return {"archived": True, "project_id": str(project_id)}
 
+def _normalize_project_role(role: str) -> str:
+    lowered = (role or "viewer").strip().lower()
+    if lowered in {"owner", "admin"}:
+        return "owner"
+    if lowered in {"editor", "developer", "write"}:
+        return "editor"
+    return "viewer"
+
+
+@app.post("/api/v1/code/projects/{project_id}/invite", status_code=201)
+@app.post("/api/v1/projects/{project_id}/invite", status_code=201)
+def invite_code_project_member_endpoint(
+    project_id: UUID,
+    request: CodeProjectInviteRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import active_session_for_project, create_code_session, get_code_project, require_project_role
+    from services.shared.models import AuditLog, CodeSession, User, WorkspaceMember
+
+    project = get_code_project(db, user_id, project_id)
+    actor_role = require_project_role(db, user_id, project_id, "owner")
+    role = "editor" if _normalize_project_role(request.role) == "owner" else _normalize_project_role(request.role)
+    email = request.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid invite email is required")
+    invitee = db.query(User).filter(User.email == email).first()
+    metadata = dict(project.metadata_json or {})
+    if not invitee:
+        pending = list(metadata.get("pending_invites") or [])
+        token = uuid.uuid4().hex
+        pending = [item for item in pending if item.get("email") != email]
+        pending.append({"email": email, "role": role, "token": token, "invited_by": str(user_id), "created_at": datetime.now(timezone.utc).isoformat()})
+        metadata["pending_invites"] = pending
+        project.metadata_json = metadata
+        db.add(AuditLog(user_id=user_id, session_id=None, event_type="project.invite.pending", entity_type="code_project", entity_id=project.id, actor_type="user", actor_id=str(user_id), action="Created pending project invite", new_value={"email": email, "role": role}))
+        db.commit()
+        return {"status": "pending", "email": email, "role": role, "token": token, "message": "No Arceus user exists for this email yet. Pending invite stored on the project."}
+    sessions = db.query(CodeSession).filter(CodeSession.project_id == project.id, CodeSession.status != "deleted").all()
+    if not sessions:
+        sessions = [create_code_session(db, user_id, f"{project.name} shared chat", project.file_ids or [], project_id=project.id)]
+    created = 0
+    for session in sessions:
+        existing = db.query(WorkspaceMember).filter(WorkspaceMember.code_session_id == session.id, WorkspaceMember.user_id == invitee.id).first()
+        if existing:
+            existing.role = role
+            existing.status = "active"
+        else:
+            db.add(WorkspaceMember(code_session_id=session.id, user_id=invitee.id, role=role, status="active"))
+            created += 1
+    db.add(AuditLog(user_id=user_id, session_id=sessions[0].id if sessions else None, event_type="project.member.invite", entity_type="code_project", entity_id=project.id, actor_type="user", actor_id=str(user_id), action="Invited project member", new_value={"email": email, "role": role, "actor_role": actor_role}))
+    db.commit()
+    return {"status": "active", "email": email, "user_id": str(invitee.id), "role": role, "sessions_granted": len(sessions), "created": created}
+
+
+@app.get("/api/v1/code/projects/{project_id}/members")
+@app.get("/api/v1/projects/{project_id}/members")
+def list_code_project_members_endpoint(project_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_project, require_project_role
+    from services.shared.models import CodeSession, User, WorkspaceMember
+
+    project = get_code_project(db, user_id, project_id)
+    require_project_role(db, user_id, project_id, "viewer")
+    owner = db.query(User).filter(User.id == project.user_id).first()
+    rows = (
+        db.query(WorkspaceMember, User)
+        .join(CodeSession, CodeSession.id == WorkspaceMember.code_session_id)
+        .join(User, User.id == WorkspaceMember.user_id)
+        .filter(CodeSession.project_id == project.id, WorkspaceMember.status == "active")
+        .all()
+    )
+    members = {}
+    if owner:
+        members[str(owner.id)] = {"user_id": str(owner.id), "email": owner.email, "name": owner.name, "role": "owner", "status": "active"}
+    order = {"viewer": 1, "editor": 2, "developer": 2, "admin": 3, "owner": 4}
+    for membership, member in rows:
+        key = str(member.id)
+        current = members.get(key)
+        if not current or order.get(membership.role, 0) > order.get(current.get("role", ""), 0):
+            members[key] = {"user_id": key, "email": member.email, "name": member.name, "role": membership.role, "status": membership.status}
+    pending = (project.metadata_json or {}).get("pending_invites") or []
+    return {"project_id": str(project.id), "members": list(members.values()), "pending_invites": pending}
+
+
+@app.delete("/api/v1/code/projects/{project_id}/members/{member_user_id}")
+@app.delete("/api/v1/projects/{project_id}/members/{member_user_id}")
+def remove_code_project_member_endpoint(project_id: UUID, member_user_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_project, require_project_role
+    from services.shared.models import AuditLog, CodeSession, WorkspaceMember
+
+    project = get_code_project(db, user_id, project_id)
+    require_project_role(db, user_id, project_id, "owner")
+    if member_user_id == project.user_id:
+        raise HTTPException(status_code=400, detail="Project owner cannot be removed")
+    rows = (
+        db.query(WorkspaceMember)
+        .join(CodeSession, CodeSession.id == WorkspaceMember.code_session_id)
+        .filter(CodeSession.project_id == project.id, WorkspaceMember.user_id == member_user_id, WorkspaceMember.status == "active")
+        .all()
+    )
+    for row in rows:
+        row.status = "removed"
+    db.add(AuditLog(user_id=user_id, session_id=None, event_type="project.member.remove", entity_type="code_project", entity_id=project.id, actor_type="user", actor_id=str(user_id), action="Removed project member", old_value={"member_user_id": str(member_user_id), "count": len(rows)}))
+    db.commit()
+    return {"removed": len(rows), "project_id": str(project.id), "user_id": str(member_user_id)}
+
 @app.get("/api/v1/code/sessions")
 def list_code_sessions_endpoint(
     user_id: UUID = Depends(get_current_user_id),
@@ -1771,6 +2544,269 @@ def list_code_sessions_endpoint(
     from .code_workspace import list_code_sessions, serialize_code_session
 
     return [serialize_code_session(db, user_id, session, include_files=False) for session in list_code_sessions(db, user_id)]
+
+@app.post("/api/v1/orgs", status_code=201)
+def create_organization_endpoint(request: OrganizationCreateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import Membership, Organization, OrgBilling
+
+    safe_slug = (request.slug or request.name).strip().lower()
+    safe_slug = "".join(ch if ch.isalnum() else "-" for ch in safe_slug).strip("-")[:80] or f"org-{uuid.uuid4().hex[:8]}"
+    existing = db.query(Organization).filter(Organization.slug == safe_slug).first()
+    if existing:
+        safe_slug = f"{safe_slug}-{uuid.uuid4().hex[:6]}"
+    org = Organization(owner_user_id=user_id, name=request.name.strip()[:255], slug=safe_slug)
+    db.add(org)
+    db.flush()
+    db.add(Membership(organization_id=org.id, user_id=user_id, role="owner", status="active"))
+    db.add(OrgBilling(organization_id=org.id, plan_type="free", status="active", provider="internal", entitlements={"seat_limit": 1}))
+    db.commit()
+    return {"id": str(org.id), "name": org.name, "slug": org.slug, "role": "owner", "status": org.status}
+
+@app.get("/api/v1/orgs")
+def list_organizations_endpoint(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import Membership, Organization
+
+    rows = (
+        db.query(Organization, Membership)
+        .join(Membership, Membership.organization_id == Organization.id)
+        .filter(Membership.user_id == user_id, Membership.status == "active", Organization.status == "active")
+        .order_by(Organization.created_at.desc())
+        .all()
+    )
+    return [
+        {"id": str(org.id), "name": org.name, "slug": org.slug, "role": membership.role, "status": org.status}
+        for org, membership in rows
+    ]
+
+def _require_org_admin(db: Session, user_id: UUID, organization_id: UUID):
+    from services.shared.models import Membership
+
+    membership = (
+        db.query(Membership)
+        .filter(Membership.organization_id == organization_id, Membership.user_id == user_id, Membership.status == "active")
+        .first()
+    )
+    if not membership or membership.role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="Organization admin access required")
+    return membership
+
+
+ORG_PLAN_SEAT_LIMITS = {
+    "free": 1,
+    "starter": 1,
+    "pro": 5,
+    "team": 20,
+    "enterprise": None,
+}
+
+
+def _org_billing_summary(db: Session, organization_id: UUID) -> dict:
+    from sqlalchemy import func
+    from services.shared.models import Membership, OrgBilling, TeamInvite
+
+    billing = (
+        db.query(OrgBilling)
+        .filter(OrgBilling.organization_id == organization_id)
+        .order_by(OrgBilling.created_at.desc())
+        .first()
+    )
+    if not billing:
+        billing = OrgBilling(
+            organization_id=organization_id,
+            plan_type="free",
+            status="active",
+            provider="internal",
+            entitlements={"seat_limit": 1},
+        )
+        db.add(billing)
+        db.flush()
+    entitlements = dict(billing.entitlements or {})
+    plan = (billing.plan_type or "free").lower()
+    configured_limit = entitlements.get("seat_limit")
+    seat_limit = configured_limit if configured_limit is not None else ORG_PLAN_SEAT_LIMITS.get(plan, 1)
+    active_members = int(
+        db.query(func.count(Membership.id))
+        .filter(Membership.organization_id == organization_id, Membership.status == "active")
+        .scalar() or 0
+    )
+    pending_invites = int(
+        db.query(func.count(TeamInvite.id))
+        .filter(TeamInvite.organization_id == organization_id, TeamInvite.status == "pending")
+        .scalar() or 0
+    )
+    used_seats = active_members + pending_invites
+    return {
+        "organization_id": str(organization_id),
+        "billing_id": str(billing.id),
+        "plan": plan,
+        "status": billing.status or "active",
+        "provider": billing.provider or "internal",
+        "seat_limit": seat_limit,
+        "active_members": active_members,
+        "pending_invites": pending_invites,
+        "used_seats": used_seats,
+        "remaining_seats": None if seat_limit is None else max(int(seat_limit) - used_seats, 0),
+    }
+
+
+def _require_org_seat_available(db: Session, organization_id: UUID) -> dict:
+    summary = _org_billing_summary(db, organization_id)
+    limit = summary["seat_limit"]
+    if limit is not None and summary["used_seats"] >= int(limit):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "ORG_SEAT_LIMIT",
+                "message": "This organization has reached its seat limit.",
+                "organization_id": str(organization_id),
+                "plan": summary["plan"],
+                "used": summary["used_seats"],
+                "limit": limit,
+                "upgrade_url": "/settings?tab=billing",
+            },
+        )
+    return summary
+
+
+@app.get("/api/v1/orgs/{organization_id}/billing")
+def get_org_billing_endpoint(
+    organization_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    _require_org_admin(db, user_id, organization_id)
+    return _org_billing_summary(db, organization_id)
+
+@app.post("/api/v1/orgs/{organization_id}/invites", status_code=201)
+def create_team_invite_endpoint(
+    organization_id: UUID,
+    request: TeamInviteRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from services.shared.models import TeamInvite
+
+    _require_org_admin(db, user_id, organization_id)
+    billing = _require_org_seat_available(db, organization_id)
+    role = request.role if request.role in {"admin", "developer", "viewer"} else "developer"
+    invite = TeamInvite(
+        organization_id=organization_id,
+        email=request.email.strip().lower()[:255],
+        role=role,
+        token=uuid.uuid4().hex,
+        status="pending",
+    )
+    db.add(invite)
+    db.commit()
+    return {"id": str(invite.id), "email": invite.email, "role": invite.role, "status": invite.status, "token": invite.token, "billing": billing}
+
+@app.patch("/api/v1/orgs/{organization_id}/members/{member_id}")
+def update_org_member_endpoint(
+    organization_id: UUID,
+    member_id: UUID,
+    request: MembershipUpdateRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from services.shared.models import Membership
+
+    _require_org_admin(db, user_id, organization_id)
+    membership = db.query(Membership).filter(Membership.id == member_id, Membership.organization_id == organization_id).first()
+    if not membership:
+        raise HTTPException(status_code=404, detail="Membership not found")
+    if request.role and request.role in {"owner", "admin", "developer", "viewer"}:
+        membership.role = request.role
+    if request.status and request.status in {"active", "disabled", "removed"}:
+        membership.status = request.status
+    db.commit()
+    return {
+        "id": str(membership.id),
+        "organization_id": str(membership.organization_id),
+        "user_id": str(membership.user_id),
+        "role": membership.role,
+        "status": membership.status,
+    }
+
+
+@app.get("/api/v1/auth/sso/status")
+def get_enterprise_sso_status(
+    org: str = Query(..., min_length=1),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .auth_enterprise import enterprise_sso_status
+
+    status = enterprise_sso_status(db, org)
+    return {**status, "requested_by": str(user_id)}
+
+
+@app.get("/api/v1/auth/sso/initiate")
+def initiate_enterprise_sso(
+    org: str = Query(..., min_length=1),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .auth_enterprise import build_sso_initiate_response
+
+    frontend_url = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+    return {**build_sso_initiate_response(db, org, frontend_url), "requested_by": str(user_id)}
+
+
+@app.post("/api/v1/auth/sso/callback")
+def enterprise_sso_callback(
+    org: str = Query(..., min_length=1),
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from .auth_enterprise import handle_sso_callback
+
+    return handle_sso_callback(db, org, code, state)
+
+
+@app.get("/api/v1/plugins/marketplace")
+def list_plugin_marketplace(user_id: UUID = Depends(get_current_user_id)):
+    from .plugins import list_marketplace_plugins
+
+    return {"plugins": list_marketplace_plugins(), "requested_by": str(user_id)}
+
+
+@app.get("/api/v1/plugins")
+def list_user_plugins(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .plugins import list_installed_plugins
+
+    return {"plugins": list_installed_plugins(db, user_id)}
+
+
+@app.post("/api/v1/plugins/install", status_code=201)
+def install_user_plugin(
+    request: PluginInstallRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .plugins import install_plugin
+
+    return install_plugin(db, user_id, request.manifest)
+
+
+@app.patch("/api/v1/plugins/{plugin_id}")
+def update_user_plugin_status(
+    plugin_id: UUID,
+    request: PluginStatusRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .plugins import set_plugin_status
+
+    return set_plugin_status(db, user_id, plugin_id, request.status)
+
+
+@app.delete("/api/v1/plugins/{plugin_id}")
+def uninstall_user_plugin(plugin_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .plugins import set_plugin_status
+
+    return set_plugin_status(db, user_id, plugin_id, "deleted")
+
 
 @app.get("/api/v1/code/sessions/{session_id}")
 def get_code_session_endpoint(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -1789,6 +2825,7 @@ def update_code_session_files_endpoint(
     from .code_workspace import get_code_session, serialize_code_session, update_session_files
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     session = update_session_files(db, user_id, session, request.file_ids)
     return serialize_code_session(db, user_id, session)
 
@@ -1803,6 +2840,8 @@ def import_code_session_zip(
     from .code_workspace import get_code_session, import_zip_project
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_file_storage")
     job = create_agent_job(db, user_id, session.id, "import", upload.filename or "project.zip")
     result = import_zip_project(db, user_id, session, upload)
     complete_job(db, job, "completed", result, files_touched=result.get("imported") or [])
@@ -1871,6 +2910,7 @@ def create_code_session_task(
     from .code_workspace import get_code_session, upsert_workspace_task
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     return upsert_workspace_task(db, user_id, session, request.model_dump(), status=request.status or "typed")
 
 @app.patch("/api/v1/code/tasks/{task_id}")
@@ -1907,6 +2947,69 @@ def analyze_code_session_workspace(session_id: UUID, user_id: UUID = Depends(get
     complete_job(db, job, "completed", result)
     return {**result, "job": serialize_job(job)}
 
+@app.post("/api/v1/code/sessions/{session_id}/index")
+def index_code_session_workspace(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return analyze_code_session_workspace(session_id, user_id, db)
+
+@app.get("/api/v1/code/sessions/{session_id}/symbols")
+def list_code_session_symbols(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import analyze_workspace_structure, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    analysis = (session.metadata_json or {}).get("workspace_analysis") or analyze_workspace_structure(db, user_id, session)
+    return {"symbols": analysis.get("symbols") or [], "summary": analysis.get("summary") or {}}
+
+@app.get("/api/v1/code/sessions/{session_id}/references")
+def list_code_session_references(
+    session_id: UUID,
+    symbol: str = Query(""),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, search_workspace_files
+
+    session = get_code_session(db, user_id, session_id)
+    if not symbol.strip():
+        return {"references": []}
+    search = search_workspace_files(db, user_id, session, symbol.strip())
+    return {"references": search.get("matches") or []}
+
+@app.get("/api/v1/code/sessions/{session_id}/related-files")
+def list_code_session_related_files(
+    session_id: UUID,
+    filename: str = Query(""),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import analyze_workspace_structure, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    analysis = (session.metadata_json or {}).get("workspace_analysis") or analyze_workspace_structure(db, user_id, session)
+    imports = analysis.get("imports") or []
+    related = []
+    for item in imports:
+        source = item.get("filename") or ""
+        target = item.get("target") or item.get("import") or ""
+        if filename and filename not in source and filename not in target:
+            continue
+        related.append(item)
+    return {"related_files": related[:50], "filename": filename}
+
+@app.get("/api/v1/code/sessions/{session_id}/semantic-search")
+def semantic_search_code_session(
+    session_id: UUID,
+    q: str = Query(""),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, search_workspace_files
+
+    session = get_code_session(db, user_id, session_id)
+    result = search_workspace_files(db, user_id, session, q)
+    result["mode"] = "text-symbol-static"
+    result["semantic_available"] = False
+    return result
+
 @app.get("/api/v1/code/sessions/{session_id}/commands")
 def list_code_session_commands(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import discover_workspace_commands, get_code_session
@@ -1920,6 +3023,8 @@ def sync_code_session_runtime(session_id: UUID, user_id: UUID = Depends(get_curr
     from .agent_jobs import create_agent_job, complete_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
     job = create_agent_job(db, user_id, session.id, "runtime_sync", "Sync workspace files into persistent runtime")
     result = sync_workspace_runtime(db, user_id, session)
     complete_job(db, job, "completed", result, files_touched=[{"filename": path} for path in result.get("files_written") or []])
@@ -1932,6 +3037,295 @@ def get_code_session_runtime_status(session_id: UUID, user_id: UUID = Depends(ge
     session = get_code_session(db, user_id, session_id)
     return workspace_runtime_status(db, user_id, session)
 
+@app.post("/api/v1/code/sessions/{session_id}/sandbox/start")
+def start_code_session_sandbox(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, sync_workspace_runtime, workspace_runtime_status, _metadata, _set_metadata
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(db, user_id, session.id, "sandbox_start", "Start workspace sandbox", approval_state="approved")
+    sync = sync_workspace_runtime(db, user_id, session)
+    metadata = _metadata(session)
+    metadata["sandbox_lifecycle"] = {
+        "status": "active",
+        "provider": settings.SANDBOX_PROVIDER,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "files_synced": len(sync.get("files_written") or []),
+    }
+    _set_metadata(session, metadata)
+    db.commit()
+    result = workspace_runtime_status(db, user_id, session)
+    complete_job(db, job, "completed", result, approval_state="approved")
+    return {**result, "sandbox": metadata["sandbox_lifecycle"], "job": serialize_job(job)}
+
+@app.post("/api/v1/code/sessions/{session_id}/sandbox/stop")
+def stop_code_session_sandbox(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, get_session_sandbox, _metadata, _set_metadata
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(db, user_id, session.id, "sandbox_stop", "Stop workspace sandbox", approval_state="approved")
+    stopped = False
+    try:
+        get_session_sandbox(session).cleanup()
+        stopped = True
+    except Exception:
+        stopped = False
+    metadata = _metadata(session)
+    lifecycle = dict(metadata.get("sandbox_lifecycle") or {})
+    lifecycle.update({"status": "stopped" if stopped else "failed", "stopped_at": datetime.now(timezone.utc).isoformat()})
+    metadata["sandbox_lifecycle"] = lifecycle
+    _set_metadata(session, metadata)
+    db.commit()
+    complete_job(db, job, "completed" if stopped else "failed", lifecycle, approval_state="approved")
+    return {"stopped": stopped, "sandbox": lifecycle, "job": serialize_job(job)}
+
+@app.get("/api/v1/code/sessions/{session_id}/sandbox/status")
+def get_code_session_sandbox_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import get_code_session, workspace_runtime_status
+
+    session = get_code_session(db, user_id, session_id)
+    metadata = session.metadata_json or {}
+    return {
+        "sandbox": metadata.get("sandbox_lifecycle") or {"status": "unknown", "provider": settings.SANDBOX_PROVIDER},
+        "runtime": workspace_runtime_status(db, user_id, session),
+    }
+
+@app.get("/api/v1/code/sessions/{session_id}/artifacts")
+def list_code_session_artifacts(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from services.shared.models import AgentJob, AgentJobArtifact
+    from .code_workspace import get_code_session, read_preview_logs
+
+    session = get_code_session(db, user_id, session_id)
+    jobs = (
+        db.query(AgentJob)
+        .filter(AgentJob.user_id == user_id, AgentJob.code_session_id == session.id)
+        .order_by(AgentJob.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    artifacts = []
+    durable_artifacts = (
+        db.query(AgentJobArtifact)
+        .filter(AgentJobArtifact.user_id == user_id, AgentJobArtifact.code_session_id == session.id)
+        .order_by(AgentJobArtifact.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    for artifact in durable_artifacts:
+        artifacts.append({
+            "id": str(artifact.id),
+            "job_id": str(artifact.job_id),
+            "kind": artifact.artifact_type,
+            "name": artifact.name,
+            "uri": artifact.uri,
+            "size_bytes": artifact.size_bytes,
+            "metadata": artifact.metadata_json or {},
+            "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+        })
+    for job in jobs:
+        result = job.result or {}
+        for artifact in result.get("artifacts") or []:
+            artifacts.append({"job_id": str(job.id), **artifact})
+        if result.get("screenshot_path") or result.get("html_snapshot_path"):
+            artifacts.append({
+                "job_id": str(job.id),
+                "kind": "preview_check",
+                "screenshot_path": result.get("screenshot_path"),
+                "html_snapshot_path": result.get("html_snapshot_path"),
+                "created_at": job.completed_at.isoformat() if job.completed_at else None,
+            })
+    preview_logs = read_preview_logs(session)
+    if preview_logs.get("logs"):
+        artifacts.append({"kind": "preview_logs", "status": preview_logs.get("status"), "issues": preview_logs.get("issues") or []})
+    return {"artifacts": artifacts, "count": len(artifacts)}
+
+@app.get("/api/v1/code/sessions/{session_id}/preview-artifact")
+def get_code_session_preview_artifact(
+    session_id: UUID,
+    path: str = Query(...),
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, _workspace_runtime_root
+
+    session = get_code_session(db, user_id, session_id)
+    artifact_root = (_workspace_runtime_root(session) / ".nexus" / "artifacts" / "preview").resolve()
+    target = Path(path).expanduser().resolve()
+    try:
+        target.relative_to(artifact_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Artifact path is outside this workspace preview directory.")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Preview artifact not found.")
+    media_type = "image/png" if target.suffix.lower() == ".png" else "text/html" if target.suffix.lower() == ".html" else "application/octet-stream"
+    return FileResponse(str(target), media_type=media_type, filename=target.name)
+
+@app.post("/api/v1/code/sessions/{session_id}/terminal")
+def create_code_terminal_session(
+    session_id: UUID,
+    request: CodeTerminalCreateRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import get_code_session, run_workspace_command, _metadata, _set_metadata
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    terminal_id = uuid.uuid4().hex
+    metadata = _metadata(session)
+    workspace_root = str(Path(settings.CODE_WORKSPACE_LOCAL_DIR) / str(session.id))
+    local_root = metadata.get("local_workspace_path")
+    terminals = dict(metadata.get("terminal_sessions") or {})
+    terminals[terminal_id] = {
+        "id": terminal_id,
+        "status": "active",
+        "cwd": local_root or workspace_root,
+        "provider": "backend-command",
+        "interactive": False,
+        "history": [],
+        "logs": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    metadata["terminal_sessions"] = terminals
+    _set_metadata(session, metadata)
+    db.commit()
+    job = None
+    result = None
+    if request.command.strip():
+        job = create_agent_job(db, user_id, session.id, "terminal", request.command, approval_state="approved" if request.approved else "none")
+        result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, request.approved, job)
+        metadata = _metadata(session)
+        terminals = dict(metadata.get("terminal_sessions") or {})
+        terminal = dict(terminals.get(terminal_id) or {})
+        terminal["history"] = (terminal.get("history") or []) + [request.command]
+        terminal["logs"] = (terminal.get("logs") or []) + [result]
+        terminal["status"] = result.get("status") or "active"
+        terminal["updated_at"] = datetime.now(timezone.utc).isoformat()
+        terminals[terminal_id] = terminal
+        metadata["terminal_sessions"] = terminals
+        _set_metadata(session, metadata)
+        db.commit()
+    return {"terminal_id": terminal_id, "terminal": (_metadata(session).get("terminal_sessions") or {}).get(terminal_id), "result": result, "job": serialize_job(job) if job else None}
+
+
+def _find_terminal_session_for_user(db: Session, user_id: UUID, terminal_id: str, minimum_role: str = "viewer"):
+    from services.shared.models import CodeSession
+    from .code_workspace import get_code_session
+
+    for item in db.query(CodeSession).all():
+        if terminal_id not in ((item.metadata_json or {}).get("terminal_sessions") or {}):
+            continue
+        session = get_code_session(db, user_id, item.id)
+        require_session_project_role(db, user_id, session, minimum_role)
+        return session
+    raise HTTPException(status_code=404, detail="Terminal session not found")
+
+
+@app.post("/api/v1/code/terminal/{terminal_id}/input")
+def send_code_terminal_input(
+    terminal_id: str,
+    request: CodeTerminalInputRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import run_workspace_command, _metadata, _set_metadata
+
+    target = _find_terminal_session_for_user(db, user_id, terminal_id, "editor")
+    command = request.input.strip()
+    if not command:
+        return {"terminal_id": terminal_id, "ignored": True}
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(db, user_id, target.id, "terminal_input", command, approval_state="none")
+    try:
+        result = run_workspace_command(db, user_id, target, command, 60, False, job)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        result = detail.get("result") or {
+            "command": command,
+            "status": "blocked" if exc.status_code in {400, 403} else "failed",
+            "output_excerpt": detail.get("message") or "Command failed.",
+            "policy": detail.get("policy") or {},
+            "ran_at": datetime.now(timezone.utc).isoformat(),
+        }
+        metadata = _metadata(target)
+        terminals = dict(metadata.get("terminal_sessions") or {})
+        terminal = dict(terminals.get(terminal_id) or {})
+        terminal["history"] = (terminal.get("history") or []) + [command]
+        terminal["logs"] = (terminal.get("logs") or []) + [result]
+        terminal["status"] = result.get("status") or "failed"
+        terminal["updated_at"] = datetime.now(timezone.utc).isoformat()
+        terminals[terminal_id] = terminal
+        metadata["terminal_sessions"] = terminals
+        _set_metadata(target, metadata)
+        db.commit()
+        return {"terminal_id": terminal_id, "terminal": terminal, "result": result, "job": serialize_job(job)}
+    metadata = _metadata(target)
+    terminals = dict(metadata.get("terminal_sessions") or {})
+    terminal = dict(terminals.get(terminal_id) or {})
+    terminal["history"] = (terminal.get("history") or []) + [command]
+    terminal["logs"] = (terminal.get("logs") or []) + [result]
+    terminal["status"] = result.get("status") or "active"
+    terminal["updated_at"] = datetime.now(timezone.utc).isoformat()
+    terminals[terminal_id] = terminal
+    metadata["terminal_sessions"] = terminals
+    _set_metadata(target, metadata)
+    db.commit()
+    return {"terminal_id": terminal_id, "terminal": terminal, "result": result, "job": serialize_job(job)}
+
+@app.post("/api/v1/code/terminal/{terminal_id}/kill")
+def kill_code_terminal(terminal_id: str, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import _metadata, _set_metadata
+
+    session = _find_terminal_session_for_user(db, user_id, terminal_id, "editor")
+    metadata = _metadata(session)
+    terminals = dict(metadata.get("terminal_sessions") or {})
+    terminal = dict(terminals[terminal_id])
+    terminal["status"] = "killed"
+    terminal["killed_at"] = datetime.now(timezone.utc).isoformat()
+    terminals[terminal_id] = terminal
+    metadata["terminal_sessions"] = terminals
+    _set_metadata(session, metadata)
+    db.commit()
+    return {"terminal_id": terminal_id, "terminal": terminal}
+
+@app.get("/api/v1/code/terminal/{terminal_id}/stream")
+def stream_code_terminal(terminal_id: str, user_id: UUID = Depends(get_current_user_id)):
+    import time
+    from services.shared.database import SessionLocal
+
+    def event_stream():
+        sent = 0
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            db_stream = SessionLocal()
+            try:
+                try:
+                    session = _find_terminal_session_for_user(db_stream, user_id, terminal_id, "viewer")
+                    terminal = ((session.metadata_json or {}).get("terminal_sessions") or {}).get(terminal_id)
+                except HTTPException:
+                    yield f"event: error\ndata: {json.dumps({'detail': 'Terminal session not found'})}\n\n"
+                    break
+                logs = terminal.get("logs") or []
+                for log in logs[sent:]:
+                    yield f"event: log\ndata: {json.dumps(log)}\n\n"
+                sent = len(logs)
+                yield f"event: status\ndata: {json.dumps({'status': terminal.get('status'), 'history': terminal.get('history') or []})}\n\n"
+                if terminal.get("status") in {"killed", "failed"}:
+                    break
+            finally:
+                db_stream.close()
+            time.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 @app.post("/api/v1/code/sessions/{session_id}/runtime/install")
 def install_code_session_runtime(
     session_id: UUID,
@@ -1939,11 +3333,25 @@ def install_code_session_runtime(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    from .agent_jobs import create_agent_job, serialize_job
+    from .agent_jobs import append_job_log, create_agent_job, serialize_job
     from .code_workspace import get_code_session, install_workspace_dependencies
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "runtime_install", request.command or "Install workspace dependencies", approval_state="approved" if request.approved else "pending")
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(
+        db,
+        user_id,
+        session.id,
+        "runtime_install",
+        request.command or "Install workspace dependencies",
+        approval_state="approved" if request.approved else "pending",
+        status="queued" if settings.CELERY_WORKER_ENABLED else "running",
+        metadata_json={"install_command": request.command, "approved": request.approved, "timeout_seconds": request.timeout_seconds},
+    )
+    if _enqueue_celery_job(str(job.id), "install"):
+        append_job_log(db, job, "start", "Queued dependency install in Celery", "Install worker accepted the job.")
+        return {"status": "queued", "job": serialize_job(job)}
     result = install_workspace_dependencies(db, user_id, session, request.command, request.approved, request.timeout_seconds, job)
     return {**result, "job": serialize_job(job)}
 
@@ -1958,6 +3366,7 @@ def run_code_session_runtime_command(
     from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
     job = create_agent_job(
         db,
         user_id,
@@ -1975,6 +3384,8 @@ def start_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_cur
     from .code_workspace import get_code_session, start_workspace_preview
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_preview_check")
     job = create_agent_job(db, user_id, session.id, "preview_start", "Start live workspace preview")
     result = start_workspace_preview(db, user_id, session, job)
     return {**result, "job": serialize_job(job)}
@@ -1985,6 +3396,7 @@ def stop_code_session_preview(session_id: UUID, user_id: UUID = Depends(get_curr
     from .code_workspace import get_code_session, stop_workspace_preview
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     job = create_agent_job(db, user_id, session.id, "preview_stop", "Stop live workspace preview")
     result = stop_workspace_preview(db, session, job)
     return {**result, "job": serialize_job(job)}
@@ -2048,29 +3460,58 @@ async def proxy_code_session_preview_root(session_id: UUID, request: Request, to
 
 @app.post("/api/v1/code/sessions/{session_id}/plan")
 def plan_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .code_workspace import generate_plan, get_code_session
+    from .code_workspace import build_work_receipt, generate_plan, get_code_session
     from .agent_jobs import create_agent_job, serialize_job
     from .usage import record_usage
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_generation")
     job = create_agent_job(db, user_id, session.id, "plan", request.instruction)
-    plan = generate_plan(db, user_id, session, request.instruction, provider, model, job)
-    record_usage(db, user_id, "/api/v1/code/plan", provider, model, str(session_id), request.instruction, plan, session.file_ids)
-    return {"plan": plan, "job": serialize_job(job)}
+    plan = generate_plan(db, user_id, session, request.instruction, provider, model, job, file_ids=request.file_ids or None)
+    record_usage(db, user_id, "/api/v1/code/plan", provider, model, str(session_id), request.instruction, plan, request.file_ids or session.file_ids)
+    return {
+        "plan": plan,
+        "job": serialize_job(job),
+        "work_receipt": build_work_receipt(
+            session,
+            summary="Implementation plan prepared.",
+            mode="plan",
+            intent="Plan",
+            plan=plan,
+            approval_state="done",
+        ),
+    }
 
 @app.post("/api/v1/code/sessions/{session_id}/patch")
 def patch_code_session(session_id: UUID, request: CodeInstructionRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .code_workspace import generate_patch, get_code_session
+    from .code_workspace import build_work_receipt, generate_patch, get_code_session
     from .agent_jobs import create_agent_job, serialize_job
     from .usage import record_usage
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_generation")
     job = create_agent_job(db, user_id, session.id, "patch", request.instruction, approval_state="pending")
-    patch = generate_patch(db, user_id, session, request.instruction, provider, model, job)
-    record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, session.file_ids)
-    return {"patch": patch, "session_id": str(session.id), "patch_preview": (session.metadata_json or {}).get("patch_preview") or [], "job": serialize_job(job)}
+    patch = generate_patch(db, user_id, session, request.instruction, provider, model, job, file_ids=request.file_ids or None)
+    record_usage(db, user_id, "/api/v1/code/patch", provider, model, str(session_id), request.instruction, patch, request.file_ids or session.file_ids)
+    preview = (session.metadata_json or {}).get("patch_preview") or []
+    return {
+        "patch": patch,
+        "session_id": str(session.id),
+        "patch_preview": preview,
+        "job": serialize_job(job),
+        "work_receipt": build_work_receipt(
+            session,
+            summary=f"Prepared {len(preview) or 1} reviewable change{'s' if len(preview) != 1 else ''}.",
+            mode="code",
+            intent="Build",
+            preview=preview,
+            approval_state="waiting approval",
+        ),
+    }
 
 class CreatePullRequestRequest(BaseModel):
     branch_name: str
@@ -2088,6 +3529,7 @@ def create_session_pr(
     from .github_service import create_pull_request
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     if not session.project:
         raise HTTPException(status_code=400, detail="This session is not associated with any Code Project.")
 
@@ -2114,6 +3556,7 @@ def approve_patch_hunk(
     from .code_workspace import get_code_session, _metadata, _set_metadata
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     metadata = _metadata(session)
     hunks_state = metadata.get("patch_hunks_state") or {}
     hunks_state[hunk_id] = "approved"
@@ -2139,6 +3582,7 @@ def reject_patch_hunk(
     from .code_workspace import get_code_session, _metadata, _set_metadata
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     metadata = _metadata(session)
     hunks_state = metadata.get("patch_hunks_state") or {}
     hunks_state[hunk_id] = "rejected"
@@ -2153,6 +3597,25 @@ def reject_patch_hunk(
     _set_metadata(session, metadata)
     db.commit()
     return {"status": "success", "hunk_id": hunk_id, "state": "rejected"}
+
+@app.post("/api/v1/code/sessions/{session_id}/hunks/reset")
+def reset_patch_hunk_review(
+    session_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session, preview_patch_payload, _metadata, _set_metadata
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    metadata = _metadata(session)
+    metadata["patch_hunks_state"] = {}
+    for file_prev in metadata.get("patch_preview") or []:
+        for hunk in file_prev.get("hunks") or []:
+            hunk["status"] = "pending"
+    _set_metadata(session, metadata)
+    db.commit()
+    return {"status": "reset", "patch_preview": preview_patch_payload(db, user_id, session)}
 
 @app.get("/api/v1/code/sessions/{session_id}/diagnostics")
 def get_session_diagnostics(
@@ -2224,6 +3687,69 @@ def _run_code_background_job(
     finally:
         db.close()
 
+
+def _enqueue_celery_job(job_id: str, task: str = "agent") -> bool:
+    if not settings.CELERY_WORKER_ENABLED:
+        return False
+    try:
+        from .agent_jobs import update_job_metadata
+        from services.shared.database import SessionLocal
+        from services.shared.models import AgentJob
+        from worker.tasks import run_agent_task, run_install_deps, run_preview_check, run_workspace_checks
+
+        task_map = {
+            "agent": run_agent_task,
+            "checks": run_workspace_checks,
+            "install": run_install_deps,
+            "preview": run_preview_check,
+        }
+        async_result = task_map.get(task, run_agent_task).delay(job_id)
+        db_task = SessionLocal()
+        try:
+            job = db_task.query(AgentJob).filter(AgentJob.id == UUID(str(job_id))).first()
+            if job:
+                update_job_metadata(db_task, job, {"worker_backend": "celery", "celery_task_id": async_result.id, "celery_task": task})
+        finally:
+            db_task.close()
+        return True
+    except Exception as exc:
+        try:
+            from .agent_jobs import append_job_log, update_job_metadata
+            from services.shared.database import SessionLocal
+            from services.shared.models import AgentJob
+
+            db_task = SessionLocal()
+            try:
+                job = db_task.query(AgentJob).filter(AgentJob.id == UUID(str(job_id))).first()
+                if job:
+                    update_job_metadata(db_task, job, {
+                        "worker_backend": "celery",
+                        "celery_task": task,
+                        "dispatch_error": str(exc),
+                        "dispatch_failed_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    append_job_log(db_task, job, "error", "Celery dispatch failed", str(exc)[:1000])
+            finally:
+                db_task.close()
+        except Exception:
+            pass
+        return False
+
+
+def _fail_unavailable_celery_job(db: Session, job, task: str = "agent") -> None:
+    from .agent_jobs import complete_job
+
+    complete_job(db, job, "failed", {
+        "error": "worker_unavailable",
+        "detail": "Celery worker dispatch failed while CELERY_WORKER_ENABLED=true. Start Redis/Celery worker or disable CELERY_WORKER_ENABLED for local fallback.",
+        "worker_backend": "celery",
+        "celery_task": task,
+    })
+
+
+def _enqueue_celery_agent_job(job_id: str) -> bool:
+    return _enqueue_celery_job(job_id, "agent")
+
 @app.post("/api/v1/code/sessions/{session_id}/run-background", status_code=202)
 def run_code_session_background(
     session_id: UUID,
@@ -2236,6 +3762,8 @@ def run_code_session_background(
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_job")
     mode = request.mode if request.mode in {"plan", "code"} else "code"
 
     # Enqueue job with queued status and pass model configurations
@@ -2247,9 +3775,16 @@ def run_code_session_background(
         request.instruction,
         approval_state="pending" if mode == "code" else "none",
         status="queued",
-        metadata_json={"llm_provider": provider, "llm_model": model}
+        metadata_json={"llm_provider": provider, "llm_model": model, "file_ids": request.file_ids or []}
     )
-    return {"status": "queued", "job": serialize_job(job)}
+    dispatched = _enqueue_celery_agent_job(str(job.id))
+    if dispatched:
+        from .agent_jobs import append_job_log, update_job_metadata
+        append_job_log(db, job, "start", "Queued in Celery", "Production worker accepted the job.")
+        update_job_metadata(db, job, {"worker_backend": "celery"})
+    elif settings.CELERY_WORKER_ENABLED:
+        _fail_unavailable_celery_job(db, job, "agent")
+    return {"status": job.status, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/agent-loop")
 async def run_code_session_agent_loop(
@@ -2264,6 +3799,8 @@ async def run_code_session_agent_loop(
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_job")
     job = create_agent_job(db, user_id, session.id, "agent_loop", request.task)
     result = await run_controlled_workspace_agent(
         db,
@@ -2285,6 +3822,39 @@ def preview_code_session_patch(session_id: UUID, user_id: UUID = Depends(get_cur
     session = get_code_session(db, user_id, session_id)
     return {"patch_preview": preview_patch_payload(db, user_id, session)}
 
+@app.get("/api/v1/code/sessions/{session_id}/check-conflicts")
+def check_code_session_patch_conflicts(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .code_workspace import check_patch_conflicts, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    return check_patch_conflicts(db, user_id, session)
+
+@app.get("/api/v1/code/sessions/{session_id}/activity")
+def get_code_session_activity(
+    session_id: UUID,
+    group_by: Optional[str] = None,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .code_workspace import get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    events = list((session.metadata_json or {}).get("activity_log") or [])
+    if group_by != "task":
+        return {"activity": events}
+    grouped: dict[str, list[dict]] = {}
+    for event in events:
+        key = str(event.get("task_id") or event.get("job_id") or "session")
+        grouped.setdefault(key, []).append(event)
+    return {
+        "activity": events,
+        "groups": [
+            {"id": key, "events": value, "count": len(value), "latest": value[-1] if value else None}
+            for key, value in grouped.items()
+        ],
+    }
+
 @app.post("/api/v1/code/sessions/{session_id}/reject")
 def reject_code_session_patch(
     session_id: UUID,
@@ -2295,7 +3865,12 @@ def reject_code_session_patch(
     from .code_workspace import get_code_session, reject_patch_payload
 
     session = get_code_session(db, user_id, session_id)
-    return reject_patch_payload(db, session, request.file_ids if request else None)
+    return reject_patch_payload(
+        db,
+        session,
+        request.file_ids if request else None,
+        request.operation_ids if request else None,
+    )
 
 class MobileSystemStatusRequest(BaseModel):
     battery_level: int
@@ -2356,8 +3931,9 @@ def run_code_session_command(
     from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
     job = create_agent_job(db, user_id, session.id, "command", request.command)
-    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, job)
+    result = run_workspace_command(db, user_id, session, request.command, request.timeout_seconds, request.approved, job)
     return {**result, "job": serialize_job(job)}
 
 @app.get("/api/v1/github/status")
@@ -2371,6 +3947,12 @@ def get_github_app_install_url(user_id: UUID = Depends(get_current_user_id)):
     from .github_service import github_install_url
 
     return github_install_url(user_id, JWT_SECRET_KEY)
+
+@app.get("/api/v1/github/install")
+def redirect_github_app_install(user_id: UUID = Depends(get_current_user_id)):
+    from .github_service import github_install_url
+
+    return RedirectResponse(github_install_url(user_id, JWT_SECRET_KEY)["install_url"])
 
 @app.get("/api/v1/github/callback")
 def github_app_callback(
@@ -2389,8 +3971,9 @@ def github_app_callback(
         content=(
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<title>GitHub connected</title></head><body style='font-family:sans-serif;background:#08080c;color:#f5f5f5;padding:32px'>"
-            "<h2>GitHub connected</h2><p>You can close this tab and return to NEXUS Code.</p>"
-            f"<script>setTimeout(function(){{location.href='{frontend}/workspace?github=connected'}},700)</script>"
+            "<h2>GitHub connected</h2><p>You can close this tab and return to Arceus Code.</p>"
+            f"<script>try{{window.opener&&window.opener.postMessage({{type:'arceus.github.connected'}},'{frontend}');}}catch(e){{}}"
+            f"setTimeout(function(){{try{{window.close();}}catch(e){{}} location.href='{frontend}/workspace?github=connected'}},700)</script>"
             "</body></html>"
         ),
         media_type="text/html",
@@ -2401,6 +3984,18 @@ def list_github_app_repositories(user_id: UUID = Depends(get_current_user_id), d
     from .github_service import list_repositories
 
     return list_repositories(db, user_id)
+
+@app.get("/api/v1/github/repos")
+def list_github_app_repos_alias(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .github_service import list_repositories
+
+    return list_repositories(db, user_id)
+
+@app.get("/api/v1/github/branches")
+def list_github_repo_branches(repository: str = Query(...), user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .github_service import list_branches
+
+    return list_branches(db, user_id, repository)
 
 @app.post("/api/v1/code/sessions/{session_id}/github/import")
 def github_import_code_session(
@@ -2414,6 +4009,8 @@ def github_import_code_session(
     from .github_service import import_repository
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_github_operation")
     job = create_agent_job(db, user_id, session.id, "github_import", request.repository)
     result = import_repository(db, user_id, session, request.repository, request.branch)
     refresh_file_tree(db, user_id, session)
@@ -2434,6 +4031,8 @@ def github_create_code_session_branch(
     from .github_service import create_branch
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_github_operation")
     job = create_agent_job(db, user_id, session.id, "github_branch", request.branch_name or "Create GitHub branch", approval_state="approved")
     result = create_branch(db, user_id, session, request.branch_name, request.base_branch)
     append_activity(db, session, "done", "GitHub branch ready", f"{result['branch_name']} from {result['base_branch']}")
@@ -2452,8 +4051,10 @@ def github_commit_code_session_changes(
     from .github_service import commit_approved_changes
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "github_commit", request.message or "Commit approved NEXUS Code changes", approval_state="approved")
-    result = commit_approved_changes(db, user_id, session, request.message)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_github_operation")
+    job = create_agent_job(db, user_id, session.id, "github_commit", request.message or "Commit approved Arceus Code changes", approval_state="approved")
+    result = commit_approved_changes(db, user_id, session, request.message, request.filenames)
     append_activity(db, session, "done", "GitHub commit created", f"{len(result.get('committed') or [])} file(s) committed to {result.get('branch_name')}")
     complete_job(db, job, "completed", result, files_touched=result.get("committed") or [], approval_state="approved")
     return {**result, "job": serialize_job(job)}
@@ -2470,6 +4071,8 @@ def github_open_code_session_pr(
     from .github_service import open_pull_request
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_github_operation")
     job = create_agent_job(db, user_id, session.id, "github_pr", request.title or "Open GitHub pull request", approval_state="approved")
     result = open_pull_request(db, user_id, session, request.title, request.body)
     append_activity(db, session, "done", "GitHub pull request opened", result.get("pull_request_url") or "")
@@ -2477,12 +4080,43 @@ def github_open_code_session_pr(
     return {**result, "job": serialize_job(job)}
 
 @app.get("/api/v1/code/sessions/{session_id}/github/pr-status")
+@app.get("/api/v1/github/sessions/{session_id}/pr-checks")
 def github_code_session_pr_status(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from .code_workspace import get_code_session
-    from .github_service import pr_status
+    from .github_service import pr_status, staged_approved_changes
 
     session = get_code_session(db, user_id, session_id)
-    return pr_status(db, user_id, session)
+    return {**pr_status(db, user_id, session), "staged": staged_approved_changes(session)}
+
+@app.post("/api/v1/code/sessions/{session_id}/github/commit-pr")
+@app.post("/api/v1/github/sessions/{session_id}/create-pr")
+def github_commit_and_open_pr(
+    session_id: UUID,
+    request: GitHubPullRequestRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, complete_job, serialize_job
+    from .code_workspace import get_code_session, append_activity
+    from .github_service import commit_and_open_pull_request
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_github_operation")
+    job = create_agent_job(db, user_id, session.id, "github_commit_pr", request.title or "Commit and open GitHub PR", approval_state="approved")
+    result = commit_and_open_pull_request(
+        db,
+        user_id,
+        session,
+        commit_message=request.commit_message,
+        pr_title=request.title,
+        pr_body=request.body,
+        branch_name=request.branch_name,
+        filenames=request.filenames,
+    )
+    append_activity(db, session, "done", "GitHub Commit -> PR completed", result.get("pull_request_url") or "")
+    complete_job(db, job, "completed", result, files_touched=(result.get("commit") or {}).get("committed") or [], approval_state="approved")
+    return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/run-checks")
 def run_code_session_checks(
@@ -2491,14 +4125,26 @@ def run_code_session_checks(
     db: Session = Depends(get_db),
 ):
     from .code_workspace import get_code_session, run_workspace_checks
-    from .agent_jobs import create_agent_job, serialize_job
+    from .agent_jobs import append_job_log, create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "checks", "Run workspace build/test/lint/typecheck checks")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(
+        db,
+        user_id,
+        session.id,
+        "checks",
+        "Run workspace build/test/lint/typecheck checks",
+        status="queued" if settings.CELERY_WORKER_ENABLED else "running",
+    )
+    if _enqueue_celery_job(str(job.id), "checks"):
+        append_job_log(db, job, "start", "Queued checks in Celery", "Checks worker accepted the job.")
+        return {"status": "queued", "job": serialize_job(job)}
     result = run_workspace_checks(db, user_id, session, job=job)
     return {**result, "job": serialize_job(job)}
 
 @app.post("/api/v1/code/sessions/{session_id}/preview-check")
+@app.post("/api/v1/code/sessions/{session_id}/preview-verify")
 def check_code_session_preview(
     session_id: UUID,
     request: CodePreviewCheckRequest,
@@ -2506,10 +4152,23 @@ def check_code_session_preview(
     db: Session = Depends(get_db),
 ):
     from .code_workspace import check_preview_url, get_code_session
-    from .agent_jobs import create_agent_job, serialize_job
+    from .agent_jobs import append_job_log, create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
-    job = create_agent_job(db, user_id, session.id, "preview", request.url)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_preview_check")
+    job = create_agent_job(
+        db,
+        user_id,
+        session.id,
+        "preview",
+        request.url,
+        status="queued" if settings.CELERY_WORKER_ENABLED else "running",
+        metadata_json={"preview_url": request.url},
+    )
+    if _enqueue_celery_job(str(job.id), "preview"):
+        append_job_log(db, job, "start", "Queued preview check in Celery", "Preview worker accepted the job.")
+        return {"status": "queued", "job": serialize_job(job)}
     result = check_preview_url(db, session, request.url, job)
     return {**result, "job": serialize_job(job)}
 
@@ -2526,18 +4185,23 @@ def fix_code_session_preview_issue(
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_preview_check")
     metadata = session.metadata_json or {}
     preview_checks = metadata.get("preview_checks") or []
     latest_check = preview_checks[-1] if preview_checks else {}
     preview_logs = read_preview_logs(session)
     if not latest_check and not preview_logs.get("logs"):
-        raise HTTPException(status_code=400, detail="Run a preview check or start live preview before asking NEXUS to fix preview issues.")
+        raise HTTPException(status_code=400, detail="Run a preview check or start live preview before asking Arceus to fix preview issues.")
+    verifier_prompt = metadata.get("latest_preview_fix_suggestion") or latest_check.get("fix_suggestion_prompt") or ""
     issue_instruction = "\n".join([
         "Fix the latest workspace preview issue.",
         f"Preview URL: {latest_check.get('url') or 'unknown'}",
         f"Status: {latest_check.get('status')} HTTP {latest_check.get('status_code')}",
         f"Title: {latest_check.get('title') or ''}",
         f"Issues: {', '.join(latest_check.get('issues') or []) or 'No explicit marker; inspect likely frontend/runtime causes.'}",
+        f"Browser verification: {json.dumps(latest_check.get('verification_report') or {}, ensure_ascii=False)}",
+        f"Verifier suggestion: {verifier_prompt or 'none'}",
         f"Live preview command: {preview_logs.get('command') or 'unknown'}",
         f"Live preview log issues: {', '.join(preview_logs.get('issues') or []) or 'none detected'}",
         f"Live preview logs:\n{preview_logs.get('logs') or '(no live preview logs)'}",
@@ -2565,6 +4229,7 @@ def connect_code_session_git(
     from .code_workspace import connect_git_repository, get_code_session
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     return connect_git_repository(db, session, request.repo_url, request.default_branch)
 
 @app.post("/api/v1/code/sessions/{session_id}/git/import")
@@ -2578,6 +4243,7 @@ def import_code_session_github_repo(
     from .code_workspace import get_code_session, import_github_repository
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     job = create_agent_job(db, user_id, session.id, "github_import", request.repo_url)
     result = import_github_repository(db, user_id, session, request.repo_url, request.branch)
     complete_job(db, job, "completed", result, files_touched=result.get("imported") or [])
@@ -2601,6 +4267,7 @@ def prepare_code_session_pull_request(
     from .code_workspace import get_code_session, prepare_pull_request
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     job = create_agent_job(db, user_id, session.id, "git", request.title or session.title)
     result = prepare_pull_request(db, session, request.title, request.description, job)
     return {**result, "job": serialize_job(job)}
@@ -2615,6 +4282,7 @@ def open_code_session_pull_request(
     from .code_workspace import get_code_session, open_github_pull_request
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
     job = create_agent_job(db, user_id, session.id, "github_pr", "Open GitHub pull request", approval_state="approved")
     result = open_github_pull_request(db, user_id, session, job)
     return {**result, "job": serialize_job(job)}
@@ -2641,6 +4309,8 @@ def inline_edit_code_selection(
 
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_generation")
     job = create_agent_job(db, user_id, session.id, "inline_edit", request.instruction, approval_state="pending")
     llm = get_chat_llm(role="coding", provider=provider, model=model)
     prompt = (
@@ -2652,7 +4322,7 @@ def inline_edit_code_selection(
         "Do not include markdown fences, explanation, or surrounding unchanged file content."
     )
     response = llm.invoke([
-        SystemMessage(content="You are NEXUS Code inline edit mode. Rewrite only the selected code. Preserve style and APIs."),
+        SystemMessage(content="You are Arceus Code inline edit mode. Rewrite only the selected code. Preserve style and APIs."),
         HumanMessage(content=prompt),
     ])
     replacement = str(response.content).strip()
@@ -2685,6 +4355,8 @@ def complete_code_at_cursor(
         raise HTTPException(status_code=400, detail="Completion needs code before the cursor")
     provider, model = resolve_exposed_chat_model(request.llm_provider, request.llm_model)
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_generation")
     job = create_agent_job(db, user_id, session.id, "completion", request.filename, approval_state="pending")
     llm = get_chat_llm(role="coding", provider=provider, model=model)
     prompt = (
@@ -2697,7 +4369,7 @@ def complete_code_at_cursor(
         "Keep it short, syntactically consistent, and do not repeat existing code."
     )
     response = llm.invoke([
-        SystemMessage(content="You are NEXUS Code autocomplete. Return only insertable code, no markdown or explanation."),
+        SystemMessage(content="You are Arceus Code autocomplete. Return only insertable code, no markdown or explanation."),
         HumanMessage(content=prompt),
     ])
     completion = str(response.content).strip()
@@ -2720,13 +4392,35 @@ def apply_code_session_patch(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    from .code_workspace import apply_patch_payload, get_code_session
+    from .code_workspace import apply_patch_payload, build_work_receipt, get_code_session
     from .agent_jobs import create_agent_job, serialize_job
 
     session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
     job = create_agent_job(db, user_id, session.id, "apply", "Apply approved workspace patch", approval_state="approved")
-    result = apply_patch_payload(db, user_id, session, job, request.file_ids if request else None)
-    return {**result, "job": serialize_job(job)}
+    result = apply_patch_payload(
+        db,
+        user_id,
+        session,
+        job,
+        request.file_ids if request else None,
+        request.operation_ids if request else None,
+        request.hunk_ids if request else None,
+        request.allow_conflicts if request else False,
+    )
+    return {
+        **result,
+        "job": serialize_job(job),
+        "work_receipt": build_work_receipt(
+            session,
+            summary=f"Applied {len(result.get('changed') or [])} approved change{'s' if len(result.get('changed') or []) != 1 else ''}.",
+            mode="code",
+            intent="Apply",
+            preview=result.get("changed") or [],
+            approval_state="approved",
+        ),
+    }
 
 @app.post("/api/v1/code/sessions/{session_id}/rollback")
 def rollback_code_session_patch(
@@ -2736,13 +4430,26 @@ def rollback_code_session_patch(
     db: Session = Depends(get_db),
 ):
     from .agent_jobs import create_agent_job, serialize_job
-    from .code_workspace import get_code_session, rollback_snapshot
+    from .code_workspace import build_work_receipt, get_code_session, rollback_snapshot
 
     session = get_code_session(db, user_id, session_id)
     prompt = f"Rollback workspace snapshot {request.snapshot_id}" if request and request.snapshot_id else "Rollback last applied workspace patch"
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
     job = create_agent_job(db, user_id, session.id, "rollback", prompt, approval_state="approved")
     result = rollback_snapshot(db, user_id, session, request.snapshot_id if request else None, job)
-    return {**result, "job": serialize_job(job)}
+    return {
+        **result,
+        "job": serialize_job(job),
+        "work_receipt": build_work_receipt(
+            session,
+            summary=f"Rolled back {len(result.get('restored') or [])} item{'s' if len(result.get('restored') or []) != 1 else ''}.",
+            mode="code",
+            intent="Rollback",
+            preview=result.get("restored") or [],
+            approval_state="restored",
+        ),
+    }
 
 @app.get("/api/v1/code/sessions/{session_id}/rollback-snapshots")
 def list_code_session_rollback_snapshots(session_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -2753,9 +4460,13 @@ def list_code_session_rollback_snapshots(session_id: UUID, user_id: UUID = Depen
 
 @app.post("/api/v1/code/jobs", status_code=201)
 def create_agent_job_endpoint(request: AgentJobCreateRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    from .agent_jobs import create_agent_job, serialize_job
+    from .agent_jobs import append_job_log, create_agent_job, serialize_job, update_job_metadata
 
-    job = create_agent_job(db, user_id, request.code_session_id, request.mode, request.prompt, request.approval_state)
+    require_entitlement_or_402(db, user_id, "code_job")
+    job = create_agent_job(db, user_id, request.code_session_id, request.mode, request.prompt, request.approval_state, status="queued")
+    if _enqueue_celery_agent_job(str(job.id)):
+        append_job_log(db, job, "start", "Queued in Celery", "Production worker accepted the job.")
+        update_job_metadata(db, job, {"worker_backend": "celery"})
     return serialize_job(job)
 
 @app.get("/api/v1/code/jobs")
@@ -2774,6 +4485,18 @@ def get_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_use
 
     return serialize_job(get_agent_job(db, user_id, job_id))
 
+@app.get("/api/v1/code/jobs/{job_id}/logs")
+def get_agent_job_logs_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import list_job_logs
+
+    return {"job_id": str(job_id), "logs": list_job_logs(db, user_id, job_id)}
+
+@app.get("/api/v1/code/jobs/{job_id}/artifacts")
+def get_agent_job_artifacts_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import list_job_artifacts
+
+    return {"job_id": str(job_id), "artifacts": list_job_artifacts(db, user_id, job_id)}
+
 @app.get("/api/v1/code/jobs/{job_id}/logs/stream")
 def stream_agent_job_logs(job_id: UUID, user_id: UUID = Depends(get_current_user_id)):
     import time
@@ -2783,6 +4506,17 @@ def stream_agent_job_logs(job_id: UUID, user_id: UUID = Depends(get_current_user
     def event_stream():
         sent = 0
         deadline = time.time() + 60
+        pubsub = None
+        redis_client = None
+        try:
+            import redis
+
+            redis_url = os.getenv("REDIS_URL") or settings.CELERY_BROKER_URL
+            redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+            pubsub = redis_client.pubsub()
+            pubsub.subscribe(f"job:{job_id}:logs")
+        except Exception:
+            pubsub = None
         while time.time() < deadline:
             db_stream = SessionLocal()
             try:
@@ -2793,14 +4527,33 @@ def stream_agent_job_logs(job_id: UUID, user_id: UUID = Depends(get_current_user
                     yield f"event: log\ndata: {json.dumps(log)}\n\n"
                 sent = len(logs)
                 yield f"event: status\ndata: {json.dumps({'status': payload.get('status'), 'progress': payload.get('progress')})}\n\n"
-                if payload.get("status") not in {"running", "queued"}:
+                if payload.get("status") not in {"queued", "retrying", "claimed", "running", "cancel_requested"}:
                     yield f"event: done\ndata: {json.dumps(payload)}\n\n"
                     break
             finally:
                 db_stream.close()
-            time.sleep(1)
+            if pubsub:
+                message = pubsub.get_message(timeout=1.0)
+                if message and message.get("type") == "message":
+                    try:
+                        event_payload = json.loads(message.get("data") or "{}")
+                        event_name = event_payload.get("event") or "log"
+                        yield f"event: {event_name}\ndata: {json.dumps(event_payload.get('payload') or {})}\n\n"
+                    except Exception:
+                        pass
+            else:
+                time.sleep(1)
+        if pubsub:
+            try:
+                pubsub.close()
+            except Exception:
+                pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/api/v1/jobs/{job_id}/stream")
+def stream_agent_job_alias(job_id: UUID, user_id: UUID = Depends(get_current_user_id)):
+    return stream_agent_job_logs(job_id, user_id)
 
 @app.post("/api/v1/code/jobs/{job_id}/cancel")
 def cancel_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -2808,29 +4561,85 @@ def cancel_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_
 
     return serialize_job(cancel_agent_job(db, user_id, job_id))
 
+@app.post("/api/v1/code/jobs/{job_id}/pause")
+def pause_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import pause_agent_job, serialize_job
+
+    return serialize_job(pause_agent_job(db, user_id, job_id))
+
+@app.post("/api/v1/code/jobs/{job_id}/resume")
+def resume_agent_job_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .agent_jobs import append_job_log, resume_agent_job, serialize_job
+
+    job = resume_agent_job(db, user_id, job_id)
+    if _enqueue_celery_job(str(job.id), str((job.metadata_json or {}).get("celery_task") or "agent")):
+        append_job_log(db, job, "start", "Resumed in Celery", "Worker accepted resumed job.")
+    elif settings.CELERY_WORKER_ENABLED:
+        _fail_unavailable_celery_job(db, job, str((job.metadata_json or {}).get("celery_task") or "agent"))
+    return serialize_job(job)
+
 @app.post("/api/v1/code/jobs/{job_id}/retry", status_code=202)
 def retry_agent_job_endpoint(
     job_id: UUID,
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
-    from .agent_jobs import reset_background_job_for_retry, serialize_job
+    from .agent_jobs import append_job_log, reset_background_job_for_retry, serialize_job
 
     job = reset_background_job_for_retry(db, user_id, job_id)
-    return {"status": "queued", "job": serialize_job(job)}
+    if _enqueue_celery_job(str(job.id), str((job.metadata_json or {}).get("celery_task") or "agent")):
+        append_job_log(db, job, "start", "Retry queued in Celery", "Worker accepted retry job.")
+    elif settings.CELERY_WORKER_ENABLED:
+        _fail_unavailable_celery_job(db, job, str((job.metadata_json or {}).get("celery_task") or "agent"))
+    return {"status": job.status, "job": serialize_job(job)}
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def cancel_agent_job_alias_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return cancel_agent_job_endpoint(job_id, user_id, db)
+
+@app.post("/api/v1/jobs/{job_id}/pause")
+def pause_agent_job_alias_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return pause_agent_job_endpoint(job_id, user_id, db)
+
+@app.post("/api/v1/jobs/{job_id}/resume")
+def resume_agent_job_alias_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return resume_agent_job_endpoint(job_id, user_id, db)
+
+@app.post("/api/v1/jobs/{job_id}/retry", status_code=202)
+def retry_agent_job_alias_endpoint(job_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    return retry_agent_job_endpoint(job_id, user_id, db)
 
 @app.get("/api/v1/code/worker/status")
 def get_code_worker_status(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     from services.shared.models import AgentJob
     from .worker import worker_queue
 
-    queued = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status == "queued").count()
+    celery_alive = None
+    celery_workers = []
+    if settings.CELERY_WORKER_ENABLED:
+        try:
+            from worker.celery_app import celery_app
+
+            ping = celery_app.control.inspect(timeout=0.5).ping() or {}
+            celery_workers = sorted(ping.keys())
+            celery_alive = bool(celery_workers)
+        except Exception:
+            celery_alive = False
+    queued = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status.in_(["queued", "retrying"])).count()
+    claimed = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status == "claimed").count()
     running = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status == "running").count()
-    interrupted = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status.in_(["timeout", "interrupted"])).count()
+    interrupted = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status.in_(["timeout", "interrupted", "dead_letter"])).count()
+    cancel_requested = db.query(AgentJob).filter(AgentJob.user_id == user_id, AgentJob.status == "cancel_requested").count()
     return {
         **worker_queue.status(),
+        "backend": "celery" if settings.CELERY_WORKER_ENABLED else "in_process",
+        "celery_enabled": settings.CELERY_WORKER_ENABLED,
+        "alive": bool(celery_alive) if settings.CELERY_WORKER_ENABLED else worker_queue.status().get("alive"),
+        "celery_workers": celery_workers,
         "queued_jobs": queued,
+        "claimed_jobs": claimed,
         "running_jobs": running,
+        "cancel_requested_jobs": cancel_requested,
         "interrupted_jobs": interrupted,
     }
 
@@ -2970,7 +4779,7 @@ def nexus_internet_browse(request: NexusBrowseRequest, user_id: UUID = Depends(g
     if not request.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Only http and https URLs are supported.")
     try:
-        req = Request(request.url, headers={"User-Agent": "NEXUS-AI-Research/1.0"})
+        req = Request(request.url, headers={"User-Agent": "Arceus-AI-Research/1.0"})
         with urlopen(req, timeout=10) as response:
             raw = response.read(200000)
         text = raw.decode("utf-8", errors="ignore")
@@ -3141,7 +4950,7 @@ def nexus_intelligence_feedback(request: NexusSuggestionFeedbackRequest, user_id
 @app.get("/api/v1/intelligence/insights")
 def nexus_intelligence_insights(user_id: UUID = Depends(get_current_user_id)):
     return {
-        "summary": "NEXUS intelligence is active. Connect deployment logs, code repositories, and usage budgets for richer weekly insights.",
+        "summary": "Arceus intelligence is active. Connect deployment logs, code repositories, and usage budgets for richer weekly insights.",
         "signals": ["code", "deployment", "usage", "interview", "security"],
     }
 
@@ -3363,6 +5172,7 @@ def search_memories(
     query: str,
     limit: int = 10,
     memory_type: str | None = None,
+    product_scope: str | None = None,
     user_id: UUID = Depends(get_current_user_id),
     x_vault_key: str | None = Header(None, alias="x-vault-key"),
     db: Session = Depends(get_db),
@@ -3370,7 +5180,7 @@ def search_memories(
     from .memory_agent import PostgresMemoryStore
 
     vk = parse_vault_key(x_vault_key)
-    return PostgresMemoryStore(db, vault_key=vk).hybrid_search(user_id, query, limit=limit, memory_type=memory_type)
+    return PostgresMemoryStore(db, vault_key=vk).hybrid_search(user_id, query, limit=limit, memory_type=memory_type, product_scope=product_scope)
 
 @app.patch("/api/v1/memories/{memory_id}", response_model=MemoryResponse)
 def update_memory(

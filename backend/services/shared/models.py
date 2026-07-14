@@ -46,6 +46,9 @@ class User(Base):
     life_graph_nodes = relationship("LifeGraphNode", back_populates="user", cascade="all, delete-orphan")
     life_graph_edges = relationship("LifeGraphEdge", back_populates="user", cascade="all, delete-orphan")
     weekly_reflections = relationship("WeeklyReflection", back_populates="user", cascade="all, delete-orphan")
+    devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
+    entitlements = relationship("ProductEntitlement", back_populates="user", cascade="all, delete-orphan")
+
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
@@ -179,6 +182,67 @@ class CodeProject(Base):
     user = relationship("User", back_populates="code_projects")
     sessions = relationship("CodeSession", back_populates="project")
 
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=False, unique=True)
+    status = Column(String(50), default="active")
+    settings_json = Column(JSON, default=dict)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Membership(Base):
+    __tablename__ = "memberships"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(50), default="developer")
+    status = Column(String(50), default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code_session_id = Column(UUID(as_uuid=True), ForeignKey("code_sessions.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
+    role = Column(String(50), default="developer")
+    status = Column(String(50), default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class TeamInvite(Base):
+    __tablename__ = "team_invites"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    email = Column(String(255), nullable=False)
+    role = Column(String(50), default="developer")
+    token = Column(String(255), nullable=False, unique=True)
+    status = Column(String(50), default="pending")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class OrgBilling(Base):
+    __tablename__ = "org_billing"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    plan_type = Column(String(50), default="pro")
+    status = Column(String(50), default="active")
+    provider = Column(String(100), default="internal")
+    provider_customer_id = Column(String(255), nullable=True)
+    provider_subscription_id = Column(String(255), nullable=True)
+    entitlements = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 class AgentJob(Base):
     __tablename__ = "agent_jobs"
 
@@ -201,6 +265,39 @@ class AgentJob(Base):
 
     user = relationship("User", back_populates="agent_jobs")
     code_session = relationship("CodeSession")
+    job_logs = relationship("AgentJobLog", back_populates="job", cascade="all, delete-orphan")
+    artifacts = relationship("AgentJobArtifact", back_populates="job", cascade="all, delete-orphan")
+
+class AgentJobLog(Base):
+    __tablename__ = "agent_job_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_session_id = Column(UUID(as_uuid=True), ForeignKey("code_sessions.id", ondelete="CASCADE"), nullable=True)
+    kind = Column(String(50), default="info")
+    message = Column(Text, nullable=False)
+    detail = Column(Text, nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    job = relationship("AgentJob", back_populates="job_logs")
+
+class AgentJobArtifact(Base):
+    __tablename__ = "agent_job_artifacts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_session_id = Column(UUID(as_uuid=True), ForeignKey("code_sessions.id", ondelete="CASCADE"), nullable=True)
+    artifact_type = Column(String(100), default="file")
+    name = Column(String(255), nullable=False)
+    uri = Column(Text, nullable=False)
+    size_bytes = Column(Integer, nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    job = relationship("AgentJob", back_populates="artifacts")
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -588,6 +685,15 @@ Index("idx_code_projects_user_opened", CodeProject.user_id, CodeProject.last_ope
 Index("idx_agent_jobs_user_created", AgentJob.user_id, AgentJob.created_at)
 Index("idx_agent_jobs_session_created", AgentJob.code_session_id, AgentJob.created_at)
 Index("idx_agent_jobs_user_status", AgentJob.user_id, AgentJob.status)
+Index("idx_agent_job_logs_job_created", AgentJobLog.job_id, AgentJobLog.created_at)
+Index("idx_agent_job_logs_user_created", AgentJobLog.user_id, AgentJobLog.created_at)
+Index("idx_agent_job_artifacts_job_created", AgentJobArtifact.job_id, AgentJobArtifact.created_at)
+Index("idx_agent_job_artifacts_session_created", AgentJobArtifact.code_session_id, AgentJobArtifact.created_at)
+Index("idx_orgs_owner_status", Organization.owner_user_id, Organization.status)
+Index("idx_memberships_org_status", Membership.organization_id, Membership.status)
+Index("idx_memberships_user_status", Membership.user_id, Membership.status)
+Index("idx_workspace_members_session_status", WorkspaceMember.code_session_id, WorkspaceMember.status)
+Index("idx_team_invites_org_status", TeamInvite.organization_id, TeamInvite.status)
 
 Goal.__table__.append_constraint(CheckConstraint("priority BETWEEN 1 AND 5", name="ck_goals_priority_range"))
 Goal.__table__.append_constraint(CheckConstraint("progress_pct BETWEEN 0.0 AND 1.0", name="ck_goals_progress_pct_range"))
@@ -715,3 +821,30 @@ class ModelPerformanceLog(Base):
     error_type = Column(String(100), nullable=True)
     user_satisfaction = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class UserDevice(Base):
+    __tablename__ = "user_devices"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    device_name = Column(String(255), nullable=False)
+    os_type = Column(String(50), nullable=False)        # 'windows', 'macos', 'linux'
+    ip_address = Column(String(45))
+    last_active_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="devices")
+
+class ProductEntitlement(Base):
+    __tablename__ = "product_entitlements"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    product_key = Column(String(100), nullable=False)    # 'arceus_code', 'arceus_pa'
+    tier = Column(String(50), default="free")           # 'free', 'pro', 'enterprise'
+    status = Column(String(50), default="active")       # 'active', 'suspended'
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="entitlements")
+

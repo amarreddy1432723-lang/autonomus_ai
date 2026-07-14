@@ -57,6 +57,7 @@ def production_readiness(service_name: str) -> dict[str, Any]:
     allow_demo_user = os.getenv("ALLOW_DEMO_USER", "true").lower() in {"1", "true", "yes", "on"}
     database_url = os.getenv("DATABASE_URL", "")
     redis_url = os.getenv("REDIS_URL", "")
+    clerk_configured = bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY"))
 
     checks = [
         _check(
@@ -116,6 +117,13 @@ def production_readiness(service_name: str) -> dict[str, Any]:
             "Set ALLOW_DEV_AUTH_FALLBACK=false in production.",
         ),
         _check(
+            "clerk_auth",
+            not is_production() or clerk_configured,
+            "critical",
+            "Clerk auth is configured for production.",
+            "Configure CLERK_ISSUER or CLERK_JWKS_URL and disable development auth in production.",
+        ),
+        _check(
             "demo_user",
             not allow_demo_user,
             "critical",
@@ -147,3 +155,19 @@ def production_readiness(service_name: str) -> dict[str, Any]:
             "critical_failed": len(critical_failed),
         },
     }
+
+
+def enforce_production_startup(service_name: str) -> None:
+    """Fail fast when a production service would boot with unsafe config."""
+    if not is_production():
+        return
+    if os.getenv("ARCEUS_STRICT_PRODUCTION_STARTUP", "true").lower() in {"0", "false", "no"}:
+        return
+    readiness = production_readiness(service_name)
+    critical = [
+        check for check in readiness["checks"]
+        if check["status"] == "fail" and check["severity"] == "critical"
+    ]
+    if critical:
+        detail = "; ".join(f"{check['name']}: {check['message']}" for check in critical)
+        raise RuntimeError(f"{service_name} refused unsafe production startup. {detail}")

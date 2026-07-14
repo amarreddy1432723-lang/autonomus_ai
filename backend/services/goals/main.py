@@ -48,7 +48,7 @@ def service_root():
     return {
         "service": "goals-service",
         "status": "running",
-        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "message": "This is a Arceus API service. Open the frontend UI instead.",
         "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
         "docs": "/docs",
     }

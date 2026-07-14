@@ -179,7 +179,7 @@ async def run_controlled_workspace_agent(
         {
             "role": "developer",
             "content": (
-                "You are NEXUS Code, a controlled software-development agent. "
+                "You are Arceus Code, a controlled software-development agent. "
                 "Use only the selected tools. Never invent tool results. "
                 "Inspect relevant files before proposing changes. "
                 "If a tool needs approval, request it instead of bypassing policy."

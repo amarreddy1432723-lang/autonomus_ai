@@ -8,7 +8,7 @@ logger = logging.getLogger("nexus-pa-os")
 
 class MobileOSDaemon:
     """
-    Simulates the background native daemon running on NEXUS PA OS (iOS/Android).
+    Simulates the background native daemon running on Arceus PA OS (iOS/Android).
     Monitors system state, intercepts calls, and manages local ambient context.
     """
     def __init__(self, user_id: UUID):
@@ -26,11 +26,11 @@ class MobileOSDaemon:
 
     def start_monitoring(self) -> None:
         self.is_monitoring = True
-        logger.info(f"NEXUS PA OS background monitoring started for user: {self.user_id}")
+        logger.info(f"Arceus PA OS background monitoring started for user: {self.user_id}")
 
     def stop_monitoring(self) -> None:
         self.is_monitoring = False
-        logger.info(f"NEXUS PA OS background monitoring stopped for user: {self.user_id}")
+        logger.info(f"Arceus PA OS background monitoring stopped for user: {self.user_id}")
 
     def update_system_status(self, battery: int, is_charging: bool, network: str, active_apps: List[str]) -> Dict[str, Any]:
         """Update system metrics broadcasted from the mobile client."""

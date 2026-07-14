@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 from uuid import UUID
 
@@ -19,6 +19,8 @@ from services.shared.security import (
     secret_fingerprint,
 )
 from .schemas import (
+    DesktopAuthCodeRequest,
+    DesktopAuthExchangeRequest,
     LogoutRequest,
     RefreshRequest,
     SessionResponse,
@@ -62,7 +64,7 @@ def service_root():
     return {
         "service": "auth-service",
         "status": "running",
-        "message": "This is a NEXUS API service. Open the frontend UI instead.",
+        "message": "This is a Arceus API service. Open the frontend UI instead.",
         "frontend": os.getenv("NEXUS_FRONTEND_URL", "http://localhost:3000/workspace"),
         "docs": "/docs",
     }
@@ -76,6 +78,33 @@ def get_current_user_id(
 ) -> UUID:
     authorization = f"Bearer {token}" if token else None
     return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, settings.JWT_SECRET, settings.JWT_ALGORITHM)
+
+def _create_desktop_auth_code(user_id: UUID) -> str:
+    import jwt
+
+    payload = {
+        "sub": str(user_id),
+        "type": "desktop_auth_code",
+        "aud": "arceus-desktop",
+        "exp": datetime.utcnow() + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+def _decode_desktop_auth_code(code: str) -> UUID:
+    import jwt
+
+    try:
+        payload = jwt.decode(
+            code,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience="arceus-desktop",
+        )
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code is invalid or expired")
+    if payload.get("type") != "desktop_auth_code":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code has the wrong purpose")
+    return UUID(str(payload["sub"]))
 
 def require_scopes(*required_scopes: str):
     def dependency(
@@ -202,6 +231,46 @@ def logout(logout_in: LogoutRequest, user_id: UUID = Depends(get_current_user_id
         })
     db.commit()
     return {"message": "Logged out successfully"}
+
+@app.post("/api/v1/auth/desktop/code")
+def create_desktop_auth_code(
+    request_in: DesktopAuthCodeRequest,
+    user_id: UUID = Depends(get_current_user_id),
+):
+    if not request_in.redirect_uri.startswith("arceus://auth/callback"):
+        raise HTTPException(status_code=400, detail="Desktop redirect URI must use arceus://auth/callback")
+    code = _create_desktop_auth_code(user_id)
+    separator = "&" if "?" in request_in.redirect_uri else "?"
+    return {
+        "code_expires_in_seconds": 300,
+        "redirect_url": f"{request_in.redirect_uri}{separator}code={code}",
+    }
+
+@app.post("/api/v1/auth/desktop/exchange", response_model=TokenResponse)
+def exchange_desktop_auth_code(
+    exchange_in: DesktopAuthExchangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user_id = _decode_desktop_auth_code(exchange_in.code)
+    user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization user is unavailable")
+    access = create_access_token(user.id)
+    refresh = create_refresh_token(user.id)
+    session = UserSession(
+        user_id=user.id,
+        token_hash=hash_refresh_token(refresh),
+        device_info={"client": "arceus-desktop", "user_agent": request.headers.get("user-agent", "unknown")},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        expires_at=refresh_token_expires_at(),
+        last_seen_at=datetime.utcnow(),
+    )
+    db.add(session)
+    user.last_active_at = datetime.utcnow()
+    db.commit()
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
 @app.get("/me", response_model=UserResponse)
 @app.get("/api/v1/me", response_model=UserResponse)

@@ -12,7 +12,6 @@ import hashlib
 import uuid
 import base64
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from uuid import UUID
@@ -21,10 +20,10 @@ from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
 
-from services.shared.models import AuditLog, CodeProject, CodeSession, FileReference
-from .agent_jobs import append_job_log, complete_job, heartbeat_job
+from services.shared.models import AuditLog, CodeProject, CodeSession, FileReference, WorkspaceMember
+from .agent_jobs import add_job_artifact, append_job_log, complete_job, heartbeat_job
 from .config import settings
-from .file_service import get_file_text, put_object, storage_provider
+from .file_service import delete_object, get_file_text, put_object, storage_provider
 from .llm_router import get_chat_llm
 
 
@@ -59,29 +58,6 @@ SECRET_OUTPUT_PATTERNS = (
 PREVIEW_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
-class _TitleParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.in_title = False
-        self.title_parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() == "title":
-            self.in_title = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
-            self.in_title = False
-
-    def handle_data(self, data: str) -> None:
-        if self.in_title:
-            self.title_parts.append(data)
-
-    @property
-    def title(self) -> str:
-        return " ".join(part.strip() for part in self.title_parts if part.strip())[:180]
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -94,19 +70,107 @@ def _set_metadata(session: CodeSession, metadata: dict) -> None:
     session.metadata_json = metadata
 
 
-def _activity(kind: str, message: str, detail: str | None = None, diff: str | None = None) -> dict:
+def _activity(kind: str, message: str, detail: str | None = None, diff: str | None = None, receipt: dict | None = None) -> dict:
     event = {"id": f"job-{datetime.now(timezone.utc).timestamp()}", "kind": kind, "message": message, "timestamp": _now()}
     if detail:
         event["detail"] = detail
     if diff:
         event["diff"] = diff
+    if receipt:
+        event["work_receipt"] = receipt
     return event
 
 
-def append_activity(db: Session, session: CodeSession, kind: str, message: str, detail: str | None = None, diff: str | None = None) -> dict:
+def _activity_work_receipt(session: CodeSession, kind: str, message: str, detail: str | None = None, diff: str | None = None, receipt: dict | None = None) -> dict:
+    metadata = _metadata(session)
+    patch_preview = metadata.get("patch_preview") or []
+    changed = []
+    for item in patch_preview:
+        impact = _patch_impact_from_diff(item.get("diff") or "")
+        changed.append({
+            "filename": item.get("new_filename") or item.get("filename") or "workspace file",
+            "operation": item.get("operation") or item.get("type") or "modify",
+            "additions": int(item.get("additions") or impact.get("additions") or 0),
+            "deletions": int(item.get("deletions") or impact.get("deletions") or 0),
+        })
+    checks = []
+    checks_passed = len([item for item in checks if re.search(r"pass|success|done|completed", str(item.get("status") or ""), re.I)])
+    checks_failed = len([item for item in checks if re.search(r"fail|error|blocked|timeout", str(item.get("status") or ""), re.I)])
+    defaults = {
+        "summary": message,
+        "mode": "error" if kind == "error" else "code",
+        "intent": {
+            "start": "Start",
+            "read": "Inspect",
+            "code": "Build",
+            "design": "Design",
+            "deploy": "Deploy",
+            "research": "Research",
+            "edit": "Edit",
+            "done": "Complete",
+            "error": "Error",
+        }.get(kind, "Build"),
+        "project": session.project.name if session.project else "Workspace",
+        "session": str(session.id)[:8],
+        "sandbox_provider": settings.SANDBOX_PROVIDER.lower(),
+        "plan": detail or "",
+        "files_inspected": [
+            item.get("filename") or item.get("path")
+            for item in (metadata.get("file_tree") or [])
+            if item.get("filename") or item.get("path")
+        ][:12],
+        "files_changed": changed,
+        "folders_created": [
+            item.get("filename")
+            for item in patch_preview
+            if (item.get("operation") or item.get("type")) == "folder" and item.get("filename")
+        ],
+        "commands_run": [{"label": detail, "status": "logged"}] if detail and kind in {"deploy", "error"} and not diff else [],
+        "checks": checks,
+        "checks_passed": checks_passed,
+        "checks_failed": checks_failed,
+        "approval_state": "waiting approval" if patch_preview else ("failed" if kind == "error" else "done"),
+        "rollback_available": bool(metadata.get("rollback_snapshots")),
+        "line_impact": {
+            "additions": sum(item.get("additions", 0) for item in changed),
+            "deletions": sum(item.get("deletions", 0) for item in changed),
+        },
+        "next_actions": [
+            _serialize_workspace_task(task)
+            for task in reversed(_workspace_tasks(metadata))
+            if task.get("status") not in {"dismissed", "done", "failed"}
+        ][:3],
+    }
+    if diff:
+        defaults["diff_excerpt"] = diff[:2000]
+    if receipt:
+        merged = {**defaults, **receipt}
+        merged["line_impact"] = receipt.get("line_impact") or defaults["line_impact"]
+        merged_checks = merged.get("checks") or []
+        merged["checks_passed"] = receipt.get(
+            "checks_passed",
+            len([item for item in merged_checks if re.search(r"pass|success|done|completed", str(item.get("status") or ""), re.I)]),
+        )
+        merged["checks_failed"] = receipt.get(
+            "checks_failed",
+            len([item for item in merged_checks if re.search(r"fail|error|blocked|timeout", str(item.get("status") or ""), re.I)]),
+        )
+        return merged
+    return defaults
+
+
+def append_activity(
+    db: Session,
+    session: CodeSession,
+    kind: str,
+    message: str,
+    detail: str | None = None,
+    diff: str | None = None,
+    receipt: dict | None = None,
+) -> dict:
     metadata = _metadata(session)
     log = list(metadata.get("activity_log") or [])
-    event = _activity(kind, message, detail, diff)
+    event = _activity(kind, message, detail, diff, _activity_work_receipt(session, kind, message, detail, diff, receipt))
     if metadata.get("active_workspace_task_id"):
         event["task_id"] = metadata["active_workspace_task_id"]
     log.append(event)
@@ -143,6 +207,7 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
         "title": session.title,
         "file_ids": session.file_ids or [],
         "status": session.status,
+        "metadata_json": metadata,
         "plan_text": session.plan_text,
         "patch_text": session.patch_text,
         "patch_preview": metadata.get("patch_preview") or [],
@@ -157,6 +222,8 @@ def serialize_code_session(db: Session, user_id: UUID, session: CodeSession, inc
 
 
 def serialize_code_project(project: CodeProject, active_session: CodeSession | None = None) -> dict:
+    metadata = project.metadata_json or {}
+    file_ids = project.file_ids or []
     return {
         "id": str(project.id),
         "name": project.name,
@@ -164,9 +231,12 @@ def serialize_code_project(project: CodeProject, active_session: CodeSession | N
         "repo_url": project.repo_url or "",
         "default_branch": project.default_branch or "",
         "status": project.status,
-        "file_ids": project.file_ids or [],
+        "file_ids": file_ids,
+        "file_count": len(file_ids),
         "settings": project.settings_json or {},
-        "metadata": project.metadata_json or {},
+        "metadata": metadata,
+        "local_workspace_path": metadata.get("local_workspace_path") or "",
+        "openable": project.status == "active",
         "active_session_id": str(active_session.id) if active_session else None,
         "last_opened_at": project.last_opened_at.isoformat() if project.last_opened_at else None,
         "created_at": project.created_at.isoformat() if project.created_at else None,
@@ -174,20 +244,82 @@ def serialize_code_project(project: CodeProject, active_session: CodeSession | N
     }
 
 
+def _shared_project_ids(db: Session, user_id: UUID) -> list[UUID]:
+    return [
+        row[0]
+        for row in (
+            db.query(CodeSession.project_id)
+            .join(WorkspaceMember, WorkspaceMember.code_session_id == CodeSession.id)
+            .filter(
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.status == "active",
+                CodeSession.project_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        if row[0]
+    ]
+
+
+def project_role(db: Session, user_id: UUID, project_id: UUID) -> str | None:
+    project = db.query(CodeProject).filter(CodeProject.id == project_id, CodeProject.status != "deleted").first()
+    if not project:
+        return None
+    if project.user_id == user_id:
+        return "owner"
+    roles = [
+        row[0]
+        for row in (
+            db.query(WorkspaceMember.role)
+            .join(CodeSession, CodeSession.id == WorkspaceMember.code_session_id)
+            .filter(
+                CodeSession.project_id == project_id,
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.status == "active",
+            )
+            .all()
+        )
+    ]
+    order = {"viewer": 1, "editor": 2, "developer": 2, "admin": 3, "owner": 4}
+    return max(roles, key=lambda role: order.get(role, 0), default=None)
+
+
+def require_project_role(db: Session, user_id: UUID, project_id: UUID, minimum: str = "viewer") -> str:
+    role = project_role(db, user_id, project_id)
+    order = {"viewer": 1, "editor": 2, "developer": 2, "admin": 3, "owner": 4}
+    if not role or order.get(role, 0) < order.get(minimum, 1):
+        raise HTTPException(status_code=403, detail=f"{minimum.title()} access required for this project")
+    return role
+
+
 def list_code_projects(db: Session, user_id: UUID, limit: int = 30) -> list[CodeProject]:
-    return (
+    owned = (
         db.query(CodeProject)
         .filter(CodeProject.user_id == user_id, CodeProject.status != "deleted")
         .order_by(CodeProject.last_opened_at.desc().nullslast(), CodeProject.updated_at.desc(), CodeProject.created_at.desc())
         .limit(limit)
         .all()
     )
+    owned_ids = {project.id for project in owned}
+    shared_ids = [project_id for project_id in _shared_project_ids(db, user_id) if project_id not in owned_ids]
+    shared = []
+    if shared_ids and len(owned) < limit:
+        shared = (
+            db.query(CodeProject)
+            .filter(CodeProject.id.in_(shared_ids), CodeProject.status != "deleted")
+            .order_by(CodeProject.updated_at.desc(), CodeProject.created_at.desc())
+            .limit(limit - len(owned))
+            .all()
+        )
+    return (owned + shared)[:limit]
 
 
 def get_code_project(db: Session, user_id: UUID, project_id: UUID) -> CodeProject:
-    project = db.query(CodeProject).filter(CodeProject.id == project_id, CodeProject.user_id == user_id, CodeProject.status != "deleted").first()
+    project = db.query(CodeProject).filter(CodeProject.id == project_id, CodeProject.status != "deleted").first()
     if not project:
         raise HTTPException(status_code=404, detail="Code project not found")
+    require_project_role(db, user_id, project_id, "viewer")
     project.last_opened_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(project)
@@ -222,12 +354,71 @@ def update_code_project(
 
 
 def active_session_for_project(db: Session, user_id: UUID, project: CodeProject) -> CodeSession | None:
+    require_project_role(db, user_id, project.id, "viewer")
     return (
         db.query(CodeSession)
-        .filter(CodeSession.user_id == user_id, CodeSession.project_id == project.id, CodeSession.status == "active")
+        .filter(CodeSession.project_id == project.id, CodeSession.status == "active")
         .order_by(CodeSession.updated_at.desc(), CodeSession.created_at.desc())
         .first()
     )
+
+
+def sessions_for_project(db: Session, user_id: UUID, project_id: UUID, limit: int = 30) -> list[CodeSession]:
+    require_project_role(db, user_id, project_id, "viewer")
+    return (
+        db.query(CodeSession)
+        .filter(CodeSession.project_id == project_id, CodeSession.status != "deleted")
+        .order_by(CodeSession.updated_at.desc(), CodeSession.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def find_project_by_local_path(db: Session, user_id: UUID, local_path: str) -> CodeProject | None:
+    normalized = str(Path(local_path).expanduser().resolve())
+    projects = (
+        db.query(CodeProject)
+        .filter(CodeProject.user_id == user_id, CodeProject.status != "deleted")
+        .order_by(CodeProject.updated_at.desc(), CodeProject.created_at.desc())
+        .all()
+    )
+    for project in projects:
+        metadata = project.metadata_json or {}
+        value = metadata.get("local_workspace_path")
+        if not value:
+            continue
+        try:
+            candidate = str(Path(str(value)).expanduser().resolve())
+        except Exception:
+            candidate = str(value)
+        if candidate == normalized:
+            return project
+    sessions = (
+        db.query(CodeSession)
+        .filter(CodeSession.user_id == user_id, CodeSession.project_id.isnot(None), CodeSession.status != "deleted")
+        .order_by(CodeSession.updated_at.desc(), CodeSession.created_at.desc())
+        .all()
+    )
+    for session in sessions:
+        metadata = session.metadata_json or {}
+        value = metadata.get("local_workspace_path")
+        if not value:
+            continue
+        try:
+            candidate = str(Path(str(value)).expanduser().resolve())
+        except Exception:
+            candidate = str(value)
+        if candidate == normalized:
+            project = db.query(CodeProject).filter(CodeProject.id == session.project_id, CodeProject.user_id == user_id, CodeProject.status != "deleted").first()
+            if project:
+                project_metadata = dict(project.metadata_json or {})
+                project_metadata["local_workspace_path"] = normalized
+                project_metadata.setdefault("workspace_mode", "local_trusted")
+                project.metadata_json = project_metadata
+                db.commit()
+                db.refresh(project)
+                return project
+    return None
 
 
 def create_code_project(
@@ -267,6 +458,140 @@ def create_code_project(
     return project, session
 
 
+def _safe_project_folder_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip().lower()).strip(".-")
+    return safe[:80] or f"project-{uuid.uuid4().hex[:8]}"
+
+
+def _unique_merged_filename(folder: str, filename: str, used: set[str]) -> str:
+    clean = filename.replace("\\", "/").lstrip("/")
+    candidate = f"{folder}/{clean}" if clean else f"{folder}/untitled.txt"
+    if candidate not in used:
+        used.add(candidate)
+        return candidate
+    path = Path(candidate)
+    stem = path.stem or "file"
+    suffix = path.suffix
+    parent = path.parent.as_posix()
+    index = 1
+    while True:
+        next_name = f"{parent}/{stem}.copy{index if index > 1 else ''}{suffix}"
+        if next_name not in used:
+            used.add(next_name)
+            return next_name
+        index += 1
+
+
+def merge_code_projects(db: Session, user_id: UUID, source_project_ids: list[UUID], name: str | None = None) -> tuple[CodeProject, CodeSession, dict]:
+    unique_ids = []
+    for source_id in source_project_ids:
+        if source_id not in unique_ids:
+            unique_ids.append(source_id)
+    if len(unique_ids) != 2:
+        raise HTTPException(status_code=400, detail="Select exactly two projects to merge")
+
+    projects = [get_code_project(db, user_id, source_id) for source_id in unique_ids]
+    merged_name = (name or f"Merged: {projects[0].name} + {projects[1].name}").strip()[:255]
+    project, session = create_code_project(
+        db,
+        user_id,
+        merged_name,
+        description="Merged workspace. Source projects remain unchanged.",
+        file_ids=[],
+    )
+
+    project_metadata = dict(project.metadata_json or {})
+    project_metadata.update({
+        "created_from": "project_merge",
+        "source_project_ids": [str(project.id) for project in projects],
+        "source_project_names": [project.name for project in projects],
+    })
+    project.metadata_json = project_metadata
+
+    copied_file_ids: list[str] = []
+    copied: list[dict] = []
+    skipped: list[dict] = []
+    used_paths: set[str] = set()
+
+    for source_project in projects:
+        folder = _safe_project_folder_name(source_project.name)
+        source_session = active_session_for_project(db, user_id, source_project)
+        source_file_ids = source_session.file_ids if source_session else source_project.file_ids
+        parsed_ids = []
+        for value in source_file_ids or []:
+            try:
+                parsed_ids.append(UUID(str(value)))
+            except ValueError:
+                continue
+        if not parsed_ids:
+            continue
+        records = (
+            db.query(FileReference)
+            .filter(FileReference.user_id == user_id, FileReference.id.in_(parsed_ids), FileReference.status == "active")
+            .all()
+        )
+        by_id = {record.id: record for record in records}
+        for file_id in parsed_ids:
+            record = by_id.get(file_id)
+            if not record:
+                continue
+            try:
+                text = get_file_text(db, user_id, record.id)
+            except Exception as exc:
+                skipped.append({"filename": record.filename, "reason": str(exc)})
+                continue
+            encoded = text.encode("utf-8")
+            filename = _unique_merged_filename(folder, record.filename, used_paths)
+            new_record = FileReference(
+                user_id=user_id,
+                filename=filename,
+                size_bytes=len(encoded),
+                owner_type="code_workspace",
+                owner_id=session.id,
+                storage_provider=storage_provider(),
+                bucket=settings.S3_BUCKET,
+                object_key=f"users/{user_id}/code/{session.id}/{uuid.uuid4()}{Path(filename).suffix or '.txt'}",
+                content_type=record.content_type or "text/plain",
+                checksum_sha256=hashlib.sha256(encoded).hexdigest(),
+                status="active",
+                metadata_json={
+                    "merged_from_project_id": str(source_project.id),
+                    "merged_from_project_name": source_project.name,
+                    "merged_from_file_id": str(record.id),
+                    "source_filename": record.filename,
+                },
+            )
+            db.add(new_record)
+            db.flush()
+            put_object(new_record.object_key, encoded, new_record.content_type)
+            copied_file_ids.append(str(new_record.id))
+            copied.append({"id": str(new_record.id), "filename": filename, "source": record.filename})
+
+    session.file_ids = copied_file_ids
+    project.file_ids = copied_file_ids
+    session.title = f"{project.name} workspace"
+    metadata = _metadata(session)
+    metadata["activity_log"] = [
+        _activity(
+            "start",
+            "Merged project created",
+            f"Copied {len(copied_file_ids)} files from {projects[0].name} and {projects[1].name}.",
+        )
+    ]
+    metadata["merge"] = {
+        "source_project_ids": [str(project.id) for project in projects],
+        "source_project_names": [project.name for project in projects],
+        "copied_count": len(copied_file_ids),
+        "skipped": skipped,
+    }
+    _set_metadata(session, metadata)
+    db.commit()
+    db.refresh(project)
+    db.refresh(session)
+    refresh_file_tree(db, user_id, session)
+    return project, session, {"copied": copied, "skipped": skipped}
+
+
 def update_project_files_from_session(db: Session, session: CodeSession) -> None:
     if not session.project_id:
         return
@@ -290,9 +615,10 @@ def list_code_sessions(db: Session, user_id: UUID, limit: int = 20) -> list[Code
 
 def create_code_session(db: Session, user_id: UUID, title: str, file_ids: list[str], project_id: UUID | None = None) -> CodeSession:
     if project_id:
-        project = db.query(CodeProject.id).filter(CodeProject.id == project_id, CodeProject.user_id == user_id, CodeProject.status != "deleted").first()
+        project = db.query(CodeProject.id).filter(CodeProject.id == project_id, CodeProject.status != "deleted").first()
         if not project:
             raise HTTPException(status_code=404, detail="Code project not found")
+        require_project_role(db, user_id, project_id, "editor")
     session = CodeSession(
         user_id=user_id,
         project_id=project_id,
@@ -314,22 +640,42 @@ def create_code_session(db: Session, user_id: UUID, title: str, file_ids: list[s
 
 
 def get_code_session(db: Session, user_id: UUID, session_id: UUID) -> CodeSession:
-    session = db.query(CodeSession).filter(CodeSession.id == session_id, CodeSession.user_id == user_id).first()
+    session = db.query(CodeSession).filter(CodeSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Code session not found")
+    if session.user_id != user_id:
+        membership = (
+            db.query(WorkspaceMember)
+            .filter(
+                WorkspaceMember.code_session_id == session.id,
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.status == "active",
+            )
+            .first()
+        )
+        if not membership:
+            raise HTTPException(status_code=404, detail="Code session not found")
     return session
 
 
-def code_files(db: Session, user_id: UUID, session: CodeSession) -> list[FileReference]:
+def code_files(db: Session, user_id: UUID, session: CodeSession, file_ids: list[str] | None = None) -> list[FileReference]:
     ids = []
-    for value in session.file_ids or []:
+    for value in (session.file_ids if file_ids is None else file_ids) or []:
         try:
             ids.append(UUID(str(value)))
         except ValueError:
             continue
     if not ids:
         return []
-    records = db.query(FileReference).filter(FileReference.user_id == user_id, FileReference.id.in_(ids)).all()
+    records = (
+        db.query(FileReference)
+        .filter(
+            FileReference.user_id == session.user_id,
+            FileReference.id.in_(ids),
+            FileReference.status == "active",
+        )
+        .all()
+    )
     by_id = {record.id: record for record in records}
     return [by_id[file_id] for file_id in ids if file_id in by_id]
 
@@ -366,9 +712,13 @@ def _safe_local_workspace_file(session: CodeSession, filename: str) -> Path | No
     if not local_path:
         return None
     local_root = Path(str(local_path)).expanduser().resolve()
+    if not local_root.exists() or not local_root.is_dir():
+        raise HTTPException(status_code=400, detail="Local workspace path is no longer available")
     safe_name = filename.replace("\\", "/").lstrip("/")
     target = (local_root / safe_name).resolve()
-    if not str(target).startswith(str(local_root)):
+    try:
+        target.relative_to(local_root)
+    except ValueError:
         raise HTTPException(status_code=400, detail=f"Unsafe local workspace path: {filename}")
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -400,6 +750,9 @@ def _sandbox_provider_status() -> dict:
         "local_allowed": bool(settings.ALLOW_LOCAL_SANDBOX) or not production,
         "e2b_configured": bool(settings.E2B_API_KEY),
         "docker_image": settings.SANDBOX_DOCKER_IMAGE,
+        "sandbox_network_allowed_for_installs": bool(settings.SANDBOX_ALLOW_NETWORK),
+        "docker_memory_limit": settings.SANDBOX_DOCKER_MEMORY,
+        "docker_cpu_quota": settings.SANDBOX_DOCKER_CPU_QUOTA,
     }
 
 
@@ -536,7 +889,7 @@ def _github_request(method: str, path: str, payload: dict | None = None) -> dict
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {_github_token()}",
             "Content-Type": "application/json",
-            "User-Agent": "NEXUS-Code/1.0",
+            "User-Agent": "Arceus-Code/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
@@ -1065,6 +1418,7 @@ def _standard_command_result(command: str, raw: dict, policy: dict, workspace_ro
         "status": raw.get("status") or "failed",
         "return_code": raw.get("return_code"),
         "provider": raw.get("provider") or settings.SANDBOX_PROVIDER.lower(),
+        "sandbox_provider": raw.get("provider") or settings.SANDBOX_PROVIDER.lower(),
         "duration_ms": raw.get("duration_ms"),
         "timeout_seconds": raw.get("timeout_seconds"),
         "output": output[-max_chars:],
@@ -1094,12 +1448,24 @@ def run_workspace_command(
     parts = _command_parts(command)
     discovered_commands = discover_workspace_commands(db, user_id, session).get("commands") or []
     policy = _command_policy(command, parts, discovered_commands, approved=approved)
+    runtime_root = _workspace_runtime_root(session)
     if not policy.get("allowed"):
         append_activity(db, session, "error", "Command blocked", policy.get("reason") or "Only safe build/test/lint commands are enabled in v1.")
-        complete_job(db, job, "blocked", {"error": "Command is not allowed", "policy": policy}, commands_run=[command])
+        result = {
+            "command": command,
+            "status": "blocked",
+            "return_code": None,
+            "provider": settings.SANDBOX_PROVIDER.lower(),
+            "output": policy.get("reason") or "Command is outside the workspace allowlist.",
+            "output_excerpt": policy.get("reason") or "Command is outside the workspace allowlist.",
+            "policy": policy,
+            "workspace_root": str(runtime_root),
+            "ran_at": _now(),
+        }
+        complete_job(db, job, "blocked", result, commands_run=[result])
         raise HTTPException(
             status_code=403 if policy.get("requires_approval") else 400,
-            detail={"message": policy.get("reason") or "Command is not allowed for workspace execution.", "policy": policy},
+            detail={"message": policy.get("reason") or "Command is not allowed for workspace execution.", "policy": policy, "result": result},
         )
 
     runtime = sync_workspace_runtime(db, user_id, session)
@@ -1139,8 +1505,19 @@ def run_workspace_command(
         return result
     except FileNotFoundError:
         append_activity(db, session, "error", f"Command unavailable: {parts[0]}", "The runtime image does not include this executable.")
-        complete_job(db, job, "failed", {"error": f"Command unavailable: {parts[0]}"}, commands_run=[command])
-        raise HTTPException(status_code=400, detail=f"Command unavailable: {parts[0]}")
+        result = {
+            "command": command,
+            "status": "failed",
+            "return_code": None,
+            "provider": settings.SANDBOX_PROVIDER.lower(),
+            "output": f"Command unavailable: {parts[0]}",
+            "output_excerpt": f"Command unavailable: {parts[0]}",
+            "policy": policy,
+            "workspace_root": str(workspace_root),
+            "ran_at": _now(),
+        }
+        complete_job(db, job, "failed", result, commands_run=[result])
+        raise HTTPException(status_code=400, detail={"message": f"Command unavailable: {parts[0]}", "result": result})
     except subprocess.TimeoutExpired as exc:
         output = "\n".join(part for part in [exc.stdout or "", exc.stderr or ""] if part).strip()
         clipped = output[-12000:] if output else "Command timed out before producing output."
@@ -1148,6 +1525,23 @@ def run_workspace_command(
         result = {"command": command, "status": "timeout", "return_code": None, "output": clipped, "workspace_root": str(workspace_root), "ran_at": _now()}
         _runtime_metadata_update(db, session, status="timeout", last_command=result, last_heartbeat_at=_now())
         complete_job(db, job, "timeout", result, commands_run=[result])
+        return result
+    except Exception as exc:
+        clipped = _redact_sensitive_output(str(exc))[-4000:]
+        append_activity(db, session, "error", f"Command failed: {command}", clipped)
+        result = {
+            "command": command,
+            "status": "failed",
+            "return_code": None,
+            "provider": settings.SANDBOX_PROVIDER.lower(),
+            "output": clipped,
+            "output_excerpt": clipped,
+            "policy": policy,
+            "workspace_root": str(workspace_root),
+            "ran_at": _now(),
+        }
+        _runtime_metadata_update(db, session, status="failed", last_command=result, last_heartbeat_at=_now())
+        complete_job(db, job, "failed", result, commands_run=[result])
         return result
 
 
@@ -1177,7 +1571,11 @@ def install_workspace_dependencies(
     append_job_log(db, job, "deploy", "Installing workspace dependencies", install_command)
 
     sandbox = get_session_sandbox(session)
-    raw = sandbox.run_command(install_command, timeout=max(30, min(timeout_seconds or settings.SANDBOX_INSTALL_TIMEOUT_SECONDS, 900)))
+    raw = sandbox.run_command(
+        install_command,
+        timeout=max(30, min(timeout_seconds or settings.SANDBOX_INSTALL_TIMEOUT_SECONDS, 900)),
+        allow_network=bool(settings.SANDBOX_ALLOW_NETWORK),
+    )
     result = _standard_command_result(install_command, raw, policy, workspace_root)
     status = result["status"]
     metadata = _metadata(session)
@@ -1274,6 +1672,14 @@ def run_workspace_checks(
     _set_metadata(session, metadata)
     db.commit()
     append_activity(db, session, "done" if summary["status"] == "passed" else "error", f"Workspace checks {summary['status']}", f"{passed}/{len(results)} check(s) passed")
+    if summary["status"] == "passed":
+        preview_runtime = (session.metadata_json or {}).get("preview_runtime") or {}
+        preview_url = preview_runtime.get("local_url") or preview_runtime.get("external_url")
+        if preview_runtime.get("status") in {"running", "starting"} and preview_url:
+            try:
+                check_preview_url(db, session, str(preview_url), job=None)
+            except Exception as exc:
+                append_activity(db, session, "error", "Preview auto-verification failed", str(exc)[:1000])
     complete_job(db, job, "completed" if summary["status"] == "passed" else "failed", summary, commands_run=results)
     return summary
 
@@ -1287,68 +1693,81 @@ def check_preview_url(db: Session, session: CodeSession, url: str, job=None) -> 
 
     append_activity(db, session, "deploy", "Checking preview", url)
     append_job_log(db, job, "deploy", "Checking preview", url)
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "NEXUS-Code-Preview/1.0"},
-        method="GET",
-    )
-    metadata = _metadata(session)
 
     def store_result(result: dict) -> dict:
+        metadata = _metadata(session)
         preview_checks = list(metadata.get("preview_checks") or [])
         preview_checks.append(result)
         metadata["preview_checks"] = preview_checks[-30:]
+        if result.get("screenshot_base64"):
+            last_screenshots = list(metadata.get("last_preview_screenshots") or [])
+            last_screenshots.append({
+                "checked_at": result.get("checked_at"),
+                "status": result.get("status"),
+                "url": result.get("url"),
+                "blank_page": result.get("blank_page"),
+                "screenshot_base64": result.get("screenshot_base64"),
+                "console_error_count": len(result.get("console_errors") or []),
+                "network_failure_count": len(result.get("network_failures") or []),
+            })
+            metadata["last_preview_screenshots"] = last_screenshots[-5:]
+        metadata["latest_preview_fix_suggestion"] = result.get("fix_suggestion_prompt") or ""
         _set_metadata(session, metadata)
         db.commit()
         return result
 
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            status_code = response.getcode()
-            content_type = response.headers.get("content-type", "")
-            body = response.read(250_000).decode("utf-8", errors="ignore")
-    except urllib.error.HTTPError as exc:
-        result = {"url": url, "status": "failed", "status_code": exc.code, "title": "", "issues": [f"HTTP {exc.code}"], "checked_at": _now()}
-        append_activity(db, session, "error", "Preview check failed", f"HTTP {exc.code}")
-        complete_job(db, job, "failed", result)
-        return store_result(result)
-    except Exception as exc:
-        result = {"url": url, "status": "failed", "status_code": None, "title": "", "issues": [str(exc)], "checked_at": _now()}
-        append_activity(db, session, "error", "Preview check failed", str(exc))
-        complete_job(db, job, "failed", result)
-        return store_result(result)
+    from .preview_verifier import verify_preview_url
 
-    parser = _TitleParser()
-    if "html" in content_type.lower():
-        parser.feed(body)
-    markers = [
-        "Unhandled Runtime Error",
-        "Application error",
-        "Traceback",
-        "Module not found",
-        "ReferenceError",
-        "TypeError:",
-        "SyntaxError:",
-        "Internal Server Error",
-    ]
-    issues = [marker for marker in markers if marker.lower() in body.lower()]
-    status = "passed" if 200 <= status_code < 400 and not issues else "failed"
-    result = {
-        "url": url,
-        "status": status,
-        "status_code": status_code,
-        "content_type": content_type,
-        "title": parser.title,
-        "issues": issues,
-        "checked_at": _now(),
-    }
-    detail = f"{status_code} {content_type}".strip()
-    if parser.title:
-        detail = f"{detail}\nTitle: {parser.title}"
-    if issues:
-        detail = f"{detail}\nPotential issue markers: {', '.join(issues)}"
-    append_activity(db, session, "done" if status == "passed" else "error", f"Preview check {status}", detail)
-    complete_job(db, job, "completed" if status == "passed" else "failed", result)
+    artifacts_dir = _workspace_runtime_root(session) / ".nexus" / "artifacts" / "preview"
+    result = verify_preview_url(url, artifacts_dir)
+    for artifact in result.get("artifacts") or []:
+        path_value = artifact.get("path")
+        if path_value and artifact.get("kind") == "screenshot":
+            artifact["url"] = f"/api/v1/code/sessions/{session.id}/preview-artifact?path={quote(str(path_value), safe='')}"
+            result["screenshot_url"] = artifact["url"]
+        elif path_value and artifact.get("kind") == "html_snapshot":
+            artifact["url"] = f"/api/v1/code/sessions/{session.id}/preview-artifact?path={quote(str(path_value), safe='')}"
+            result["html_snapshot_url"] = artifact["url"]
+    for artifact in result.get("artifacts") or []:
+        if job and artifact.get("path"):
+            add_job_artifact(
+                db,
+                job,
+                artifact.get("name") or Path(str(artifact["path"])).name,
+                str(artifact["path"]),
+                artifact.get("kind") or "preview_artifact",
+                int(artifact.get("size_bytes") or 0),
+                {"url": url, "status": result.get("status")},
+            )
+    detail = f"{result.get('status_code') or ''} {result.get('content_type') or ''}".strip()
+    if result.get("title"):
+        detail = f"{detail}\nTitle: {result['title']}"
+    if result.get("issues"):
+        detail = f"{detail}\nPotential issue markers: {', '.join(result['issues'])}"
+    append_activity(
+        db,
+        session,
+        "done" if result.get("status") == "passed" else "error",
+        f"Preview check {result.get('status')}",
+        detail,
+        receipt={
+            "summary": f"Preview verification {result.get('status')}",
+            "mode": "preview",
+            "intent": "Verify",
+            "checks": [{
+                "label": "Browser preview",
+                "status": result.get("status"),
+                "detail": ", ".join(result.get("issues") or []) or "No visible/runtime issue detected.",
+            }],
+            "approval_state": "needs fix" if result.get("status") != "passed" else "verified",
+            "next_actions": [
+                {"title": "Fix preview issue", "summary": "Use screenshot, console, and network evidence to prepare a focused patch.", "mode": "code"},
+                {"title": "Open terminal", "summary": "Run build/test commands in the active project.", "mode": "code"},
+                {"title": "Review changes", "summary": "Inspect pending diffs before applying anything.", "mode": "code"},
+            ] if result.get("status") != "passed" else [],
+        },
+    )
+    complete_job(db, job, "completed" if result.get("status") == "passed" else "failed", result)
     return store_result(result)
 
 
@@ -1390,13 +1809,13 @@ def prepare_pull_request(db: Session, session: CodeSession, title: str | None = 
         complete_job(db, job, "failed", {"error": "No repository connected"})
         raise HTTPException(status_code=400, detail="Connect a repository before preparing a PR.")
 
-    safe_title = (title or session.title or "NEXUS Code changes").strip()
+    safe_title = (title or session.title or "Arceus Code changes").strip()
     slug = "".join(char.lower() if char.isalnum() else "-" for char in safe_title).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")
     branch_name = f"nexus/{slug[:48] or 'workspace-update'}"
     preview = metadata.get("patch_preview") or []
-    patch_summary = metadata.get("patch_summary") or "Workspace changes prepared by NEXUS Code."
+    patch_summary = metadata.get("patch_summary") or "Workspace changes prepared by Arceus Code."
     last_applied = metadata.get("last_applied_files") or []
     changed_files = [item.get("filename") for item in preview if item.get("filename")] or [item.get("filename") for item in last_applied if item.get("filename")]
     recent_checks = metadata.get("preview_checks") or []
@@ -1416,7 +1835,7 @@ def prepare_pull_request(db: Session, session: CodeSession, title: str | None = 
     body_lines.extend([
         "",
         "## Safety",
-        "- Generated in an app-managed NEXUS Code workspace.",
+        "- Generated in an app-managed Arceus Code workspace.",
         "- Review diffs before applying to a real repository.",
     ])
     pr_plan = {
@@ -1451,8 +1870,14 @@ def open_github_pull_request(db: Session, user_id: UUID, session: CodeSession, j
     branch_name = pr_plan.get("branch_name") or f"nexus/{uuid.uuid4().hex[:10]}"
     base_sha = _github_branch_sha(owner, repo, base_branch)
     if not base_sha:
-        complete_job(db, job, "failed", {"error": f"Could not resolve base branch {base_branch}"})
-        raise HTTPException(status_code=400, detail=f"Could not resolve base branch {base_branch}")
+        detail = {
+            "error_class": "command_failed",
+            "message": "Base branch could not be resolved",
+            "cause": f"GitHub did not return a SHA for {base_branch}",
+            "branch": base_branch,
+        }
+        complete_job(db, job, "failed", detail)
+        raise HTTPException(status_code=400, detail=detail)
     _github_create_branch(owner, repo, branch_name, base_sha)
 
     target_filenames = set(pr_plan.get("changed_files") or [])
@@ -1464,7 +1889,7 @@ def open_github_pull_request(db: Session, user_id: UUID, session: CodeSession, j
         raise HTTPException(status_code=400, detail="No files available to commit")
 
     committed = []
-    message = pr_plan.get("commit_message") or session.title or "NEXUS Code workspace changes"
+    message = pr_plan.get("commit_message") or session.title or "Arceus Code workspace changes"
     for record in files:
         content = get_file_text(db, user_id, record.id)
         payload = {
@@ -1486,7 +1911,7 @@ def open_github_pull_request(db: Session, user_id: UUID, session: CodeSession, j
         "title": pr_plan.get("pr_title") or message,
         "head": branch_name,
         "base": base_branch,
-        "body": pr_plan.get("pr_body") or "Prepared by NEXUS Code.",
+        "body": pr_plan.get("pr_body") or "Prepared by Arceus Code.",
     }
     pull = _github_request("POST", f"/repos/{owner}/{repo}/pulls", pr_payload)
     result = {
@@ -2037,7 +2462,7 @@ def suggest_next_actions(
         suggestions.append(_suggestion_payload(
             session=session,
             title="Open or import a project",
-            summary="Start by adding repo files so NEXUS can inspect real code instead of guessing from the prompt.",
+            summary="Start by adding repo files so Arceus can inspect real code instead of guessing from the prompt.",
             mode="code",
             risk="low",
             files=[],
@@ -2053,7 +2478,7 @@ def suggest_next_actions(
             confidence=0.94,
             decision_reason="Without repo files, any code answer would be guesswork. The highest-value move is to establish real project context first.",
             tradeoffs=["Slower than asking for code immediately.", "Prevents wrong architecture and file guesses later."],
-            thinking_prompt="What project should NEXUS understand before it writes or reviews anything?",
+            thinking_prompt="What project should Arceus understand before it writes or reviews anything?",
             coach_lens=["project context", "architecture", "maintainability"],
             alternatives=["Paste a small snippet for one-off help.", "Connect GitHub if this is an existing repo."],
             next_after_done="Generate a project roadmap and first safe check command.",
@@ -2068,7 +2493,7 @@ def suggest_next_actions(
             risk="medium",
             files=files,
             folders=folders,
-            steps=["Open the pending diff.", "Review additions/deletions by file.", "Approve, reject, or ask NEXUS for a smaller patch."],
+            steps=["Open the pending diff.", "Review additions/deletions by file.", "Approve, reject, or ask Arceus for a smaller patch."],
             commands=commands[:2],
             requires_approval=True,
             prompt="Review the pending patch. Summarize changed files, additions/deletions, risk, and the exact checks I should run before approval.",
@@ -2166,7 +2591,7 @@ def suggest_next_actions(
         suggestions.append(_suggestion_payload(
             session=session,
             title="Connect GitHub",
-            summary="Connect a repository so NEXUS can turn approved changes into branches, commits, and pull requests.",
+            summary="Connect a repository so Arceus can turn approved changes into branches, commits, and pull requests.",
             mode="deploy",
             risk="low",
             files=[],
@@ -2427,8 +2852,19 @@ def _build_diagnostics_context(session: CodeSession) -> str:
     return diagnostics
 
 
-def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
-    bundle = build_file_bundle(db, user_id, code_files(db, user_id, session))
+def generate_plan(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    instruction: str,
+    provider: str | None,
+    model: str | None,
+    job=None,
+    finalize_job: bool = True,
+    file_ids: list[str] | None = None,
+) -> str:
+    context_files = code_files(db, user_id, session, file_ids)
+    bundle = build_file_bundle(db, user_id, context_files)
     metadata = _metadata(session)
     analysis = metadata.get("workspace_analysis") or {}
     diagnostics = _build_diagnostics_context(session)
@@ -2442,6 +2878,8 @@ def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction:
     session.plan_text = str(response.content)
     metadata = _metadata(session)
     metadata["last_instruction"] = instruction
+    metadata["last_context_file_ids"] = [str(record.id) for record in context_files]
+    metadata["last_context_files"] = [record.filename for record in context_files]
     _set_metadata(session, metadata)
     db.commit()
     append_activity(db, session, "done", "Implementation plan stored", (session.plan_text or "")[:220])
@@ -2450,8 +2888,18 @@ def generate_plan(db: Session, user_id: UUID, session: CodeSession, instruction:
     return session.plan_text or ""
 
 
-def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction: str, provider: str | None, model: str | None, job=None, finalize_job: bool = True) -> str:
-    files = code_files(db, user_id, session)
+def generate_patch(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    instruction: str,
+    provider: str | None,
+    model: str | None,
+    job=None,
+    finalize_job: bool = True,
+    file_ids: list[str] | None = None,
+) -> str:
+    files = code_files(db, user_id, session, file_ids)
     bundle = build_file_bundle(db, user_id, files)
     diagnostics = _build_diagnostics_context(session)
     append_activity(db, session, "edit", "Generating reviewable patch", "The patch will remain pending until approved.")
@@ -2459,14 +2907,25 @@ def generate_patch(db: Session, user_id: UUID, session: CodeSession, instruction
     llm = get_chat_llm(role="reasoning", provider=provider, model=model)
     response = llm.invoke([
         SystemMessage(content=(
-            "You are Autonomus AI in coding workspace mode. Return ONLY JSON with this shape: "
-            "{\"files\":[{\"file_id\":\"...\",\"filename\":\"...\",\"content\":\"full updated file content\"}],\"summary\":\"...\"}. "
-            "Use full replacement content so the app can apply safely."
+            "You are Autonomus AI in coding workspace mode. Return ONLY JSON. Prefer this shape: "
+            "{\"operations\":["
+            "{\"type\":\"modify\",\"file_id\":\"...\",\"filename\":\"...\",\"content\":\"full updated file content\"},"
+            "{\"type\":\"create\",\"filename\":\"path/new-file.ts\",\"content\":\"new file content\"},"
+            "{\"type\":\"delete\",\"file_id\":\"...\",\"filename\":\"path/file.ts\"},"
+            "{\"type\":\"rename\",\"file_id\":\"...\",\"filename\":\"old.ts\",\"new_filename\":\"new.ts\",\"content\":\"optional updated content\"},"
+            "{\"type\":\"folder\",\"filename\":\"path/new-folder\"}"
+            "],\"summary\":\"...\",\"checks\":[\"npm run build\"]}. "
+            "Use full replacement content for modify/create/rename so the app can review and rollback safely. "
+            "For backwards compatibility, {\"files\":[...]} is also accepted, but operations are preferred."
         )),
         HumanMessage(content=f"Instruction:\n{instruction}{diagnostics}\n\nCurrent plan:\n{session.plan_text or ''}\n\nWorkspace files:\n{bundle}"),
     ])
     raw = str(response.content)
     session.patch_text = raw
+    metadata = _metadata(session)
+    metadata["last_context_file_ids"] = [str(record.id) for record in files]
+    metadata["last_context_files"] = [record.filename for record in files]
+    _set_metadata(session, metadata)
     db.commit()
     preview = preview_patch_payload(db, user_id, session)
     append_activity(db, session, "edit", "Patch ready for review", f"{len(preview)} file diff(s) prepared")
@@ -2491,6 +2950,178 @@ def _parse_patch_payload(patch_text: str) -> dict:
         if start >= 0 and end > start:
             return json.loads(patch_text[start:end + 1])
     raise HTTPException(status_code=400, detail="Patch is not valid replacement JSON")
+
+
+def _safe_patch_filename(value: str) -> str:
+    filename = str(value or "").replace("\\", "/").lstrip("/")
+    if not filename or filename.startswith("../") or "/../" in f"/{filename}/":
+        raise HTTPException(status_code=400, detail=f"Unsafe patch filename: {value}")
+    return filename[:500]
+
+
+def _normalize_patch_operations(payload: dict) -> list[dict]:
+    operations: list[dict] = []
+    if isinstance(payload.get("operations"), list):
+        for index, raw in enumerate(payload.get("operations") or []):
+            if not isinstance(raw, dict):
+                continue
+            op_type = str(raw.get("type") or raw.get("operation") or "modify").lower().strip()
+            if op_type in {"mkdir", "directory"}:
+                op_type = "folder"
+            if op_type not in {"create", "modify", "delete", "rename", "folder"}:
+                raise HTTPException(status_code=400, detail=f"Unsupported patch operation: {op_type}")
+            operation = dict(raw)
+            operation["type"] = op_type
+            operation["operation_id"] = str(raw.get("operation_id") or raw.get("id") or f"op-{index}")
+            if operation.get("filename"):
+                operation["filename"] = _safe_patch_filename(operation["filename"])
+            if operation.get("new_filename"):
+                operation["new_filename"] = _safe_patch_filename(operation["new_filename"])
+            operations.append(operation)
+
+    for index, raw in enumerate(payload.get("files") or []):
+        if not isinstance(raw, dict):
+            continue
+        operation = dict(raw)
+        operation["type"] = "modify"
+        operation["operation_id"] = str(raw.get("operation_id") or raw.get("id") or f"file-{index}")
+        if operation.get("filename"):
+            operation["filename"] = _safe_patch_filename(operation["filename"])
+        operations.append(operation)
+    return operations
+
+
+def _record_by_operation(db: Session, user_id: UUID, operation: dict) -> FileReference | None:
+    file_id = operation.get("file_id")
+    if file_id:
+        try:
+            record = (
+                db.query(FileReference)
+                .filter(FileReference.id == UUID(str(file_id)), FileReference.user_id == user_id)
+                .first()
+            )
+            if record:
+                return record
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid file_id in patch operation: {file_id}")
+    filename = operation.get("filename")
+    if filename:
+        return (
+            db.query(FileReference)
+            .filter(
+                FileReference.user_id == user_id,
+                FileReference.owner_type == "code_workspace",
+                FileReference.owner_id == operation.get("owner_id"),
+                FileReference.filename == filename,
+                FileReference.status == "active",
+            )
+            .first()
+        )
+    return None
+
+
+def _patch_impact_from_diff(diff: str) -> dict:
+    return {
+        "additions": sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")),
+        "deletions": sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")),
+    }
+
+
+def _patch_impact_summary(changed: list[dict], folders_created: list[str] | None = None) -> dict:
+    folders = folders_created or []
+    changed_files = []
+    for item in changed:
+        diff_impact = _patch_impact_from_diff(item.get("diff") or "")
+        changed_files.append({
+            "operation_id": item.get("operation_id") or "",
+            "operation": item.get("operation") or "modify",
+            "file_id": item.get("file_id") or "",
+            "filename": item.get("new_filename") or item.get("filename") or "",
+            "previous_filename": item.get("filename") if item.get("new_filename") else "",
+            "additions": int(item.get("additions") or diff_impact.get("additions") or 0),
+            "deletions": int(item.get("deletions") or diff_impact.get("deletions") or 0),
+        })
+    return {
+        "changed_files": changed_files,
+        "created_files": [item["filename"] for item in changed_files if item.get("operation") == "create"],
+        "modified_files": [item["filename"] for item in changed_files if item.get("operation") == "modify"],
+        "deleted_files": [item.get("previous_filename") or item["filename"] for item in changed_files if item.get("operation") == "delete"],
+        "renamed_files": [
+            {"from": item.get("previous_filename"), "to": item.get("filename")}
+            for item in changed_files
+            if item.get("operation") == "rename"
+        ],
+        "folders_created": folders,
+        "total_additions": sum(item.get("additions", 0) for item in changed_files),
+        "total_deletions": sum(item.get("deletions", 0) for item in changed_files),
+    }
+
+
+def build_work_receipt(
+    session: CodeSession,
+    summary: str,
+    mode: str = "code",
+    intent: str = "Build",
+    plan: str | None = None,
+    preview: list[dict] | None = None,
+    commands: list[dict] | None = None,
+    checks: list[dict] | None = None,
+    next_actions: list[dict] | None = None,
+    approval_state: str = "done",
+) -> dict:
+    metadata = _metadata(session)
+    changed = preview if preview is not None else metadata.get("patch_preview") or []
+    action_source = next_actions if next_actions is not None else [
+        _serialize_workspace_task(task)
+        for task in reversed(_workspace_tasks(metadata))
+        if task.get("status") not in {"dismissed", "done", "failed"}
+    ][:3]
+    inspected = list(metadata.get("last_context_files") or [])
+    if not inspected:
+        inspected = [
+            item.get("filename") or item.get("path")
+            for item in (metadata.get("file_tree") or [])
+            if item.get("filename") or item.get("path")
+        ][:12]
+    files_changed = [
+        {
+            "filename": item.get("new_filename") or item.get("filename") or "workspace file",
+            "operation": item.get("operation") or item.get("type") or "modify",
+            "additions": int(item.get("additions") or _patch_impact_from_diff(item.get("diff") or "").get("additions") or 0),
+            "deletions": int(item.get("deletions") or _patch_impact_from_diff(item.get("diff") or "").get("deletions") or 0),
+        }
+        for item in changed
+    ]
+    receipt_checks = checks or [{"label": "Review patch before apply", "status": "pending approval"}] if approval_state == "waiting approval" else checks or []
+    checks_passed = len([item for item in receipt_checks if re.search(r"pass|success|done|completed", str(item.get("status") or ""), re.I)])
+    checks_failed = len([item for item in receipt_checks if re.search(r"fail|error|blocked|timeout", str(item.get("status") or ""), re.I)])
+    return {
+        "summary": summary,
+        "mode": mode,
+        "intent": intent,
+        "project": session.project.name if session.project else "Workspace",
+        "session": str(session.id)[:8],
+        "sandbox_provider": settings.SANDBOX_PROVIDER.lower(),
+        "plan": plan if plan is not None else session.plan_text or "",
+        "files_inspected": inspected,
+        "files_changed": files_changed,
+        "folders_created": [
+            item.get("filename")
+            for item in changed
+            if (item.get("operation") or item.get("type")) == "folder" and item.get("filename")
+        ],
+        "commands_run": commands or [],
+        "checks": receipt_checks,
+        "checks_passed": checks_passed,
+        "checks_failed": checks_failed,
+        "approval_state": approval_state,
+        "rollback_available": bool(metadata.get("rollback_snapshots")) or approval_state in {"approved", "restored"},
+        "line_impact": {
+            "additions": sum(item.get("additions", 0) for item in files_changed),
+            "deletions": sum(item.get("deletions", 0) for item in files_changed),
+        },
+        "next_actions": action_source[:3],
+    }
 
 
 def parse_diff_to_hunks(old_text: str, new_text: str) -> list[dict]:
@@ -2576,43 +3207,113 @@ def preview_patch_payload(db: Session, user_id: UUID, session: CodeSession) -> l
     payload = _parse_patch_payload(session.patch_text)
     metadata = _metadata(session)
     hunks_state = metadata.get("patch_hunks_state") or {}
+    previous_preview = {
+        str(item.get("operation_id") or item.get("file_id") or item.get("filename") or ""): item
+        for item in (metadata.get("patch_preview") or [])
+    }
     previews = []
-    for item in payload.get("files") or []:
-        file_id = UUID(str(item.get("file_id")))
-        record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
-        if not record:
+    operations = _normalize_patch_operations(payload)
+    for item in operations:
+        op_type = item.get("type") or "modify"
+        record: FileReference | None = None
+        file_id_value = item.get("file_id")
+        if file_id_value:
+            record = db.query(FileReference).filter(FileReference.id == UUID(str(file_id_value)), FileReference.user_id == user_id).first()
+        filename = item.get("filename") or (record.filename if record else "")
+        new_filename = item.get("new_filename") or filename
+        previous = previous_preview.get(str(item.get("operation_id") or item.get("file_id") or filename or ""))
+        base_checksum = previous.get("base_checksum") if previous else None
+        current_checksum = record.checksum_sha256 if record else ""
+
+        if op_type in {"modify", "delete", "rename"} and not record:
             continue
-        old_text = get_file_text(db, user_id, record.id)
-        new_text = str(item.get("content") or "")
+        if op_type == "folder":
+            previews.append({
+                "operation_id": item["operation_id"],
+                "operation": "folder",
+                "file_id": "",
+                "filename": _safe_patch_filename(filename),
+                "new_filename": "",
+                "diff": "",
+                "additions": 0,
+                "deletions": 0,
+                "hunks": [],
+                "status": "pending",
+                "base_checksum": "",
+                "current_checksum": "",
+                "conflict": False,
+            })
+            continue
+
+        old_text = get_file_text(db, user_id, record.id) if record and op_type != "create" else ""
+        if not base_checksum and record:
+            base_checksum = record.checksum_sha256
+        if op_type == "delete":
+            new_text = ""
+        else:
+            new_text = str(item.get("content") or (old_text if op_type == "rename" else ""))
+        fromfile = f"a/{filename}"
+        tofile = f"b/{new_filename}"
         diff = "\n".join(difflib.unified_diff(
             old_text.splitlines(),
             new_text.splitlines(),
-            fromfile=f"a/{record.filename}",
-            tofile=f"b/{record.filename}",
+            fromfile=fromfile,
+            tofile=tofile,
             lineterm="",
         ))
 
         # Parse hunks and assign status
         hunks = parse_diff_to_hunks(old_text, new_text)
         for hunk in hunks:
-            hunk_id = f"{record.id}-{hunk['index']}"
+            hunk_id = f"{item['operation_id']}-{record.id if record else 'new'}-{hunk['index']}"
             hunk["id"] = hunk_id
             if hunk_id in hunks_state:
                 hunk["status"] = hunks_state[hunk_id]
 
+        impact = _patch_impact_from_diff(diff)
         previews.append({
-            "file_id": str(record.id),
-            "filename": record.filename,
+            "operation_id": item["operation_id"],
+            "operation": op_type,
+            "file_id": str(record.id) if record else "",
+            "filename": filename,
+            "new_filename": new_filename if new_filename != filename else "",
             "diff": diff,
-            "additions": sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")),
-            "deletions": sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")),
+            "additions": impact["additions"],
+            "deletions": impact["deletions"],
             "hunks": hunks,
+            "status": "pending",
+            "base_checksum": base_checksum or "",
+            "current_checksum": current_checksum or "",
+            "conflict": bool(base_checksum and current_checksum and base_checksum != current_checksum),
         })
     metadata["patch_preview"] = previews
     metadata["patch_summary"] = payload.get("summary") or ""
+    metadata["patch_checks"] = payload.get("checks") or []
     _set_metadata(session, metadata)
     db.commit()
     return previews
+
+
+def check_patch_conflicts(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    previews = preview_patch_payload(db, user_id, session)
+    conflicts = [
+        {
+            "operation_id": item.get("operation_id") or "",
+            "file_id": item.get("file_id") or "",
+            "filename": item.get("new_filename") or item.get("filename") or "",
+            "operation": item.get("operation") or "modify",
+            "base_checksum": item.get("base_checksum") or "",
+            "current_checksum": item.get("current_checksum") or "",
+        }
+        for item in previews
+        if item.get("conflict")
+    ]
+    return {
+        "status": "conflicts" if conflicts else "clean",
+        "conflicts": conflicts,
+        "count": len(conflicts),
+        "patch_preview": previews,
+    }
 
 
 def _selected_file_id_set(file_ids: list[str] | None) -> set[str]:
@@ -2625,33 +3326,67 @@ def _selected_file_id_set(file_ids: list[str] | None) -> set[str]:
     return selected
 
 
-def reject_patch_payload(db: Session, session: CodeSession, file_ids: list[str] | None = None) -> dict:
+def _selected_operation_id_set(operation_ids: list[str] | None) -> set[str]:
+    return {str(value) for value in (operation_ids or []) if str(value).strip()}
+
+
+def _selected_hunk_id_set(hunk_ids: list[str] | None) -> set[str]:
+    return {str(value) for value in (hunk_ids or []) if str(value).strip()}
+
+
+def reject_patch_payload(db: Session, session: CodeSession, file_ids: list[str] | None = None, operation_ids: list[str] | None = None) -> dict:
     metadata = _metadata(session)
     selected = _selected_file_id_set(file_ids)
+    selected_ops = _selected_operation_id_set(operation_ids)
     rejected = []
-    if selected and session.patch_text:
+    if (selected or selected_ops) and session.patch_text:
         payload = _parse_patch_payload(session.patch_text)
-        remaining_files = []
-        for item in payload.get("files") or []:
-            file_id = str(item.get("file_id") or "")
-            if file_id in selected:
-                rejected.append({"file_id": file_id, "filename": item.get("filename") or ""})
+        if payload.get("operations"):
+            remaining_ops = []
+            for item in _normalize_patch_operations(payload):
+                file_id = str(item.get("file_id") or "")
+                operation_id = str(item.get("operation_id") or "")
+                if file_id in selected or operation_id in selected_ops:
+                    rejected.append({"file_id": file_id, "filename": item.get("filename") or "", "operation": item.get("type")})
+                else:
+                    remaining_ops.append(item)
+            if remaining_ops:
+                payload["operations"] = remaining_ops
+                payload.pop("files", None)
+                session.patch_text = json.dumps(payload)
             else:
-                remaining_files.append(item)
-        if remaining_files:
-            payload["files"] = remaining_files
-            session.patch_text = json.dumps(payload)
+                payload["operations"] = []
+                metadata["patch_summary"] = ""
+                session.patch_text = None
             metadata["patch_preview"] = [
                 item for item in (metadata.get("patch_preview") or [])
                 if str(item.get("file_id") or "") not in selected
+                and str(item.get("operation_id") or "") not in selected_ops
             ]
         else:
-            metadata["patch_preview"] = []
-            metadata["patch_summary"] = ""
-            session.patch_text = None
+            remaining_files = []
+            for item in payload.get("files") or []:
+                file_id = str(item.get("file_id") or "")
+                operation_id = str(item.get("operation_id") or "")
+                if file_id in selected or operation_id in selected_ops:
+                    rejected.append({"file_id": file_id, "filename": item.get("filename") or ""})
+                else:
+                    remaining_files.append(item)
+            if remaining_files:
+                payload["files"] = remaining_files
+                session.patch_text = json.dumps(payload)
+                metadata["patch_preview"] = [
+                    item for item in (metadata.get("patch_preview") or [])
+                    if str(item.get("file_id") or "") not in selected
+                    and str(item.get("operation_id") or "") not in selected_ops
+                ]
+            else:
+                metadata["patch_preview"] = []
+                metadata["patch_summary"] = ""
+                session.patch_text = None
     else:
         rejected = [
-            {"file_id": str(item.get("file_id") or ""), "filename": item.get("filename") or ""}
+            {"file_id": str(item.get("file_id") or ""), "filename": item.get("filename") or "", "operation": item.get("operation") or "modify"}
             for item in (metadata.get("patch_preview") or [])
         ]
         metadata["patch_preview"] = []
@@ -2664,78 +3399,290 @@ def reject_patch_payload(db: Session, session: CodeSession, file_ids: list[str] 
     return {"status": "rejected", "rejected": rejected, "remaining": metadata.get("patch_preview") or []}
 
 
-def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=None, file_ids: list[str] | None = None) -> dict:
+def apply_patch_payload(
+    db: Session,
+    user_id: UUID,
+    session: CodeSession,
+    job=None,
+    file_ids: list[str] | None = None,
+    operation_ids: list[str] | None = None,
+    hunk_ids: list[str] | None = None,
+    allow_conflicts: bool = False,
+) -> dict:
     if not session.patch_text:
         raise HTTPException(status_code=400, detail="No patch has been generated")
     payload = _parse_patch_payload(session.patch_text)
     selected = _selected_file_id_set(file_ids)
-    all_replacements = payload.get("files") or []
-    replacements = [
-        item for item in all_replacements
-        if not selected or str(item.get("file_id") or "") in selected
+    selected_ops = _selected_operation_id_set(operation_ids)
+    selected_hunks = _selected_hunk_id_set(hunk_ids)
+    all_operations = _normalize_patch_operations(payload)
+    selection_metadata = _metadata(session)
+    selection_hunks_state = selection_metadata.get("patch_hunks_state") or {}
+    applied_hunk_ids: set[str] = set()
+
+    def operation_has_selected_hunk(item: dict) -> bool:
+        if not selected_hunks:
+            return False
+        operation_id = str(item.get("operation_id") or "")
+        return any(hunk_id.startswith(f"{operation_id}-") for hunk_id in selected_hunks)
+
+    def operation_hunks_fully_selected(item: dict) -> bool:
+        if not selected_hunks or not operation_has_selected_hunk(item):
+            return False
+        op_type = item.get("type") or "modify"
+        if op_type not in {"modify", "create", "rename"}:
+            return True
+        record: FileReference | None = None
+        if item.get("file_id"):
+            record = db.query(FileReference).filter(FileReference.id == UUID(str(item.get("file_id"))), FileReference.user_id == user_id).first()
+        old_text = get_file_text(db, user_id, record.id) if record and record.status == "active" else ""
+        if op_type == "delete":
+            new_text = ""
+        else:
+            new_text = str(item.get("content") or (old_text if op_type == "rename" else ""))
+        operation_id = str(item.get("operation_id") or "")
+        hunk_owner = str(record.id) if record else "new"
+        pending_hunk_ids = {
+            f"{operation_id}-{hunk_owner}-{hunk['index']}"
+            for hunk in parse_diff_to_hunks(old_text, new_text)
+            if selection_hunks_state.get(f"{operation_id}-{hunk_owner}-{hunk['index']}") != "rejected"
+        }
+        return bool(pending_hunk_ids) and pending_hunk_ids.issubset(selected_hunks)
+
+    operations = [
+        item for item in all_operations
+        if (
+            (not selected and not selected_ops and not selected_hunks)
+            or str(item.get("file_id") or "") in selected
+            or str(item.get("operation_id") or "") in selected_ops
+            or operation_has_selected_hunk(item)
+        )
     ]
-    remaining_replacements = [
-        item for item in all_replacements
-        if selected and str(item.get("file_id") or "") not in selected
+    remaining_operations = [
+        item for item in all_operations
+        if (
+            (selected or selected_ops or selected_hunks)
+            and str(item.get("file_id") or "") not in selected
+            and str(item.get("operation_id") or "") not in selected_ops
+            and (not operation_has_selected_hunk(item) or not operation_hunks_fully_selected(item))
+        )
     ]
-    if selected and not replacements:
-        raise HTTPException(status_code=400, detail="Selected files are not present in the pending patch")
+    if (selected or selected_ops or selected_hunks) and not operations:
+        raise HTTPException(status_code=400, detail={
+            "error_class": "patch_conflict",
+            "message": "Selected patch items are no longer available",
+            "cause": "The selected files, operations, or hunks are not present in the pending patch.",
+        })
+    if not allow_conflicts:
+        previews = preview_patch_payload(db, user_id, session)
+        selected_operation_ids = {str(item.get("operation_id") or "") for item in operations}
+        selected_file_ids = {str(item.get("file_id") or "") for item in operations if item.get("file_id")}
+        conflicts = [
+            {
+                "operation_id": item.get("operation_id") or "",
+                "file_id": item.get("file_id") or "",
+                "filename": item.get("new_filename") or item.get("filename") or "",
+                "operation": item.get("operation") or "modify",
+                "base_checksum": item.get("base_checksum") or "",
+                "current_checksum": item.get("current_checksum") or "",
+            }
+            for item in previews
+            if item.get("conflict")
+            and (
+                str(item.get("operation_id") or "") in selected_operation_ids
+                or str(item.get("file_id") or "") in selected_file_ids
+            )
+        ]
+        if conflicts:
+            raise HTTPException(status_code=409, detail={
+                "error_class": "patch_conflict",
+                "message": "Patch conflict detected",
+                "cause": f"{len(conflicts)} file(s) changed after this patch was generated.",
+                "conflicts": conflicts,
+            })
     changed = []
     rollback_snapshots = []
-    for item in replacements:
-        file_id = UUID(str(item.get("file_id")))
-        record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
-        if not record:
-            raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
-        old_text = get_file_text(db, user_id, record.id)
-        new_text = str(item.get("content") or "")
-
-        # Resolve hunk states
+    session_file_ids = [str(value) for value in (session.file_ids or [])]
+    folders_created: list[str] = []
+    for item in operations:
+        op_type = item.get("type") or "modify"
         session_metadata = _metadata(session)
         hunks_state = session_metadata.get("patch_hunks_state") or {}
-        hunks = parse_diff_to_hunks(old_text, new_text)
-        hunks_modified = False
-        for hunk in hunks:
-            hunk_id = f"{record.id}-{hunk['index']}"
-            if hunks_state.get(hunk_id) == "rejected":
-                hunk["status"] = "rejected"
-                hunks_modified = True
+        operation_id = item["operation_id"]
 
-        if hunks_modified:
-            new_text = apply_hunks_to_file(old_text, hunks)
-
-        if not new_text:
+        if op_type == "folder":
+            folder = _safe_patch_filename(item.get("filename") or "")
+            metadata_now = _metadata(session)
+            workspace_folders = list(metadata_now.get("workspace_folders") or [])
+            if folder not in workspace_folders:
+                workspace_folders.append(folder)
+            metadata_now["workspace_folders"] = workspace_folders
+            _set_metadata(session, metadata_now)
+            local_folder = _safe_local_workspace_file(session, f"{folder}/.nexus-folder")
+            if local_folder:
+                local_folder.parent.mkdir(parents=True, exist_ok=True)
+            runtime_folder = _safe_workspace_path(_workspace_runtime_root(session), f"{folder}/.nexus-folder")
+            runtime_folder.parent.mkdir(parents=True, exist_ok=True)
+            folders_created.append(folder)
+            rollback_snapshots.append({"operation": "folder", "filename": folder, "captured_at": _now()})
+            changed.append({
+                "operation_id": operation_id,
+                "operation": "folder",
+                "file_id": "",
+                "filename": folder,
+                "diff": "",
+                "additions": 0,
+                "deletions": 0,
+            })
             continue
-        rollback_snapshots.append({
-            "file_id": str(record.id),
-            "filename": record.filename,
-            "content": old_text,
-            "captured_at": _now(),
-        })
-        put_object(record.object_key, new_text.encode("utf-8"), record.content_type or "text/plain")
 
-        # Desktop/local mode: mirror approved patches back into the selected local project.
-        local_file = _safe_local_workspace_file(session, record.filename)
-        if local_file:
-            local_file.parent.mkdir(parents=True, exist_ok=True)
-            local_file.write_text(new_text, encoding="utf-8")
+        record: FileReference | None = None
+        if item.get("file_id"):
+            record = db.query(FileReference).filter(FileReference.id == UUID(str(item.get("file_id"))), FileReference.user_id == user_id).first()
+        if op_type in {"modify", "delete", "rename"} and not record:
+            raise HTTPException(status_code=404, detail={
+                "error_class": "patch_conflict",
+                "message": "Patch target file is missing",
+                "cause": f"File not found: {item.get('file_id')}",
+            })
 
-        record.size_bytes = len(new_text.encode("utf-8"))
+        old_filename = record.filename if record else _safe_patch_filename(item.get("filename") or "")
+        target_filename = _safe_patch_filename(item.get("new_filename") or old_filename)
+        old_text = get_file_text(db, user_id, record.id) if record and record.status == "active" else ""
+        if op_type == "delete":
+            new_text = ""
+        else:
+            new_text = str(item.get("content") or (old_text if op_type == "rename" else ""))
+
+        if op_type in {"modify", "create", "rename"}:
+            hunks = parse_diff_to_hunks(old_text, new_text)
+            hunks_modified = False
+            for hunk in hunks:
+                hunk_id = f"{operation_id}-{record.id if record else 'new'}-{hunk['index']}"
+                if selected_hunks and hunk_id not in selected_hunks:
+                    hunk["status"] = "rejected"
+                    hunks_modified = True
+                elif hunks_state.get(hunk_id) == "rejected":
+                    hunk["status"] = "rejected"
+                    hunks_modified = True
+                elif selected_hunks and hunk_id in selected_hunks:
+                    applied_hunk_ids.add(hunk_id)
+            if hunks_modified:
+                new_text = apply_hunks_to_file(old_text, hunks)
+
+        if op_type == "create":
+            content_bytes = new_text.encode("utf-8")
+            object_key = f"users/{user_id}/files/{uuid.uuid4()}{Path(target_filename).suffix.lower() or '.txt'}"
+            put_object(object_key, content_bytes, "text/plain")
+            record = FileReference(
+                user_id=user_id,
+                owner_type="code_workspace",
+                owner_id=session.id,
+                storage_provider=storage_provider(),
+                bucket=settings.S3_BUCKET,
+                object_key=object_key,
+                filename=target_filename,
+                content_type="text/plain",
+                size_bytes=len(content_bytes),
+                checksum_sha256=hashlib.sha256(content_bytes).hexdigest(),
+                status="active",
+                metadata_json={"created_by_code_session_id": str(session.id)},
+            )
+            db.add(record)
+            db.flush()
+            session_file_ids.append(str(record.id))
+            rollback_snapshots.append({
+                "operation": "create",
+                "file_id": str(record.id),
+                "filename": target_filename,
+                "original_content": None,
+                "object_key": object_key,
+                "captured_at": _now(),
+            })
+        elif op_type == "delete":
+            rollback_snapshots.append({
+                "operation": "delete",
+                "file_id": str(record.id),
+                "filename": record.filename,
+                "content": old_text,
+                "original_content": old_text,
+                "metadata_json": record.metadata_json or {},
+                "captured_at": _now(),
+            })
+            record.status = "deleted"
+            if str(record.id) in session_file_ids:
+                session_file_ids.remove(str(record.id))
+        elif op_type == "rename":
+            rollback_snapshots.append({
+                "operation": "rename",
+                "file_id": str(record.id),
+                "filename": old_filename,
+                "new_filename": target_filename,
+                "content": old_text,
+                "original_content": old_text,
+                "original_name": old_filename,
+                "metadata_json": record.metadata_json or {},
+                "captured_at": _now(),
+            })
+            if new_text != old_text:
+                put_object(record.object_key, new_text.encode("utf-8"), record.content_type or "text/plain")
+                record.size_bytes = len(new_text.encode("utf-8"))
+                record.checksum_sha256 = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+            record.filename = target_filename
+        else:
+            rollback_snapshots.append({
+                "operation": "modify",
+                "file_id": str(record.id),
+                "filename": record.filename,
+                "content": old_text,
+                "original_content": old_text,
+                "captured_at": _now(),
+            })
+            put_object(record.object_key, new_text.encode("utf-8"), record.content_type or "text/plain")
+            record.size_bytes = len(new_text.encode("utf-8"))
+            record.checksum_sha256 = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
+
+        if op_type != "delete":
+            # Desktop/local mode and persistent runtime mirror approved patches back into selected projects.
+            local_file = _safe_local_workspace_file(session, target_filename)
+            if local_file:
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+                local_file.write_text(new_text, encoding="utf-8")
+            runtime_file = _safe_workspace_path(_workspace_runtime_root(session), target_filename)
+            runtime_file.parent.mkdir(parents=True, exist_ok=True)
+            runtime_file.write_text(new_text, encoding="utf-8")
+        else:
+            local_file = _safe_local_workspace_file(session, old_filename)
+            if local_file and local_file.exists():
+                local_file.unlink()
+            runtime_file = (_workspace_runtime_root(session) / old_filename).resolve()
+            if str(runtime_file).startswith(str(_workspace_runtime_root(session))) and runtime_file.exists():
+                runtime_file.unlink()
+
         record.metadata_json = {**(record.metadata_json or {}), "last_code_session_id": str(session.id)}
+        diff_text = "\n".join(difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile=f"a/{old_filename}",
+            tofile=f"b/{target_filename}",
+            lineterm="",
+        ))
+        diff_impact = _patch_impact_from_diff(diff_text)
         changed.append({
+            "operation_id": operation_id,
+            "operation": op_type,
             "file_id": str(record.id),
-            "filename": record.filename,
-            "diff": "\n".join(difflib.unified_diff(
-                old_text.splitlines(),
-                new_text.splitlines(),
-                fromfile=f"a/{record.filename}",
-                tofile=f"b/{record.filename}",
-                lineterm="",
-            )),
+            "filename": old_filename,
+            "new_filename": target_filename if target_filename != old_filename else "",
+            "diff": diff_text,
+            "additions": diff_impact["additions"],
+            "deletions": diff_impact["deletions"],
         })
 
-    if remaining_replacements:
-        payload["files"] = remaining_replacements
+    session.file_ids = session_file_ids
+    if remaining_operations:
+        payload.pop("files", None)
+        payload["operations"] = remaining_operations
         session.patch_text = json.dumps(payload)
         session.status = "active"
     else:
@@ -2743,54 +3690,45 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
         session.applied_at = datetime.now(timezone.utc)
         session.patch_text = None
     metadata = _metadata(session)
-    metadata["patch_preview"] = [
-        item for item in (metadata.get("patch_preview") or [])
-        if str(item.get("file_id") or "") not in {entry["file_id"] for entry in changed}
-    ] if remaining_replacements else []
+    if applied_hunk_ids:
+        hunk_state = dict(metadata.get("patch_hunks_state") or {})
+        for hunk_id in applied_hunk_ids:
+            hunk_state.pop(hunk_id, None)
+        metadata["patch_hunks_state"] = hunk_state
+    metadata["patch_preview"] = preview_patch_payload(db, user_id, session) if remaining_operations else []
     metadata["patch_summary"] = payload.get("summary") or ""
     metadata["last_applied_files"] = [
-        {"file_id": item["file_id"], "filename": item["filename"], "applied_at": _now()}
+        {
+            "operation": item.get("operation"),
+            "file_id": item.get("file_id"),
+            "filename": item.get("new_filename") or item.get("filename") or "",
+            "previous_filename": item.get("filename") if item.get("new_filename") else "",
+            "additions": item.get("additions") or 0,
+            "deletions": item.get("deletions") or 0,
+            "applied_at": _now(),
+        }
         for item in changed
+        if item.get("file_id") or item.get("filename") or item.get("new_filename")
     ]
+    impact_result = {
+        **_patch_impact_summary(changed, folders_created),
+        "summary": payload.get("summary") or "",
+    }
     active_task_id = metadata.get("active_workspace_task_id")
     if active_task_id:
-        impact_result = {
-            "changed_files": [
-                {
-                    "file_id": item["file_id"],
-                    "filename": item["filename"],
-                    "additions": sum(1 for line in item["diff"].splitlines() if line.startswith("+") and not line.startswith("+++")),
-                    "deletions": sum(1 for line in item["diff"].splitlines() if line.startswith("-") and not line.startswith("---")),
-                }
-                for item in changed
-            ],
-            "total_additions": sum(
-                1
-                for item in changed
-                for line in item["diff"].splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-            ),
-            "total_deletions": sum(
-                1
-                for item in changed
-                for line in item["diff"].splitlines()
-                if line.startswith("-") and not line.startswith("---")
-            ),
-            "summary": payload.get("summary") or "",
-        }
         tasks = _workspace_tasks(metadata)
         for index, task in enumerate(tasks):
             if str(task.get("id")) != str(active_task_id):
                 continue
             next_task = dict(task)
-            next_task["status"] = "waiting_approval" if remaining_replacements else "done"
+            next_task["status"] = "waiting_approval" if remaining_operations else "done"
             next_task["updated_at"] = _now()
             next_task["metadata"] = {**(next_task.get("metadata") or {}), "last_apply": impact_result}
             next_task["impact"] = (
                 f"Applied {len(changed)} file(s), +{impact_result['total_additions']} / -{impact_result['total_deletions']}."
                 if changed else next_task.get("impact") or ""
             )
-            if not remaining_replacements:
+            if not remaining_operations:
                 next_task["completed_at"] = next_task["updated_at"]
                 metadata.pop("active_workspace_task_id", None)
             tasks[index] = next_task
@@ -2801,6 +3739,12 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
         "applied_at": _now(),
         "files": rollback_snapshots,
         "summary": payload.get("summary") or "",
+        "impact": {
+            "created_files": [item.get("new_filename") or item.get("filename") for item in changed if item.get("operation") == "create"],
+            "deleted_files": [item.get("filename") for item in changed if item.get("operation") == "delete"],
+            "renamed_files": [{"from": item.get("filename"), "to": item.get("new_filename")} for item in changed if item.get("operation") == "rename"],
+            "folders_created": folders_created,
+        },
     }]
     _set_metadata(session, metadata)
     db.add(AuditLog(
@@ -2827,6 +3771,7 @@ def apply_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=No
     return {
         "changed": changed,
         "summary": payload.get("summary") or "",
+        "impact": impact_result,
         "remaining": metadata.get("patch_preview") or [],
     }
 
@@ -2842,8 +3787,10 @@ def list_rollback_snapshots(session: CodeSession) -> dict:
             "index": index,
             "applied_at": snapshot.get("applied_at"),
             "summary": snapshot.get("summary") or "",
+            "impact": snapshot.get("impact") or {},
+            "operation_types": sorted({str(item.get("operation") or "modify") for item in files}),
             "files": [
-                {"file_id": item.get("file_id"), "filename": item.get("filename")}
+                {"file_id": item.get("file_id"), "filename": item.get("filename"), "operation": item.get("operation") or "modify"}
                 for item in files
             ],
             "file_count": len(files),
@@ -2871,27 +3818,114 @@ def rollback_snapshot(db: Session, user_id: UUID, session: CodeSession, snapshot
     snapshot = snapshots.pop(target_index)
     restored = []
     for item in snapshot.get("files") or []:
+        operation = item.get("operation") or "modify"
+        if operation == "folder":
+            folder = str(item.get("filename") or "")
+            folders = [value for value in (metadata.get("workspace_folders") or []) if value != folder]
+            metadata["workspace_folders"] = folders
+            for marker in (".nexus-folder", ".arceus-folder"):
+                for root in [_safe_local_workspace_file(session, f"{folder}/{marker}"), _safe_workspace_path(_workspace_runtime_root(session), f"{folder}/{marker}")]:
+                    if root and root.exists():
+                        try:
+                            root.unlink()
+                        except OSError:
+                            pass
+                    if root:
+                        try:
+                            root.parent.rmdir()
+                        except OSError:
+                            pass
+            restored.append({"operation": "folder", "file_id": "", "filename": folder})
+            continue
+
         file_id = UUID(str(item.get("file_id")))
         record = db.query(FileReference).filter(FileReference.id == file_id, FileReference.user_id == user_id).first()
         if not record:
             continue
-        content = str(item.get("content") or "")
+
+        if operation == "create":
+            record.status = "deleted"
+            session.file_ids = [str(value) for value in (session.file_ids or []) if str(value) != str(record.id)]
+            local_file = _safe_local_workspace_file(session, record.filename)
+            if local_file and local_file.exists():
+                local_file.unlink()
+            runtime_file = (_workspace_runtime_root(session) / record.filename).resolve()
+            if str(runtime_file).startswith(str(_workspace_runtime_root(session))) and runtime_file.exists():
+                runtime_file.unlink()
+            try:
+                delete_object(record.object_key)
+            except Exception:
+                pass
+            restored.append({"operation": "remove_created", "file_id": str(record.id), "filename": record.filename})
+            continue
+
+        content = str(item.get("original_content") if item.get("original_content") is not None else item.get("content") or "")
+        if operation == "delete":
+            record.status = "active"
+            if str(record.id) not in [str(value) for value in (session.file_ids or [])]:
+                session.file_ids = [str(value) for value in (session.file_ids or [])] + [str(record.id)]
+            record.metadata_json = item.get("metadata_json") or record.metadata_json or {}
+        if operation == "rename":
+            renamed_local = _safe_local_workspace_file(session, record.filename)
+            if renamed_local and renamed_local.exists():
+                try:
+                    renamed_local.unlink()
+                except OSError:
+                    pass
+            renamed_runtime = (_workspace_runtime_root(session) / record.filename).resolve()
+            if str(renamed_runtime).startswith(str(_workspace_runtime_root(session))) and renamed_runtime.exists():
+                try:
+                    renamed_runtime.unlink()
+                except OSError:
+                    pass
+            record.filename = str(item.get("original_name") or item.get("filename") or record.filename)
+            record.metadata_json = item.get("metadata_json") or record.metadata_json or {}
+
         put_object(record.object_key, content.encode("utf-8"), record.content_type or "text/plain")
         record.size_bytes = len(content.encode("utf-8"))
-        restored.append({"file_id": str(record.id), "filename": record.filename})
+        record.checksum_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        local_file = _safe_local_workspace_file(session, record.filename)
+        if local_file:
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            local_file.write_text(content, encoding="utf-8")
+        runtime_file = _safe_workspace_path(_workspace_runtime_root(session), record.filename)
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text(content, encoding="utf-8")
+        restored.append({"operation": operation, "file_id": str(record.id), "filename": record.filename})
 
     metadata["rollback_snapshots"] = snapshots
+    restore_impact = {
+        "changed_files": [
+            {
+                "operation": item.get("operation") or "restore",
+                "file_id": item.get("file_id") or "",
+                "filename": item.get("filename") or "",
+                "additions": 0,
+                "deletions": 0,
+            }
+            for item in restored
+        ],
+        "created_files": [],
+        "modified_files": [item.get("filename") for item in restored if item.get("operation") in {"modify", "delete", "rename"}],
+        "deleted_files": [item.get("filename") for item in restored if item.get("operation") == "remove_created"],
+        "renamed_files": [],
+        "folders_created": [],
+        "total_additions": 0,
+        "total_deletions": 0,
+        "summary": snapshot.get("summary") or "",
+    }
     _set_metadata(session, metadata)
     session.status = "rolled_back"
     db.commit()
     refresh_file_tree(db, user_id, session)
     append_activity(db, session, "done", "Rolled back applied patch", f"{len(restored)} file(s) restored")
-    complete_job(db, job, "completed", {"restored": restored, "snapshot": snapshot}, files_touched=restored, approval_state="approved")
+    complete_job(db, job, "completed", {"restored": restored, "snapshot": snapshot, "impact": restore_impact}, files_touched=restored, approval_state="approved")
     return {"restored": restored, "status": "rolled_back", "snapshot": {
         "snapshot_id": snapshot.get("snapshot_id"),
         "applied_at": snapshot.get("applied_at"),
         "summary": snapshot.get("summary") or "",
-    }}
+    }, "impact": restore_impact}
 
 
 def rollback_last_apply(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:

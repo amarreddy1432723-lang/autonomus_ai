@@ -3,12 +3,46 @@ import subprocess
 import shlex
 import time
 import logging
+import re
+import atexit
+import uuid
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from datetime import datetime, UTC
 
-logger = logging.getLogger("nexus-sandbox")
+logger = logging.getLogger("arceus-sandbox")
+SECRET_OUTPUT_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|authorization|bearer)\s*[:=]\s*([^\s'\"`]+)"),
+    re.compile(r"(?i)(Bearer\s+)([^\s'\"`]+)"),
+    re.compile(r"(?i)((?:password|token|secret)=)([^\s'\"`]+)"),
+    re.compile(r"(?i)(sk-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,})"),
+)
+ACTIVE_DOCKER_CONTAINERS: set[str] = set()
+
+
+def _redact(output: str) -> str:
+    redacted = output or ""
+    for pattern in SECRET_OUTPUT_PATTERNS:
+        def repl(match: re.Match) -> str:
+            if match.lastindex and match.lastindex >= 2:
+                return f"{match.group(1)}[REDACTED]"
+            return "[REDACTED]"
+        redacted = pattern.sub(repl, redacted)
+    return redacted
+
+
+def _cleanup_active_docker_containers() -> None:
+    for container_name in list(ACTIVE_DOCKER_CONTAINERS):
+        try:
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10, check=False)
+        except Exception:
+            pass
+        ACTIVE_DOCKER_CONTAINERS.discard(container_name)
+
+
+atexit.register(_cleanup_active_docker_containers)
 
 
 def _command_result(
@@ -19,14 +53,16 @@ def _command_result(
     started: float,
     timeout: int,
     workspace_root: Path,
+    policy: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     completed_at = datetime_now_iso()
+    safe_output = _redact(output or "(no output)")
     return {
         "provider": provider,
         "status": status,
         "return_code": return_code,
-        "output": (output or "(no output)")[-20000:],
-        "output_excerpt": (output or "(no output)")[-4000:],
+        "output": safe_output[-20000:],
+        "output_excerpt": safe_output[-4000:],
         "artifacts": [],
         "started_at": datetime_from_monotonic(started),
         "completed_at": completed_at,
@@ -34,6 +70,7 @@ def _command_result(
         "duration_ms": int((time.monotonic() - started) * 1000),
         "timeout_seconds": timeout,
         "workspace_root": str(workspace_root),
+        "sandbox_policy": policy or {},
     }
 
 class CodeSandbox(ABC):
@@ -43,7 +80,7 @@ class CodeSandbox(ABC):
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     @abstractmethod
-    def run_command(self, command: str, timeout: int = 60) -> Dict[str, Any]:
+    def run_command(self, command: str, timeout: int = 60, allow_network: bool = False) -> Dict[str, Any]:
         """Execute a shell command inside the sandbox."""
         pass
 
@@ -68,7 +105,7 @@ class LocalSandbox(CodeSandbox):
         super().__init__(session_id, workspace_root)
         self.preview_process: Optional[subprocess.Popen] = None
 
-    def run_command(self, command: str, timeout: int = 60) -> Dict[str, Any]:
+    def run_command(self, command: str, timeout: int = 60, allow_network: bool = False) -> Dict[str, Any]:
         logger.info(f"Running local command: {command} in {self.workspace_root}")
         # Parse command safely
         parts = shlex.split(command)
@@ -141,11 +178,58 @@ class DockerSandbox(CodeSandbox):
     def __init__(self, session_id: str, workspace_root: Path, image: str = "python:3.11-slim"):
         super().__init__(session_id, workspace_root)
         self.image = image
-        self.container_name = f"nexus-sandbox-{session_id}"
+        self.container_name = f"arceus-sandbox-{session_id}"
         self.preview_port: Optional[int] = None
-        self._ensure_container_running()
+        self._cleanup_expired_containers()
+
+    def _network_mode(self, preview: bool = False, allow_network: bool = False) -> str:
+        if preview:
+            return os.getenv("SANDBOX_DOCKER_PREVIEW_NETWORK", "bridge")
+        network_allowed = allow_network and os.getenv("SANDBOX_ALLOW_NETWORK", "false").lower() == "true"
+        return "bridge" if network_allowed else "none"
+
+    def _policy(self, preview: bool = False, allow_network: bool = False) -> Dict[str, Any]:
+        memory = os.getenv("SANDBOX_DOCKER_MEMORY", "512m")
+        return {
+            "network_mode": self._network_mode(preview=preview, allow_network=allow_network),
+            "memory": memory,
+            "memory_swap": memory,
+            "cpu_period": os.getenv("SANDBOX_DOCKER_CPU_PERIOD", "100000"),
+            "cpu_quota": os.getenv("SANDBOX_DOCKER_CPU_QUOTA", "50000"),
+            "pids_limit": os.getenv("SANDBOX_DOCKER_PIDS_LIMIT", "64"),
+            "user": os.getenv("SANDBOX_DOCKER_USER", "1000:1000"),
+            "read_only": True,
+            "tmpfs": ["/tmp:rw,nosuid,size=64m", "/home/appuser:rw,nosuid,size=64m"],
+            "security_opt": "no-new-privileges",
+            "cap_drop": "ALL",
+            "workspace_mount": f"{self.workspace_root}:/workspace:rw",
+        }
+
+    def _docker_limits(self, preview: bool = False, allow_network: bool = False) -> list[str]:
+        policy = self._policy(preview=preview, allow_network=allow_network)
+        memory = str(policy["memory"])
+        return [
+            "--init",
+            "--user", str(policy["user"]),
+            "--memory", memory,
+            "--memory-swap", memory,
+            "--cpu-period", str(policy["cpu_period"]),
+            "--cpu-quota", str(policy["cpu_quota"]),
+            "--pids-limit", str(policy["pids_limit"]),
+            "--network", str(policy["network_mode"]),
+            "--read-only",
+            "--tmpfs", "/tmp:rw,nosuid,size=64m",
+            "--tmpfs", "/home/appuser:rw,nosuid,size=64m",
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--ulimit", "nofile=1024:1024",
+            "--label", "arceus.sandbox=true",
+            "--label", f"arceus.session_id={self.session_id}",
+            "--label", f"arceus.cleanup_after={int(time.time()) + int(os.getenv('SANDBOX_DOCKER_CLEANUP_TTL_SECONDS', '300'))}",
+        ]
 
     def _ensure_container_running(self):
+        self._cleanup_expired_containers()
         # Check if container already exists
         check_cmd = ["docker", "inspect", self.container_name]
         res = subprocess.run(check_cmd, capture_output=True)
@@ -169,16 +253,52 @@ class DockerSandbox(CodeSandbox):
             "--name", self.container_name,
             "-v", f"{self.workspace_root}:/workspace",
             "-w", "/workspace",
-            self.image,
-            "tail", "-f", "/dev/null"
-        ]
+        ] + self._docker_limits(preview=False) + [self.image, "tail", "-f", "/dev/null"]
         logger.info(f"Starting Docker sandbox container: {self.container_name}")
-        subprocess.run(run_cmd, capture_output=True, check=True)
+        ACTIVE_DOCKER_CONTAINERS.add(self.container_name)
+        try:
+            subprocess.run(run_cmd, capture_output=True, check=True)
+        except Exception:
+            ACTIVE_DOCKER_CONTAINERS.discard(self.container_name)
+            raise
 
-    def run_command(self, command: str, timeout: int = 60) -> Dict[str, Any]:
-        self._ensure_container_running()
-        # shlex.split the user command and build the docker exec call
-        exec_cmd = ["docker", "exec", self.container_name] + shlex.split(command)
+    def _cleanup_expired_containers(self) -> None:
+        try:
+            listed = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", "label=arceus.sandbox=true"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            now = int(time.time())
+            for container_id in [line.strip() for line in listed.stdout.splitlines() if line.strip()]:
+                inspected = subprocess.run(
+                    ["docker", "inspect", "-f", "{{ index .Config.Labels \"arceus.cleanup_after\" }}", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                try:
+                    cleanup_after = int((inspected.stdout or "0").strip() or "0")
+                except ValueError:
+                    cleanup_after = 0
+                if cleanup_after and cleanup_after < now:
+                    subprocess.run(["docker", "rm", "-f", container_id], capture_output=True, timeout=10, check=False)
+        except Exception as exc:
+            logger.debug("Sandbox TTL cleanup skipped: %s", exc)
+
+    def run_command(self, command: str, timeout: int = 60, allow_network: bool = False) -> Dict[str, Any]:
+        container_name = f"{self.container_name}-{uuid.uuid4().hex[:8]}"
+        ACTIVE_DOCKER_CONTAINERS.add(container_name)
+        policy = self._policy(preview=False, allow_network=allow_network)
+        exec_cmd = [
+            "docker", "run", "--rm",
+            "--name", container_name,
+            "-v", f"{self.workspace_root}:/workspace:rw",
+            "-w", "/workspace",
+        ] + self._docker_limits(preview=False, allow_network=allow_network) + [self.image] + shlex.split(command)
         started = time.monotonic()
         try:
             completed = subprocess.run(
@@ -189,12 +309,18 @@ class DockerSandbox(CodeSandbox):
                 check=False
             )
             output = "\n".join(filter(None, [completed.stdout, completed.stderr])).strip()
-            return _command_result("docker", "passed" if completed.returncode == 0 else "failed", completed.returncode, output, started, timeout, self.workspace_root)
+            ACTIVE_DOCKER_CONTAINERS.discard(container_name)
+            return _command_result("docker", "passed" if completed.returncode == 0 else "failed", completed.returncode, output, started, timeout, self.workspace_root, policy)
         except subprocess.TimeoutExpired as e:
             output = "\n".join(filter(None, [e.stdout or "", e.stderr or ""])).strip()
-            return _command_result("docker", "timeout", None, output or "Command timed out inside container.", started, timeout, self.workspace_root)
+            result = _command_result("docker", "timeout", None, output or "Command timed out inside container.", started, timeout, self.workspace_root, policy)
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10, check=False)
+            ACTIVE_DOCKER_CONTAINERS.discard(container_name)
+            return result
         except Exception as e:
-            return _command_result("docker", "failed", -1, f"Docker Exec Error: {str(e)}", started, timeout, self.workspace_root)
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10, check=False)
+            ACTIVE_DOCKER_CONTAINERS.discard(container_name)
+            return _command_result("docker", "failed", -1, f"Docker Exec Error: {str(e)}", started, timeout, self.workspace_root, policy)
 
     def start_preview_server(self, command: str, port: int) -> Dict[str, Any]:
         # To run a preview server in Docker, we need port forwarding.
@@ -209,10 +335,13 @@ class DockerSandbox(CodeSandbox):
             "-v", f"{self.workspace_root}:/workspace",
             "-p", f"{port}:{port}",
             "-w", "/workspace",
-            self.image,
-            "tail", "-f", "/dev/null"
-        ]
-        subprocess.run(run_cmd, capture_output=True, check=True)
+        ] + self._docker_limits(preview=True) + [self.image, "tail", "-f", "/dev/null"]
+        ACTIVE_DOCKER_CONTAINERS.add(self.container_name)
+        try:
+            subprocess.run(run_cmd, capture_output=True, check=True)
+        except Exception:
+            ACTIVE_DOCKER_CONTAINERS.discard(self.container_name)
+            raise
         
         # Now launch the server in the background inside the container
         exec_cmd = ["docker", "exec", "-d", self.container_name] + shlex.split(command)
@@ -235,6 +364,7 @@ class DockerSandbox(CodeSandbox):
     def cleanup(self) -> None:
         logger.info(f"Removing Docker container: {self.container_name}")
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True)
+        ACTIVE_DOCKER_CONTAINERS.discard(self.container_name)
 
 class E2BSandbox(CodeSandbox):
     def __init__(self, session_id: str, workspace_root: Path, api_key: str):
@@ -276,7 +406,7 @@ class E2BSandbox(CodeSandbox):
         except Exception as e:
             logger.error(f"Error syncing files from E2B: {e}")
 
-    def run_command(self, command: str, timeout: int = 60) -> Dict[str, Any]:
+    def run_command(self, command: str, timeout: int = 60, allow_network: bool = False) -> Dict[str, Any]:
         if not self.sandbox:
             self._init_sandbox()
         started = time.monotonic()

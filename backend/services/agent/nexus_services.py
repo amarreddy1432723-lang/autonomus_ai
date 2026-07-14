@@ -162,7 +162,7 @@ def blended_answer(prompt: str, context: str, task_type: str, config: NexusLLMCo
     selected = choose_model_for_task(task_type or classify_task_type(prompt))
     primary_config = config or NexusLLMConfig(selected["provider"], selected["model"])
     system = (
-        "You are NEXUS AI. Answer with senior-level judgment, direct human language, and practical next steps. "
+        "You are Arceus AI. Answer with senior-level judgment, direct human language, and practical next steps. "
         "Use the provided context when relevant. Avoid hype, filler, and unsupported claims."
     )
     answer = _invoke_structured(system, f"Request:\n{prompt}\n\nContext:\n{context[:24000]}", primary_config)
@@ -210,13 +210,13 @@ def memory_transparency_summary(memories: list[Any]) -> dict[str, Any]:
         "total": len(memories),
         "by_type": by_type,
         "top_memories": top_items[:20],
-        "transparency_note": "These are editable memories NEXUS can use for personalization. Archive or edit anything inaccurate.",
+        "transparency_note": "These are editable memories Arceus can use for personalization. Archive or edit anything inaccurate.",
     }
 
 
 def generate_code_task(kind: str, instruction: str, context: str, config: NexusLLMConfig) -> dict[str, Any]:
     system = (
-        "You are NEXUS Code Engine. Return practical, production-ready engineering output. "
+        "You are Arceus Code Engine. Return practical, production-ready engineering output. "
         "For generation and refactors, include a concise plan and unified diff-style patches. "
         "For debugging, identify root cause, fix, and tests. For code execution requests, do not claim execution unless logs are provided."
     )
@@ -233,7 +233,7 @@ def generate_code_task(kind: str, instruction: str, context: str, config: NexusL
 
 def explain_code(instruction: str, context: str, config: NexusLLMConfig) -> dict[str, Any]:
     content = _invoke_structured(
-        "You are NEXUS Code Explainer. Explain code in clear human language with key risks and next steps.",
+        "You are Arceus Code Explainer. Explain code in clear human language with key risks and next steps.",
         f"Explain request:\n{instruction}\n\nCode context:\n{context[:30000]}",
         config,
     )
@@ -283,7 +283,7 @@ def recommend_free_tiers(project_type: str, needs: str = "") -> list[dict[str, A
 
 def design_response(description: str, output_type: str, config: NexusLLMConfig) -> dict[str, Any]:
     content = _invoke_structured(
-        "You are NEXUS UI/UX Studio. Generate professional, accessible UI guidance and React/Next.js-ready structure. Avoid decorative clutter.",
+        "You are Arceus UI/UX Studio. Generate professional, accessible UI guidance and React/Next.js-ready structure. Avoid decorative clutter.",
         f"Output type: {output_type}\nDesign request:\n{description}\nReturn sections: UX intent, layout, components, motion, accessibility, and starter code.",
         config,
     )
@@ -342,7 +342,7 @@ def design_preview_html(description: str, style: str, content: str = "") -> str:
 </head>
 <body>
 <div class="wrap">
-  <div class="nav"><span class="brand">NEXUS</span><span class="pill">{safe_title}</span></div>
+  <div class="nav"><span class="brand">Arceus</span><span class="pill">{safe_title}</span></div>
   <section class="hero">
     <div class="card">
       <h1>{clean_description}</h1>

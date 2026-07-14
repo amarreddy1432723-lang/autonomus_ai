@@ -6,8 +6,9 @@ from uuid import UUID
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from services.shared.models import AuditLog, Memory, Notification, Schedule, Task
+from services.shared.models import AuditLog, Memory, Notification, Schedule, Task, UserProfile
 
 from .pa_os import pa_os_status, set_pa_os_state
 
@@ -19,6 +20,88 @@ def _now() -> datetime:
 def _parse_datetime(value: str | None, default_minutes: int = 60) -> datetime:
     if not value:
         return _now() + timedelta(minutes=default_minutes)
+
+
+PA_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "voice_enabled": True,
+    "daily_brief_enabled": True,
+    "notification_enabled": True,
+    "automation_mode": "confirm",
+    "emergency_paused": False,
+    "preferred_brief_time": "08:00",
+}
+
+
+def _profile(db: Session, user_id: UUID) -> UserProfile:
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user_id).first()
+    if profile:
+        return profile
+    profile = UserProfile(user_id=user_id, tool_preferences={})
+    db.add(profile)
+    db.flush()
+    return profile
+
+
+def get_pa_settings(db: Session, user_id: UUID) -> dict[str, Any]:
+    profile = _profile(db, user_id)
+    prefs = dict(profile.tool_preferences or {})
+    pa = dict(prefs.get("pa") or {})
+    settings = {**PA_SETTINGS_DEFAULTS, **pa.get("settings", {})}
+    settings["emergency_paused"] = bool(settings.get("emergency_paused"))
+    return settings
+
+
+def update_pa_settings(db: Session, user_id: UUID, updates: dict[str, Any]) -> dict[str, Any]:
+    allowed = set(PA_SETTINGS_DEFAULTS)
+    cleaned: dict[str, Any] = {}
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        if key in {"voice_enabled", "daily_brief_enabled", "notification_enabled", "emergency_paused"}:
+            cleaned[key] = bool(value)
+        elif key == "automation_mode":
+            cleaned[key] = str(value or "confirm").lower() if str(value or "").lower() in {"confirm", "notify", "auto"} else "confirm"
+        elif key == "preferred_brief_time":
+            cleaned[key] = str(value or "08:00")[:16]
+    profile = _profile(db, user_id)
+    prefs = dict(profile.tool_preferences or {})
+    pa = dict(prefs.get("pa") or {})
+    pa["settings"] = {**PA_SETTINGS_DEFAULTS, **pa.get("settings", {}), **cleaned}
+    prefs["pa"] = pa
+    profile.tool_preferences = prefs
+    flag_modified(profile, "tool_preferences")
+    audit_event(db, user_id, "settings.update", metadata={"updated": sorted(cleaned.keys())})
+    db.commit()
+    return pa["settings"]
+
+
+def _brief_cache_key() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def get_cached_daily_brief(db: Session, user_id: UUID, force_refresh: bool = False) -> dict[str, Any]:
+    from .jarvis_planner import daily_brief
+
+    settings = get_pa_settings(db, user_id)
+    profile = _profile(db, user_id)
+    prefs = dict(profile.tool_preferences or {})
+    pa = dict(prefs.get("pa") or {})
+    cache = dict(pa.get("daily_brief_cache") or {})
+    today_key = _brief_cache_key()
+    if not force_refresh and cache.get("date") == today_key and cache.get("brief"):
+        return {"cached": True, "settings": settings, **cache["brief"]}
+    brief = daily_brief(db, user_id)
+    pa["daily_brief_cache"] = {
+        "date": today_key,
+        "created_at": _now().isoformat(),
+        "brief": brief,
+    }
+    prefs["pa"] = pa
+    profile.tool_preferences = prefs
+    flag_modified(profile, "tool_preferences")
+    audit_event(db, user_id, "daily_brief.refresh", metadata={"force": force_refresh})
+    db.commit()
+    return {"cached": False, "settings": settings, **brief}
     cleaned = value.strip()
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
@@ -118,6 +201,8 @@ def _recent_memories(db: Session, user_id: UUID, limit: int = 5) -> list[dict[st
 
 def pa_today(db: Session, user_id: UUID) -> dict[str, Any]:
     status = pa_os_status(db, user_id)
+    settings = get_pa_settings(db, user_id)
+    brief = get_cached_daily_brief(db, user_id, force_refresh=False)
     tasks = (
         db.query(Task)
         .filter(Task.user_id == user_id, Task.status.notin_(["done", "completed", "cancelled"]))
@@ -155,6 +240,9 @@ def pa_today(db: Session, user_id: UUID) -> dict[str, Any]:
     )
     return {
         **status,
+        "settings": settings,
+        "brief": brief,
+        "daily_brief_cached": bool(brief.get("cached")),
         "tasks": [serialize_task(item) for item in tasks],
         "reminders": [serialize_schedule(item) for item in reminders],
         "automations": [serialize_schedule(item) for item in automations],
@@ -257,6 +345,9 @@ def create_schedule(
     permission: str = "confirm",
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    settings = get_pa_settings(db, user_id)
+    if pa_type == "automation" and settings.get("emergency_paused"):
+        raise ValueError("Arceus PA emergency pause is active. Resume PA before creating automations.")
     schedule = Schedule(
         user_id=user_id,
         title=title.strip()[:255],
@@ -339,6 +430,11 @@ def mark_notification_read(db: Session, user_id: UUID, notification_id: UUID) ->
 
 def pause_pa(db: Session, user_id: UUID) -> dict[str, Any]:
     set_pa_os_state(user_id, "paused")
+    update_pa_settings(db, user_id, {"emergency_paused": True})
+    db.query(Schedule).filter(
+        Schedule.user_id == user_id,
+        Schedule.trigger_payload["pa_type"].as_string() == "automation",
+    ).update({"is_active": False}, synchronize_session=False)
     audit_event(db, user_id, "pause")
     db.commit()
     return pa_today(db, user_id)
@@ -346,6 +442,7 @@ def pause_pa(db: Session, user_id: UUID) -> dict[str, Any]:
 
 def resume_pa(db: Session, user_id: UUID) -> dict[str, Any]:
     set_pa_os_state(user_id, "active")
+    update_pa_settings(db, user_id, {"emergency_paused": False})
     audit_event(db, user_id, "resume")
     db.commit()
     return pa_today(db, user_id)
@@ -355,7 +452,7 @@ def handle_command(db: Session, user_id: UUID, command: str) -> dict[str, Any]:
     text = (command or "").strip()
     lower = text.lower()
     if not text:
-        return {"type": "empty", "message": "Tell NEXUS PA what to handle."}
+        return {"type": "empty", "message": "Tell Arceus PA what to handle."}
     if "pause" in lower and "automation" in lower:
         return {"type": "pause", "result": pause_pa(db, user_id)}
     if lower.startswith(("remind me", "reminder", "schedule reminder")):

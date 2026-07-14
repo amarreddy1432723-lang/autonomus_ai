@@ -38,7 +38,7 @@ def sse(event: dict) -> str:
 
 def planned_activity(prompt: str, selected_mode: str = "auto") -> list[dict]:
     modes = classify_workspace_modes(prompt, selected_mode)
-    events = [activity_event("start", "NEXUS Code orchestrator received prompt", prompt[:180])]
+    events = [activity_event("start", "Arceus Code orchestrator received prompt", prompt[:180])]
     selection = select_tools(prompt, selected_mode, max_tools=8, include_high_risk=True)
     tool_names = [tool["name"] for tool in selection.get("tools") or []]
     permission = selection.get("permission_summary") or {}

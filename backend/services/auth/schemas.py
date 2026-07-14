@@ -31,6 +31,12 @@ class RefreshRequest(BaseModel):
 class LogoutRequest(BaseModel):
     refresh_token: Optional[str] = None
 
+class DesktopAuthCodeRequest(BaseModel):
+    redirect_uri: str = "arceus://auth/callback"
+
+class DesktopAuthExchangeRequest(BaseModel):
+    code: str
+
 class SessionResponse(BaseModel):
     id: UUID
     device_info: dict

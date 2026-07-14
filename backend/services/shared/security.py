@@ -131,6 +131,12 @@ def secret_fingerprint(value: str | None) -> str | None:
 def dev_auth_fallback_enabled() -> bool:
     return os.getenv("ALLOW_DEV_AUTH_FALLBACK", "true").lower() in {"1", "true", "yes", "on"}
 
+def production_auth_locked() -> bool:
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"prod", "production"}
+
+def clerk_only_auth_required() -> bool:
+    return production_auth_locked() and clerk_auth_enabled()
+
 def clerk_auth_enabled() -> bool:
     return bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY"))
 
@@ -158,6 +164,34 @@ def verify_clerk_token(token: str) -> dict:
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk session token is invalid")
 
+def resolve_clerk_user_id(db, payload: dict) -> UUID:
+    clerk_sub = str(payload.get("sub") or "")
+    if not clerk_sub:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk subject missing")
+    from services.shared.models import User, UserProfile
+
+    user = db.query(User).filter(User.auth_provider == "clerk", User.auth_provider_id == clerk_sub).first()
+    if not user:
+        email = (
+            payload.get("email")
+            or payload.get("primary_email_address")
+            or f"{clerk_sub}@clerk.local"
+        )
+        user = User(
+            email=email,
+            hashed_password="clerk-managed",
+            auth_provider="clerk",
+            auth_provider_id=clerk_sub,
+            is_active=True,
+            is_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        db.add(UserProfile(user_id=user.id))
+        db.commit()
+        db.refresh(user)
+    return user.id
+
 def resolve_user_id_from_auth_or_clerk(
     db,
     authorization: str | None,
@@ -171,36 +205,22 @@ def resolve_user_id_from_auth_or_clerk(
         if clerk_auth_enabled():
             try:
                 payload = verify_clerk_token(token)
-                clerk_sub = str(payload.get("sub") or "")
-                if not clerk_sub:
-                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk subject missing")
-                from services.shared.models import User, UserProfile
-
-                user = db.query(User).filter(User.auth_provider == "clerk", User.auth_provider_id == clerk_sub).first()
-                if not user:
-                    email = (
-                        payload.get("email")
-                        or payload.get("primary_email_address")
-                        or f"{clerk_sub}@clerk.local"
-                    )
-                    user = User(
-                        email=email,
-                        hashed_password="clerk-managed",
-                        auth_provider="clerk",
-                        auth_provider_id=clerk_sub,
-                        is_active=True,
-                        is_verified=True,
-                    )
-                    db.add(user)
-                    db.flush()
-                    db.add(UserProfile(user_id=user.id))
-                    db.commit()
-                    db.refresh(user)
-                return user.id
-            except HTTPException:
+                return resolve_clerk_user_id(db, payload)
+            except HTTPException as exc:
+                if clerk_only_auth_required():
+                    raise exc
                 pass
 
+        if clerk_only_auth_required():
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk session token is required")
         return resolve_user_id_from_auth(authorization, x_user_id, jwt_secret, jwt_algorithm, required_scopes)
+
+    if clerk_only_auth_required():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Clerk session token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return resolve_user_id_from_auth(authorization, x_user_id, jwt_secret, jwt_algorithm, required_scopes)
 
