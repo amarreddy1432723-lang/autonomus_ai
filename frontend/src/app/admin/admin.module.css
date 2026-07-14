@@ -285,6 +285,15 @@
   color: #c4b5fd;
 }
 
+.ellipsis {
+  display: block;
+  max-width: 360px;
+  overflow: hidden;
+  color: #8b949e;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runbookBox code {
   display: block;
   overflow: hidden;

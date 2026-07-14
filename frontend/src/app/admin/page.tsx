@@ -39,10 +39,23 @@ type Usage = {
 type Job = {
   id: string;
   user_id: string;
+  session_id?: string | null;
   mode: string;
   status: string;
   approval_state?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  prompt_preview?: string;
+  stale?: boolean;
+  can_kill?: boolean;
+  can_retry?: boolean;
+  retry_count?: number;
+  last_error?: string | null;
+  log_count?: number;
+  files_touched?: number;
+  commands_run?: number;
 };
 
 type Health = {
@@ -55,7 +68,9 @@ type Health = {
 type AbuseFlag = {
   user_id: string;
   email?: string | null;
+  severity?: string;
   reasons: string[];
+  recommended_action?: string;
   events_24h: number;
   tokens_24h: number;
   cost_24h: number;
@@ -171,6 +186,13 @@ type AuditLog = {
   occurred_at?: string | null;
 };
 
+type JobSummary = {
+  by_status: Record<string, number>;
+  active: number;
+  failed: number;
+  stale: number;
+};
+
 const money = (value?: number) => `$${Number(value || 0).toFixed(4)}`;
 const compact = (value?: number) => Intl.NumberFormat('en', { notation: 'compact' }).format(Number(value || 0));
 
@@ -201,6 +223,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobSummary, setJobSummary] = useState<JobSummary | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [flags, setFlags] = useState<AbuseFlag[]>([]);
   const [rateLimits, setRateLimits] = useState<RateLimitHealth | null>(null);
@@ -239,6 +262,7 @@ export default function AdminPage() {
       setUsers(usersData.users || []);
       setUsage(usageData);
       setJobs(jobsData.jobs || []);
+      setJobSummary(jobsData.summary || null);
       setHealth(healthData);
       setFlags(flagsData.flags || []);
       setRateLimits(rateLimitData);
@@ -626,8 +650,9 @@ export default function AdminPage() {
                     <div>
                       <strong>{flag.email || flag.user_id.slice(0, 8)}</strong>
                       <small>{flag.reasons.join(', ')}</small>
+                      {flag.recommended_action && <small className={styles.actionHint}>{flag.recommended_action}</small>}
                     </div>
-                    <AlertTriangle size={14} color="#f59e0b" />
+                    <StatusPill value={flag.severity || 'flag'} />
                   </div>
                 ))}
                 {!flags.length && <span className={styles.muted}>No abuse flags in the last 24 hours.</span>}
@@ -666,20 +691,26 @@ export default function AdminPage() {
             <div className={styles.panel}>
               <div className={styles.panelHeader}>
                 <h2>Active Jobs</h2>
-                <span>Latest 100</span>
+                <span>{jobSummary?.active || 0} active · {jobSummary?.stale || 0} stale</span>
               </div>
               <div className={styles.list}>
                 {jobs.slice(0, 12).map((job) => (
                   <div className={styles.row} key={job.id}>
-                    <div><strong>{job.mode}</strong><small>{job.id.slice(0, 8)} · {job.approval_state || 'none'}</small></div>
+                    <div>
+                      <strong>{job.mode}</strong>
+                      <small>{job.id.slice(0, 8)} · {job.approval_state || 'none'} · {job.retry_count || 0} retries</small>
+                      {job.prompt_preview && <small className={styles.ellipsis}>{job.prompt_preview}</small>}
+                      {job.last_error && <small className={styles.actionHint}>{job.last_error}</small>}
+                    </div>
                     <div className={styles.jobActions}>
+                      {job.stale && <StatusPill value="stale" />}
                       <StatusPill value={job.status} />
-                      {!['completed', 'failed', 'cancelled', 'dead_letter', 'timeout'].includes(job.status) && (
+                      {job.can_kill && (
                         <button className={styles.killButton} type="button" onClick={() => killJob(job.id)} disabled={killingJobId === job.id}>
                           {killingJobId === job.id ? 'Killing' : 'Kill'}
                         </button>
                       )}
-                      {['failed', 'dead_letter', 'timeout', 'cancelled'].includes(job.status) && job.mode.startsWith('background_') && (
+                      {job.can_retry && (
                         <button className={styles.retryButton} type="button" onClick={() => retryJob(job.id)} disabled={retryingJobId === job.id}>
                           {retryingJobId === job.id ? 'Retrying' : 'Retry'}
                         </button>

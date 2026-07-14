@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from services.shared.database import get_db
@@ -21,6 +21,65 @@ def _require_admin(user_id: UUID) -> None:
     allowed = {item.strip() for item in raw.split(",") if item.strip()}
     if str(user_id) not in allowed:
         raise HTTPException(status_code=403, detail={"code": "admin_required", "message": "Admin access required."})
+
+
+TERMINAL_JOB_STATES = {"completed", "failed", "cancelled", "dead_letter", "timeout"}
+RETRYABLE_JOB_STATES = {"failed", "dead_letter", "timeout", "cancelled"}
+ACTIVE_JOB_STATES = {"queued", "claimed", "running", "retrying", "cancel_requested"}
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _safe_dt(value):
+    if value and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _job_metadata(job) -> dict:
+    metadata = dict(job.metadata_json or {})
+    result = dict(job.result or {})
+    logs = list(job.logs or [])
+    latest_log = logs[-1] if logs else {}
+    return {
+        "retry_count": int(metadata.get("retry_count") or 0),
+        "worker_id": metadata.get("worker_id") or metadata.get("claimed_by"),
+        "task_id": metadata.get("task_id") or metadata.get("celery_task_id"),
+        "last_error": result.get("error") or metadata.get("error") or latest_log.get("detail") or latest_log.get("message"),
+        "log_count": len(logs),
+        "files_touched": len(job.files_touched or []),
+        "commands_run": len(job.commands_run or []),
+    }
+
+
+def _serialize_admin_job(job) -> dict:
+    updated_at = _safe_dt(job.updated_at)
+    stale_after = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stale = bool(job.status in {"claimed", "running"} and updated_at and updated_at < stale_after)
+    metadata = _job_metadata(job)
+    return {
+        "id": str(job.id),
+        "user_id": str(job.user_id),
+        "session_id": str(job.code_session_id) if job.code_session_id else None,
+        "mode": job.mode,
+        "status": job.status,
+        "approval_state": job.approval_state,
+        "created_at": _iso(job.created_at),
+        "updated_at": _iso(job.updated_at),
+        "started_at": _iso(job.started_at),
+        "completed_at": _iso(job.completed_at),
+        "prompt_preview": (job.prompt or "")[:160],
+        "stale": stale,
+        "can_kill": job.status not in TERMINAL_JOB_STATES,
+        "can_retry": job.status in RETRYABLE_JOB_STATES and str(job.mode or "").startswith("background_"),
+        "actions": {
+            "kill": job.status not in TERMINAL_JOB_STATES,
+            "retry": job.status in RETRYABLE_JOB_STATES and str(job.mode or "").startswith("background_"),
+        },
+        **metadata,
+    }
 
 
 def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker", action: str | None = None) -> dict:
@@ -347,26 +406,33 @@ def get_admin_abuse_flags(user_id: UUID = Depends(get_current_user_id), db: Sess
     flags = []
     for row in usage_rows:
         reasons = []
+        severity = "low"
         if int(row.events or 0) >= 500:
             reasons.append("high request volume")
+            severity = "medium"
         if int(row.tokens or 0) >= 1_000_000:
             reasons.append("high token volume")
+            severity = "high"
         if float(row.cost or 0) >= 25:
             reasons.append("high estimated spend")
+            severity = "high"
         if failed_rows.get(row.user_id, 0) >= 20:
             reasons.append("many failed jobs")
+            severity = "high"
         if reasons:
             user_row = users.get(row.user_id)
             flags.append({
                 "user_id": str(row.user_id),
                 "email": user_row.email if user_row else None,
+                "severity": severity,
                 "reasons": reasons,
                 "events_24h": int(row.events or 0),
                 "tokens_24h": int(row.tokens or 0),
                 "cost_24h": float(row.cost or 0),
                 "failed_jobs_24h": failed_rows.get(row.user_id, 0),
+                "recommended_action": "Review user activity and consider temporary throttling." if severity == "high" else "Monitor for another 24 hours.",
             })
-    return {"flags": flags, "window": "24h"}
+    return {"flags": flags, "window": "24h", "thresholds": {"events": 500, "tokens": 1_000_000, "cost_usd": 25, "failed_jobs": 20}}
 
 
 @router.get("/api/v1/admin/rate-limits")
@@ -398,23 +464,38 @@ def get_admin_observability_health(user_id: UUID = Depends(get_current_user_id))
 
 
 @router.get("/api/v1/admin/jobs")
-def get_admin_jobs(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+def get_admin_jobs(
+    status: Optional[str] = None,
+    mode: Optional[str] = None,
+    job_user_id: Optional[UUID] = None,
+    limit: int = 100,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import func
     from services.shared.models import AgentJob
 
     _require_admin(user_id)
-    rows = db.query(AgentJob).order_by(AgentJob.created_at.desc()).limit(100).all()
+    limit = max(1, min(int(limit or 100), 500))
+    query = db.query(AgentJob)
+    if status:
+        query = query.filter(AgentJob.status == status)
+    if mode:
+        query = query.filter(AgentJob.mode == mode)
+    if job_user_id:
+        query = query.filter(AgentJob.user_id == job_user_id)
+    rows = query.order_by(AgentJob.created_at.desc()).limit(limit).all()
+    status_rows = db.query(AgentJob.status, func.count(AgentJob.id)).group_by(AgentJob.status).all()
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    stale_jobs = int(db.query(func.count(AgentJob.id)).filter(AgentJob.status.in_(["claimed", "running"]), AgentJob.updated_at < stale_cutoff).scalar() or 0)
     return {
-        "jobs": [
-            {
-                "id": str(item.id),
-                "user_id": str(item.user_id),
-                "mode": item.mode,
-                "status": item.status,
-                "approval_state": item.approval_state,
-                "created_at": item.created_at.isoformat() if item.created_at else None,
-            }
-            for item in rows
-        ]
+        "jobs": [_serialize_admin_job(item) for item in rows],
+        "summary": {
+            "by_status": {row[0] or "unknown": int(row[1] or 0) for row in status_rows},
+            "active": int(sum(row[1] or 0 for row in status_rows if row[0] in ACTIVE_JOB_STATES)),
+            "failed": int(sum(row[1] or 0 for row in status_rows if row[0] in {"failed", "timeout", "dead_letter"})),
+            "stale": stale_jobs,
+        },
     }
 
 
@@ -426,9 +507,8 @@ def kill_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), d
     job = db.query(AgentJob).filter(AgentJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail={"code": "job_not_found", "message": "Job not found."})
-    terminal_states = {"completed", "failed", "cancelled", "dead_letter", "timeout"}
     previous_status = job.status
-    if job.status not in terminal_states:
+    if job.status not in TERMINAL_JOB_STATES:
         job.status = "cancelled"
         job.completed_at = datetime.now(timezone.utc)
         metadata = dict(job.metadata_json or {})
@@ -452,7 +532,7 @@ def kill_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), d
     ))
     db.commit()
     db.refresh(job)
-    return {"id": str(job.id), "status": job.status, "previous_status": previous_status}
+    return {"job": _serialize_admin_job(job), "previous_status": previous_status}
 
 
 @router.post("/api/v1/admin/jobs/{job_id}/retry")
@@ -485,17 +565,22 @@ def retry_admin_job(job_id: UUID, user_id: UUID = Depends(get_current_user_id), 
 
 @router.get("/api/v1/admin/audit-logs")
 def get_admin_audit_logs(
-    audit_user_id: Optional[UUID] = Query(None),
-    event_type: Optional[str] = Query(None),
-    entity_type: Optional[str] = Query(None),
-    action: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    audit_user_id: Optional[UUID] = None,
+    event_type: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[UUID] = None,
+    actor_type: Optional[str] = None,
+    action: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    limit: int = 100,
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     from services.shared.models import AuditLog
 
     _require_admin(user_id)
+    limit = max(1, min(int(limit or 100), 500))
     query = db.query(AuditLog)
     if audit_user_id:
         query = query.filter(AuditLog.user_id == audit_user_id)
@@ -503,10 +588,29 @@ def get_admin_audit_logs(
         query = query.filter(AuditLog.event_type == event_type)
     if entity_type:
         query = query.filter(AuditLog.entity_type == entity_type)
+    if entity_id:
+        query = query.filter(AuditLog.entity_id == entity_id)
+    if actor_type:
+        query = query.filter(AuditLog.actor_type == actor_type)
     if action:
         query = query.filter(AuditLog.action.ilike(f"%{action}%"))
+    if date_from:
+        query = query.filter(AuditLog.occurred_at >= date_from)
+    if date_to:
+        query = query.filter(AuditLog.occurred_at <= date_to)
     rows = query.order_by(AuditLog.occurred_at.desc()).limit(limit).all()
     return {
+        "filters": {
+            "audit_user_id": str(audit_user_id) if audit_user_id else None,
+            "event_type": event_type,
+            "entity_type": entity_type,
+            "entity_id": str(entity_id) if entity_id else None,
+            "actor_type": actor_type,
+            "action": action,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "limit": limit,
+        },
         "audit_logs": [
             {
                 "id": item.id,
