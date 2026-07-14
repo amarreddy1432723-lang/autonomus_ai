@@ -31,6 +31,10 @@ def app_environment() -> str:
     return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower()
 
 
+def is_live_environment() -> bool:
+    return app_environment() in {"staging", "prod", "production"}
+
+
 def is_production() -> bool:
     return app_environment() in {"prod", "production"}
 
@@ -118,10 +122,10 @@ def production_readiness(service_name: str) -> dict[str, Any]:
         ),
         _check(
             "clerk_auth",
-            not is_production() or clerk_configured,
+            not is_live_environment() or clerk_configured,
             "critical",
-            "Clerk auth is configured for production.",
-            "Configure CLERK_ISSUER or CLERK_JWKS_URL and disable development auth in production.",
+            "Clerk auth is configured for live environments.",
+            "Configure CLERK_ISSUER or CLERK_JWKS_URL and disable development auth in staging/production.",
         ),
         _check(
             "demo_user",
@@ -148,6 +152,7 @@ def production_readiness(service_name: str) -> dict[str, Any]:
         "environment": env,
         "status": status,
         "production_mode": is_production(),
+        "live_environment": is_live_environment(),
         "checks": [check.as_dict() for check in checks],
         "summary": {
             "total": len(checks),
@@ -159,7 +164,7 @@ def production_readiness(service_name: str) -> dict[str, Any]:
 
 def enforce_production_startup(service_name: str) -> None:
     """Fail fast when a production service would boot with unsafe config."""
-    if not is_production():
+    if not is_live_environment():
         return
     if os.getenv("ARCEUS_STRICT_PRODUCTION_STARTUP", "true").lower() in {"0", "false", "no"}:
         return

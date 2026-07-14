@@ -129,10 +129,12 @@ def secret_fingerprint(value: str | None) -> str | None:
     return digest[:16]
 
 def dev_auth_fallback_enabled() -> bool:
+    if production_auth_locked():
+        return False
     return os.getenv("ALLOW_DEV_AUTH_FALLBACK", "true").lower() in {"1", "true", "yes", "on"}
 
 def production_auth_locked() -> bool:
-    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"prod", "production"}
+    return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"staging", "prod", "production"}
 
 def clerk_only_auth_required() -> bool:
     return production_auth_locked() and clerk_auth_enabled()
