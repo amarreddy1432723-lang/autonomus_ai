@@ -364,6 +364,47 @@ export default function WorkspacePage() {
     }
   };
 
+  const syncEngineeringProgress = async () => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/tasks/sync-progress`, {
+        method: 'POST',
+      });
+      setEngineeringOrgState(data.orchestration);
+      addEvent({
+        kind: 'code',
+        message: 'Engineering progress synced',
+        detail: `${data.progress?.completed || 0}/${data.progress?.total || 0} task(s) done, ${data.progress?.waiting_approval || 0} waiting approval.`,
+      });
+    } catch (error) {
+      reportWorkspaceError(error, 'Engineering progress sync failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runEngineeringReviewBoard = async () => {
+    if (!projectId || busy) return;
+    setBusy(true);
+    try {
+      const data = await apiRequest(`/api/v1/code/projects/${projectId}/orchestration/review-board`, {
+        method: 'POST',
+        body: JSON.stringify({ approve_ready: false }),
+      });
+      setEngineeringOrgState(data.orchestration);
+      addEvent({
+        kind: data.blockers ? 'error' : 'done',
+        message: 'Review board complete',
+        detail: `${data.findings?.length || 0} finding(s), ${data.blockers || 0} blocker(s), ${data.warnings || 0} warning(s).`,
+      });
+    } catch (error) {
+      reportWorkspaceError(error, 'Engineering review board failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!trustedLocalPath) {
       setLocalTreeFiles([]);
@@ -3795,6 +3836,8 @@ export default function WorkspacePage() {
             onApproveArchitecture={approveEngineeringArchitecture}
             onMaterializeTasks={materializeEngineeringTasks}
             onTypeTask={typeEngineeringTask}
+            onSyncProgress={syncEngineeringProgress}
+            onRunReviewBoard={runEngineeringReviewBoard}
           />
         )}
         {rightPanelOpen && rightPanelView === 'tasks' && (

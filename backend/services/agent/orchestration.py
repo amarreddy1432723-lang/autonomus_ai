@@ -52,6 +52,11 @@ class ExecutionTaskRequest(BaseModel):
     status: str = "typed"
 
 
+class ReviewBoardRequest(BaseModel):
+    notes: str = ""
+    approve_ready: bool = False
+
+
 PERSPECTIVES = [
     {
         "key": "pragmatic",
@@ -446,6 +451,181 @@ def _update_task_in_state(state: CodeProjectOrchestration, task_id: str, updates
     raise HTTPException(status_code=404, detail="Engineering task not found")
 
 
+def _session_metadata(session) -> dict[str, Any]:
+    return dict(session.metadata_json or {})
+
+
+def _workspace_tasks_from_session(session) -> list[dict[str, Any]]:
+    tasks = _session_metadata(session).get("workspace_tasks") or []
+    return [task for task in tasks if isinstance(task, dict)]
+
+
+def _workspace_status_to_engineering(status: str) -> str:
+    value = (status or "").lower()
+    if value in {"done", "failed", "dismissed", "waiting_approval", "typed", "accepted", "running"}:
+        return value
+    if value == "suggested":
+        return "ready"
+    return "ready"
+
+
+def _latest_task_receipt(metadata: dict[str, Any], workspace_task_id: str | None) -> dict[str, Any]:
+    if not workspace_task_id:
+        return {}
+    for event in reversed(metadata.get("activity_log") or []):
+        if str(event.get("task_id") or "") != str(workspace_task_id):
+            continue
+        receipt = event.get("work_receipt") or {}
+        if receipt:
+            return receipt
+    return {}
+
+
+def _task_execution_evidence(session, workspace_task: dict[str, Any] | None) -> dict[str, Any]:
+    if not workspace_task:
+        return {"status": "not_materialized", "files_changed": [], "commands": [], "checks": [], "line_impact": {"additions": 0, "deletions": 0}}
+    metadata = _session_metadata(session)
+    workspace_task_id = str(workspace_task.get("id") or "")
+    receipt = _latest_task_receipt(metadata, workspace_task_id)
+    task_meta = workspace_task.get("metadata") or {}
+    last_apply = task_meta.get("last_apply") or {}
+    files_changed = receipt.get("files_changed") or last_apply.get("changed_files") or []
+    commands = receipt.get("commands_run") or workspace_task.get("expected_commands") or workspace_task.get("commands") or []
+    checks = receipt.get("checks") or []
+    line_impact = receipt.get("line_impact") or {
+        "additions": int(last_apply.get("total_additions") or 0),
+        "deletions": int(last_apply.get("total_deletions") or 0),
+    }
+    return {
+        "status": workspace_task.get("status") or "suggested",
+        "workspace_task_id": workspace_task_id,
+        "files_changed": files_changed,
+        "commands": commands,
+        "checks": checks,
+        "line_impact": line_impact,
+        "approval_state": receipt.get("approval_state") or ("done" if workspace_task.get("status") == "done" else workspace_task.get("status")),
+        "last_apply": last_apply,
+        "last_receipt": receipt,
+        "updated_at": workspace_task.get("updated_at"),
+    }
+
+
+def _sync_tasks_from_workspace(state: CodeProjectOrchestration, session) -> dict[str, Any]:
+    metadata = _session_metadata(session)
+    workspace_tasks = _workspace_tasks_from_session(session)
+    by_id = {str(task.get("id")): task for task in workspace_tasks if task.get("id")}
+    by_orchestration_id = {
+        str((task.get("metadata") or {}).get("orchestration_task_id")): task
+        for task in workspace_tasks
+        if (task.get("metadata") or {}).get("orchestration_task_id")
+    }
+    tasks = list(state.tasks or [])
+    synced: list[dict[str, Any]] = []
+    done_ids: set[str] = set()
+    for index, task in enumerate(tasks):
+        task_id = str(task.get("id") or "")
+        workspace_task = by_id.get(str(task.get("workspace_task_id") or "")) or by_orchestration_id.get(task_id)
+        evidence = _task_execution_evidence(session, workspace_task)
+        status = _workspace_status_to_engineering(evidence.get("status") or task.get("status") or "ready")
+        if task.get("status") == "blocked" and not workspace_task:
+            status = "blocked"
+        next_task = {
+            **task,
+            "workspace_status": evidence.get("status"),
+            "status": status,
+            "execution_evidence": evidence,
+            "progress": {
+                "files_changed": len(evidence.get("files_changed") or []),
+                "commands": len(evidence.get("commands") or []),
+                "checks": len(evidence.get("checks") or []),
+                "additions": (evidence.get("line_impact") or {}).get("additions") or 0,
+                "deletions": (evidence.get("line_impact") or {}).get("deletions") or 0,
+            },
+            "updated_at": _now(),
+        }
+        if workspace_task and workspace_task.get("id"):
+            next_task["workspace_task_id"] = str(workspace_task["id"])
+            next_task["workspace_session_id"] = str(session.id)
+        if status == "done":
+            done_ids.add(task_id)
+            next_task.setdefault("completed_at", _now())
+        tasks[index] = next_task
+        synced.append(next_task)
+
+    for index, task in enumerate(tasks):
+        if task.get("status") != "blocked":
+            continue
+        dependencies = [str(dep) for dep in (task.get("depends_on") or [])]
+        if dependencies and all(dep in done_ids for dep in dependencies):
+            tasks[index] = {**task, "status": "ready", "unblocked_at": _now(), "updated_at": _now()}
+
+    state.tasks = tasks
+    total = len(tasks)
+    completed = len([task for task in tasks if task.get("status") == "done"])
+    failed = len([task for task in tasks if task.get("status") == "failed"])
+    waiting_approval = len([task for task in tasks if task.get("status") == "waiting_approval"])
+    state.implementation_plan = {
+        **(state.implementation_plan or {}),
+        "workspace_session_id": str(session.id),
+        "last_synced_at": _now(),
+        "progress": {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "waiting_approval": waiting_approval,
+            "percent": round((completed / total) * 100, 2) if total else 0,
+        },
+    }
+    latest_receipts = [
+        event.get("work_receipt")
+        for event in (metadata.get("activity_log") or [])[-20:]
+        if isinstance(event, dict) and event.get("work_receipt")
+    ]
+    state.test_results = latest_receipts[-8:]
+    if failed:
+        state.stage = "review"
+    elif completed == total and total:
+        state.stage = "review"
+    elif waiting_approval:
+        state.stage = "waiting_approval"
+    else:
+        state.stage = "execution"
+    return state.implementation_plan["progress"]
+
+
+def _review_board_findings(state: CodeProjectOrchestration, notes: str = "") -> list[dict[str, Any]]:
+    tasks = state.tasks or []
+    findings: list[dict[str, Any]] = []
+    for task in tasks:
+        evidence = task.get("execution_evidence") or {}
+        progress = task.get("progress") or {}
+        status = task.get("status") or "unknown"
+        severity = "info"
+        message = "Task has not produced execution evidence yet."
+        if status == "done":
+            message = f"{task.get('id')} completed with {progress.get('files_changed', 0)} file(s) changed and +{progress.get('additions', 0)} / -{progress.get('deletions', 0)} lines."
+        elif status == "waiting_approval":
+            severity = "warning"
+            message = f"{task.get('id')} is waiting for patch approval before it can count as complete."
+        elif status == "failed":
+            severity = "error"
+            message = f"{task.get('id')} failed. Review terminal/jobs evidence before continuing."
+        elif status in {"typed", "accepted", "running"}:
+            severity = "warning"
+            message = f"{task.get('id')} is in progress and needs a final receipt/check."
+        findings.append({
+            "task_id": task.get("id"),
+            "title": task.get("title"),
+            "severity": severity,
+            "status": status,
+            "message": message,
+            "approval_state": evidence.get("approval_state"),
+        })
+    if notes:
+        findings.append({"task_id": None, "title": "Review notes", "severity": "info", "status": "noted", "message": notes})
+    return findings
+
+
 @router.get("/state")
 def get_orchestration_state(project_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
     get_code_project(db, user_id, project_id)
@@ -695,5 +875,84 @@ def type_project_execution_task(
         "session_id": str(session.id),
         "workspace_task": workspace_task,
         "engineering_task": updated_task,
+        "orchestration": _serialize_state(db, state),
+    }
+
+
+@router.post("/tasks/sync-progress")
+def sync_project_execution_progress(
+    project_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session = _ensure_active_session(db, user_id, project_id)
+    state = _get_or_create_state(db, user_id, project_id)
+    progress = _sync_tasks_from_workspace(state, session)
+    db.add(AuditLog(
+        user_id=user_id,
+        event_type="code.orchestration.sync_progress",
+        entity_type="code_project",
+        entity_id=project_id,
+        actor_type="user",
+        actor_id=str(user_id),
+        action="Synced orchestration progress from workspace receipts",
+        new_value={"session_id": str(session.id), "progress": progress},
+    ))
+    db.commit()
+    db.refresh(state)
+    return {
+        "session_id": str(session.id),
+        "progress": progress,
+        "orchestration": _serialize_state(db, state),
+    }
+
+
+@router.post("/review-board")
+def run_project_review_board(
+    project_id: UUID,
+    request: ReviewBoardRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    session = _ensure_active_session(db, user_id, project_id)
+    state = _get_or_create_state(db, user_id, project_id)
+    progress = _sync_tasks_from_workspace(state, session)
+    findings = _review_board_findings(state, request.notes)
+    blockers = [item for item in findings if item.get("severity") == "error"]
+    warnings = [item for item in findings if item.get("severity") == "warning"]
+    state.review_findings = findings
+    state.stage = "ready_for_pr" if request.approve_ready and not blockers and not warnings else "review"
+    db.add(CodeProjectDecision(
+        orchestration_id=state.id,
+        project_id=project_id,
+        user_id=user_id,
+        decision_type="review_board",
+        title="Review board completed",
+        selected_option_id=state.selected_proposal_id,
+        rationale=request.notes or "Review board synthesized task, receipt, and check evidence.",
+        payload={
+            "approved_ready": request.approve_ready and not blockers and not warnings,
+            "progress": progress,
+            "findings": findings,
+        },
+    ))
+    db.add(AuditLog(
+        user_id=user_id,
+        event_type="code.orchestration.review_board",
+        entity_type="code_project",
+        entity_id=project_id,
+        actor_type="user",
+        actor_id=str(user_id),
+        action="Ran engineering review board",
+        new_value={"findings": len(findings), "blockers": len(blockers), "warnings": len(warnings)},
+    ))
+    db.commit()
+    db.refresh(state)
+    return {
+        "session_id": str(session.id),
+        "progress": progress,
+        "findings": findings,
+        "blockers": len(blockers),
+        "warnings": len(warnings),
         "orchestration": _serialize_state(db, state),
     }

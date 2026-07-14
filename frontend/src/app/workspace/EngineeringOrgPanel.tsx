@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, GitBranch, Network, RefreshCw, Send, ShieldCheck, Wand2 } from 'lucide-react';
+import { CheckCircle2, GitBranch, ListChecks, Network, RefreshCw, Send, ShieldCheck, Wand2 } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type EngineeringProposal = {
@@ -28,6 +28,7 @@ export type EngineeringOrgState = {
   architecture_document?: Record<string, any>;
   implementation_plan?: Record<string, any>;
   tasks?: Array<Record<string, any>>;
+  review_findings?: Array<Record<string, any>>;
   proposals?: EngineeringProposal[];
   decisions?: Array<Record<string, any>>;
 };
@@ -44,6 +45,8 @@ type Props = {
   onApproveArchitecture: () => void;
   onMaterializeTasks: () => void;
   onTypeTask: (taskId: string) => void;
+  onSyncProgress: () => void;
+  onRunReviewBoard: () => void;
 };
 
 function stageLabel(stage?: string) {
@@ -62,11 +65,15 @@ export default function EngineeringOrgPanel({
   onApproveArchitecture,
   onMaterializeTasks,
   onTypeTask,
+  onSyncProgress,
+  onRunReviewBoard,
 }: Props) {
   const proposals = state?.proposals || [];
   const selectedId = state?.selected_proposal_id;
   const architecture = state?.architecture_document || {};
   const tasks = state?.tasks || [];
+  const progress = state?.implementation_plan?.progress || {};
+  const findings = state?.review_findings || [];
 
   return (
     <aside className={styles.rightExplorerPanel}>
@@ -164,6 +171,18 @@ export default function EngineeringOrgPanel({
               Sync task rail
             </button>
           )}
+          {architecture?.approval?.approved && (
+            <div className={styles.orgProgressBox}>
+              <header>
+                <strong>{progress.percent ?? 0}% complete</strong>
+                <button type="button" onClick={onSyncProgress} disabled={busy}>
+                  <RefreshCw size={12} />
+                  Sync progress
+                </button>
+              </header>
+              <span>{progress.completed || 0} done · {progress.waiting_approval || 0} waiting approval · {progress.failed || 0} failed</span>
+            </div>
+          )}
           <div className={styles.orgTaskList}>
             {tasks.map((task) => (
               <div key={task.id || task.title}>
@@ -180,7 +199,36 @@ export default function EngineeringOrgPanel({
                 </header>
                 <small>{task.assigned_role} · {task.workspace_status || task.status} · depends on {(task.depends_on || []).join(', ') || 'none'}</small>
                 {!!task.suggested_prompt && <em>Prompt ready</em>}
+                {!!task.progress && (
+                  <small>{task.progress.files_changed || 0} files · +{task.progress.additions || 0} / -{task.progress.deletions || 0} · {task.progress.checks || 0} checks</small>
+                )}
               </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {selectedId && architecture?.approval?.approved && (
+        <section className={styles.appsPanelSection}>
+          <div className={styles.panelTitleRow}>
+            <ListChecks size={14} />
+            <div>
+              <strong>Review board</strong>
+              <small>Summarizes task receipts, checks, approvals, and blockers.</small>
+            </div>
+          </div>
+          <button className={styles.commandButtonPrimary} type="button" onClick={onRunReviewBoard} disabled={busy}>
+            <ListChecks size={13} />
+            Run review board
+          </button>
+          <div className={styles.orgFindingList}>
+            {findings.length === 0 && <span>No review findings yet.</span>}
+            {findings.map((finding, index) => (
+              <article data-severity={finding.severity || 'info'} key={`${finding.task_id || 'note'}-${index}`}>
+                <strong>{finding.title || finding.task_id || 'Finding'}</strong>
+                <small>{finding.status || 'unknown'} · {finding.severity || 'info'}</small>
+                <p>{finding.message}</p>
+              </article>
             ))}
           </div>
         </section>
