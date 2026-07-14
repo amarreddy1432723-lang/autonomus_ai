@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import "@xterm/xterm/css/xterm.css";
 import "./globals.css";
 import Providers from "./providers";
 import TitleBar from "../components/TitleBar";
+import DesktopAuthBridge from "../components/DesktopAuthBridge";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -29,6 +31,7 @@ export default function RootLayout({
       <body>
         <Providers>
           <TitleBar />
+          <DesktopAuthBridge />
           {children}
         </Providers>
       </body>

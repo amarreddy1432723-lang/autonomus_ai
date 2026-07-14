@@ -30,7 +30,7 @@ export default function TitleBar() {
     <div className={styles.titleBar}>
       <div className={styles.titleDragRegion}>
         <span className={styles.logo}>N</span>
-        <span className={styles.titleText}>NEXUS OS</span>
+        <span className={styles.titleText}>Arceus OS</span>
       </div>
       <div className={styles.windowControls}>
         <button className={styles.controlButton} onClick={handleMinimize} aria-label="Minimize">

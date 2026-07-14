@@ -1,15 +1,17 @@
 'use client';
 
 import { SignIn } from '@clerk/nextjs';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function SignInPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectUrl = searchParams.get('redirect_url') || '/workspace';
 
   const handleDemoSignIn = () => {
     // Set cookie for mock authentication
     document.cookie = 'my-ai.mock_token=demo-token; path=/; max-age=86400';
-    router.push('/workspace');
+    router.push(redirectUrl);
   };
 
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
@@ -42,7 +44,7 @@ export default function SignInPage() {
   }
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--color-bg-primary)' }}>
-      <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" />
+      <SignIn routing="path" path="/sign-in" signUpUrl={`/sign-up?redirect_url=${encodeURIComponent(redirectUrl)}`} fallbackRedirectUrl={redirectUrl} />
     </main>
   );
 }

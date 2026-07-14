@@ -133,7 +133,7 @@ export default function SettingsPage() {
       const data = await apiRequest('/api/v1/code/projects');
       setCodeProjects(data || []);
     } catch (error) {
-      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to load NEXUS Code projects');
+      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to load Arceus Code projects');
     } finally {
       setCodeProjectsLoading(false);
     }
@@ -181,6 +181,17 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('tab') === 'billing') {
+        setActiveTab('billing');
+      }
+      if (params.get('checkout') === 'success') {
+        setBillingMessage('Checkout completed. Your subscription will update after Stripe confirms the webhook.');
+      } else if (params.get('checkout') === 'cancelled') {
+        setBillingMessage('Checkout cancelled. Your current plan is unchanged.');
+      }
+    }
     loadAutonomyStatus();
     loadTrainingData();
     loadBillingSummary();
@@ -194,9 +205,27 @@ export default function SettingsPage() {
         method: 'POST',
         body: JSON.stringify({ plan, billing_cycle: 'monthly' }),
       });
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
+        return;
+      }
       setBillingMessage(data.message || 'Checkout is ready.');
     } catch (error) {
       setBillingMessage(error instanceof Error ? error.message : 'Checkout failed');
+    }
+  };
+
+  const openBillingPortal = async () => {
+    setBillingMessage('');
+    try {
+      const data = await apiRequest('/api/v1/billing/portal', { method: 'POST' });
+      if (data.portal_url) {
+        window.location.href = data.portal_url;
+        return;
+      }
+      setBillingMessage(data.message || 'Billing portal is not ready for this account yet.');
+    } catch (error) {
+      setBillingMessage(error instanceof Error ? error.message : 'Billing portal failed');
     }
   };
 
@@ -277,7 +306,7 @@ export default function SettingsPage() {
               <RefreshCw size={14} /> Model Self-Training
             </button>
             <button style={tabButtonStyle('code')} onClick={() => setActiveTab('code')}>
-              <Code2 size={14} /> NEXUS Code
+              <Code2 size={14} /> Arceus Code
             </button>
             <button style={tabButtonStyle('vault')} onClick={() => setActiveTab('vault')}>
               <Shield size={14} /> Privacy Vault
@@ -314,6 +343,9 @@ export default function SettingsPage() {
                         </span>
                       </div>
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <button onClick={openBillingPortal} style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}>
+                          Manage billing
+                        </button>
                         <button onClick={() => startCheckout('starter')} style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}>
                           Starter $12
                         </button>
@@ -586,7 +618,7 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <div>
-                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 800 }}>NEXUS Code Projects</h2>
+                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 800 }}>Arceus Code Projects</h2>
                     <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
                       Manage workspace project records separately from PA and Interview. Files stay attached only to Code projects.
                     </span>
@@ -648,7 +680,7 @@ export default function SettingsPage() {
                   ))}
                   {!codeProjectsLoading && codeProjects.length === 0 && (
                     <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
-                      No NEXUS Code projects yet. Open the workspace and create your first project.
+                      No Arceus Code projects yet. Open the workspace and create your first project.
                     </div>
                   )}
                 </div>

@@ -7,7 +7,7 @@ import {
   CheckSquare,
   Calendar, ShieldAlert,
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus, LogOut, Mic, Sparkles, Lightbulb, PanelLeft, BriefcaseBusiness
+  LogIn, UserPlus, LogOut, Mic, Sparkles, Lightbulb, PanelLeft, BriefcaseBusiness, ShieldCheck
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
@@ -64,24 +64,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const products = useMemo(() => [
     { label: 'Product Hub', href: '/hub', match: ['/hub'], icon: Sparkles },
-    { label: 'NEXUS Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
-    { label: 'NEXUS PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
-    { label: 'NEXUS Interview', href: '/interview', match: ['/interview'], icon: Mic },
+    { label: 'Arceus Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
+    { label: 'Arceus PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
+    { label: 'Arceus Interview', href: '/interview', match: ['/interview'], icon: Mic },
     { label: 'Settings', href: '/settings', match: ['/settings'], icon: Settings },
+    { label: 'Admin', href: '/admin', match: ['/admin'], icon: ShieldCheck },
   ], []);
 
   const allNavItems = useMemo(() => [
     { label: 'Hub', icon: Sparkles, href: '/hub' },
-    { label: 'NEXUS Code', icon: Code2, href: '/workspace' },
-    { label: 'NEXUS PA', icon: BriefcaseBusiness, href: '/pa' },
-    { label: 'NEXUS Interview', icon: Mic, href: '/interview' },
+    { label: 'Arceus Code', icon: Code2, href: '/workspace' },
+    { label: 'Arceus PA', icon: BriefcaseBusiness, href: '/pa' },
+    { label: 'Arceus Interview', icon: Mic, href: '/interview' },
     { label: 'Settings', icon: Settings, href: '/settings' },
+    { label: 'Admin', icon: ShieldCheck, href: '/admin' },
   ], []);
 
   const activeProduct = products.find((product) => product.match.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) || products[0];
 
   const sidebarItems = useMemo(() => {
-    if (activeProduct.label === 'NEXUS PA') {
+    if (activeProduct.label === 'Arceus PA') {
       return [
         { label: 'PA Home', icon: BriefcaseBusiness, href: '/pa' },
         { label: 'Planner', icon: Calendar, href: '/pa/planner' },
@@ -90,18 +92,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         { label: 'Reflection', icon: Lightbulb, href: '/pa/reflection' },
       ];
     }
-    if (activeProduct.label === 'NEXUS Interview') {
-      return [{ label: 'NEXUS Interview', icon: Mic, href: '/interview' }];
+    if (activeProduct.label === 'Arceus Interview') {
+      return [{ label: 'Arceus Interview', icon: Mic, href: '/interview' }];
     }
     if (activeProduct.label === 'Settings') {
       return [{ label: 'Settings', icon: Settings, href: '/settings' }];
     }
+    if (activeProduct.label === 'Admin') {
+      return [{ label: 'Admin', icon: ShieldCheck, href: '/admin' }];
+    }
     if (activeProduct.label === 'Product Hub') {
       return [
         { label: 'Hub', icon: Sparkles, href: '/hub' },
-        { label: 'NEXUS Code', icon: Code2, href: '/workspace' },
-        { label: 'NEXUS PA', icon: BriefcaseBusiness, href: '/pa' },
-        { label: 'NEXUS Interview', icon: Mic, href: '/interview' },
+        { label: 'Arceus Code', icon: Code2, href: '/workspace' },
+        { label: 'Arceus PA', icon: BriefcaseBusiness, href: '/pa' },
+        { label: 'Arceus Interview', icon: Mic, href: '/interview' },
       ];
     }
     return [
@@ -113,10 +118,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const currentItem = allNavItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || allNavItems[0];
 
   const commands = useMemo(() => [
-    { id: 'quick-code', label: 'Ask NEXUS Code', hint: 'Ctrl+J', action: () => router.push('/workspace') },
-    { id: 'quick-design', label: 'Design in NEXUS Code', hint: 'Ctrl+D', action: () => router.push('/workspace?agent=design') },
-    { id: 'quick-deploy', label: 'Deploy from NEXUS Code', hint: 'Ctrl+Shift+D', action: () => router.push('/workspace?agent=deploy') },
-    { id: 'quick-research', label: 'Research in NEXUS Code', hint: 'Ctrl+R', action: () => router.push('/workspace?agent=research') },
+    { id: 'quick-code', label: 'Ask Arceus Code', hint: 'Ctrl+J', action: () => router.push('/workspace') },
+    { id: 'quick-design', label: 'Design in Arceus Code', hint: 'Ctrl+D', action: () => router.push('/workspace?agent=design') },
+    { id: 'quick-deploy', label: 'Deploy from Arceus Code', hint: 'Ctrl+Shift+D', action: () => router.push('/workspace?agent=deploy') },
+    { id: 'quick-research', label: 'Research in Arceus Code', hint: 'Ctrl+R', action: () => router.push('/workspace?agent=research') },
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', hint: 'Ctrl+B', action: () => toggleSidebar() },
     ...allNavItems.map((item, index) => ({
       id: item.href,
@@ -197,7 +202,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
           >
             <Cpu className={styles.logoGlow} size={20} />
-            <span>NEXUS</span>
+            <span>Arceus</span>
           </button>
           {productMenuOpen && (
             <div className={styles.productMenu}>

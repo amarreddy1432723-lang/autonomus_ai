@@ -12,6 +12,9 @@ const isPublicRoute = createRouteMatcher([
 
 const hasClerkKeys = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const requireAuth = process.env.NEXT_PUBLIC_REQUIRE_AUTH === 'true';
+const publicAppEnv = (process.env.NEXT_PUBLIC_APP_ENV || '').toLowerCase();
+const productionLikeFrontend = publicAppEnv === 'production' || publicAppEnv === 'staging';
+const effectiveRequireAuth = requireAuth || productionLikeFrontend;
 
 export default function proxy(request: NextRequest, event: any) {
   if (hasClerkKeys) {
@@ -23,7 +26,7 @@ export default function proxy(request: NextRequest, event: any) {
   }
 
   // Mock authentication fallback for demo mode
-  if (!requireAuth) {
+  if (!effectiveRequireAuth) {
     return NextResponse.next();
   }
 

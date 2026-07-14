@@ -605,10 +605,12 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
 }
 
-.briefStats span {
+.briefStats span,
+.briefStats button {
   border: 1px solid var(--color-border);
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
@@ -616,6 +618,49 @@
   padding: 7px 10px;
   font-size: var(--text-xs);
   font-weight: 700;
+}
+
+.briefStats button {
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.briefStats button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.paSettingsPanel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.paSettingsPanel label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.paSettingsPanel input,
+.paSettingsPanel select {
+  accent-color: var(--color-accent-primary);
+}
+
+.paSettingsPanel select {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
 }
 
 .capabilityGrid {
@@ -774,6 +819,11 @@
 
   .paOsGrid {
     grid-template-columns: 1fr;
+  }
+
+  .paSettingsPanel {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .capabilityGrid {

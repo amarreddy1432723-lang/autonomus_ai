@@ -1,0 +1,175 @@
+.page {
+  min-height: 100vh;
+  background: #0d0d0d;
+  color: #f5f5f5;
+  padding: 28px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.kicker {
+  margin: 0 0 4px;
+  color: #a1a1aa;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  border: 1px solid #26282d;
+  border-radius: 10px;
+  background: #15161a;
+}
+
+.panelHeader {
+  height: 44px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #26282d;
+}
+
+.panelHeader h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.panelHeader span {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.pluginRow,
+.installedRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: #17181c;
+}
+
+.pluginRow p,
+.installedRow p {
+  margin: 6px 0 0;
+  color: #a1a1aa;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.rowTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rowTitle strong {
+  font-size: 14px;
+}
+
+.rowTitle span,
+.rowTitle small,
+.status {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.chips span {
+  border: 1px solid #26282d;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #c4c4cc;
+  font-size: 11px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.ghostButton {
+  height: 32px;
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: 1px solid #8b5cf6;
+  background: #8b5cf6;
+  color: white;
+}
+
+.secondaryButton,
+.ghostButton {
+  border: 1px solid #26282d;
+  background: #17181c;
+  color: #f5f5f5;
+}
+
+.dangerButton {
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+
+.notice,
+.empty {
+  border: 1px solid #26282d;
+  border-radius: 8px;
+  background: #17181c;
+  color: #a1a1aa;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.notice {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -28,7 +28,7 @@ export default function DesktopOnlyGuard({ product, reason, children }: DesktopO
               Product Hub
             </Link>
             <Link className={styles.secondary} href="/pa">
-              Open NEXUS PA
+              Open Arceus PA
             </Link>
           </div>
         </section>

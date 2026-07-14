@@ -2,8 +2,12 @@
 
 import { SignUp } from '@clerk/nextjs';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 
 export default function SignUpPage() {
+  const searchParams = useSearchParams();
+  const redirectUrl = searchParams.get('redirect_url') || '/workspace';
+
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
     return (
       <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--color-bg-primary)' }}>
@@ -21,7 +25,7 @@ export default function SignUpPage() {
   }
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--color-bg-primary)' }}>
-      <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
+      <SignUp routing="path" path="/sign-up" signInUrl={`/sign-in?redirect_url=${encodeURIComponent(redirectUrl)}`} fallbackRedirectUrl={redirectUrl} />
     </main>
   );
 }
