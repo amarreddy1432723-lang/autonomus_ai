@@ -3,8 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Download, ArrowLeft, Shield, Monitor, Apple, Terminal, CheckCircle2, ChevronRight, FileCode } from 'lucide-react';
-import { apiRequest } from '../../utils/api';
-
 type ReleaseDownload = {
   platform: 'windows' | 'macos' | 'linux';
   arch: string;
@@ -58,6 +56,32 @@ function downloadBy(manifest: ReleaseManifest, platform: 'windows' | 'macos' | '
   const match = manifest.downloads[platform]?.find((item) => item.kind === kind && (!arch || item.arch === arch));
   const fallback = FALLBACK_DOWNLOADS.downloads[platform].find((item) => item.kind === kind && (!arch || item.arch === arch));
   return match || fallback || FALLBACK_DOWNLOADS.downloads[platform][0];
+}
+
+async function fetchReleaseManifest(): Promise<ReleaseManifest> {
+  const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL?.replace(/\/$/, '');
+  const urls = [
+    agentUrl ? `${agentUrl}/api/v1/downloads/latest` : null,
+    '/api/v1/downloads/latest',
+  ].filter(Boolean) as string[];
+
+  let lastError: unknown = null;
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      return (await response.json()) as ReleaseManifest;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Release manifest unavailable');
 }
 
 function DownloadButton({ item, children, primary = false, compact = false }: { item: ReleaseDownload; children: React.ReactNode; primary?: boolean; compact?: boolean }) {
@@ -117,10 +141,10 @@ export default function DownloadPage() {
 
   useEffect(() => {
     let cancelled = false;
-    apiRequest('/api/v1/downloads/latest')
+    fetchReleaseManifest()
       .then((payload) => {
         if (!cancelled) {
-          setManifest(payload as ReleaseManifest);
+          setManifest(payload);
           setReleaseError(null);
         }
       })
