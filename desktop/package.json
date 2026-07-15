@@ -10,6 +10,7 @@
   "scripts": {
     "start": "electron .",
     "package": "electron-packager . \"Arceus Code\" --platform=win32 --arch=x64 --out=dist --overwrite",
+    "dist:local": "electron-builder --win --publish never --config electron-builder.local.yml",
     "dist": "electron-builder"
   },
   "dependencies": {

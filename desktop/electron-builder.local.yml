@@ -1,0 +1,18 @@
+appId: dev.arceus.code
+productName: Arceus Code
+directories:
+  output: dist
+win:
+  target: nsis
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  artifactName: "${productName}-${version}-Setup.${ext}"
+publish:
+  - provider: github
+    owner: arceus-ai
+    repo: arceus-code
+    releaseType: release
