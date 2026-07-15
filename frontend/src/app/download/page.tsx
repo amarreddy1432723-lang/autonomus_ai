@@ -61,8 +61,8 @@ function downloadBy(manifest: ReleaseManifest, platform: 'windows' | 'macos' | '
 async function fetchReleaseManifest(): Promise<ReleaseManifest> {
   const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL?.replace(/\/$/, '');
   const urls = [
-    agentUrl ? `${agentUrl}/api/v1/downloads/latest` : null,
     '/api/v1/downloads/latest',
+    agentUrl ? `${agentUrl}/api/v1/downloads/latest` : null,
   ].filter(Boolean) as string[];
 
   let lastError: unknown = null;
