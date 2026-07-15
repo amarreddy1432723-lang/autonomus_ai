@@ -18,6 +18,9 @@ def test_observability_health_reports_alert_dashboard_and_runbook(monkeypatch):
     assert report["sentry"]["backend_configured"] is True
     assert report["sentry"]["frontend_configured"] is True
     assert report["grafana"]["dashboard_ready"] is True
+    assert report["grafana"]["datasource_path"] == "ops/grafana/provisioning/datasources/prometheus.yml"
+    assert report["grafana"]["provider_path"] == "ops/grafana/provisioning/dashboards/arceus.yml"
+    assert report["runbook"]["verify"].startswith(".\\scripts\\verify-observability.ps1")
     assert report["runbook"]["setup"].startswith("docker compose")
     assert {item["name"] for item in report["prometheus"]["alert_coverage"]} == {
         "ArceusServiceDown",
@@ -48,3 +51,5 @@ def test_observability_ops_files_are_importable():
     assert dashboard["title"] == "Arceus Code Overview"
     assert dashboard["uid"] == "arceus-code-overview"
     assert any(panel["title"] == "Worker Health" for panel in dashboard["panels"])
+    assert (root / "ops" / "grafana" / "provisioning" / "datasources" / "prometheus.yml").exists()
+    assert (root / "ops" / "grafana" / "provisioning" / "dashboards" / "arceus.yml").exists()

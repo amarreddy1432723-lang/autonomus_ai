@@ -95,6 +95,7 @@ def _readiness_item(name: str, ok: bool, detail: str, severity: str = "blocker",
 def _release_runbook(root: Path, ready: bool) -> dict:
     verify = ".\\scripts\\full-verify.ps1 -AdminUserId $env:SMOKE_ADMIN_USER_ID -CheckProviders -StrictSmoke"
     gate = ".\\scripts\\verify-release-gate.ps1 -Environment production -Phase predeploy -ReleaseVersion $env:RELEASE_VERSION"
+    observability = ".\\scripts\\verify-observability.ps1 -CheckRuntime -Strict"
     smoke = ".\\scripts\\smoke-test.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
     deploy = ".\\scripts\\deploy-railway.ps1 -BackendUrl $env:SMOKE_BACKEND_URL -FrontendUrl $env:SMOKE_FRONTEND_URL -AdminUserId $env:SMOKE_ADMIN_USER_ID"
     backup = ".\\scripts\\backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL"
@@ -103,6 +104,7 @@ def _release_runbook(root: Path, ready: bool) -> dict:
         "recommended_next_step": "Deploy staging" if ready else "Clear blockers before deploy",
         "verify_command": verify,
         "release_gate_command": gate,
+        "observability_command": observability,
         "smoke_command": smoke,
         "deploy_command": deploy,
         "backup_command": backup,
@@ -114,6 +116,7 @@ def _release_runbook(root: Path, ready: bool) -> dict:
             "Run full verification locally or in CI.",
             "Create a database backup before production migrations.",
             "Run the pre-deploy release gate.",
+            "Run observability verification and confirm Prometheus/Grafana targets.",
             "Deploy staging and run smoke tests.",
             "Manually approve production deploy.",
             "Run post-deploy smoke tests and monitor errors/jobs.",
@@ -140,6 +143,7 @@ def _release_readiness_report() -> dict:
         _readiness_item("Postgres backup script", (root / "scripts" / "backup-postgres.ps1").exists(), "scripts/backup-postgres.ps1 exists", action="Add backup script and run it before migrations/deploy."),
         _readiness_item("Postgres restore script", (root / "scripts" / "restore-postgres.ps1").exists(), "scripts/restore-postgres.ps1 exists", action="Add restore script with explicit confirmation guard."),
         _readiness_item("Database operations verifier", (root / "scripts" / "verify-database-operations.ps1").exists(), "scripts/verify-database-operations.ps1 validates backup/restore runbooks", action="Add a verifier for backup metadata, restore confirmation, and migration policy."),
+        _readiness_item("Observability verifier", (root / "scripts" / "verify-observability.ps1").exists(), "scripts/verify-observability.ps1 validates Sentry, Prometheus, Grafana, alerts, and runtime targets", action="Add scripts/verify-observability.ps1 and run it before release."),
         _readiness_item("Database operations runbook", (root / "docs" / "OPERATIONS.md").read_text(encoding="utf-8").find("No destructive migration") >= 0, "docs/OPERATIONS.md documents restore drills and destructive migration policy", action="Document backup, restore drill, and migration rollback policy."),
         _readiness_item("Production auth fallback disabled", not production_like or os.getenv("ALLOW_DEMO_USER", "false").lower() != "true", "ALLOW_DEMO_USER must not be true in staging/production", action="Set ALLOW_DEMO_USER=false in staging/production."),
         _readiness_item("Dev auth fallback disabled", not production_like or os.getenv("ALLOW_DEV_AUTH_FALLBACK", "false").lower() != "true", "ALLOW_DEV_AUTH_FALLBACK must not be true in staging/production", action="Set ALLOW_DEV_AUTH_FALLBACK=false in staging/production."),
@@ -179,6 +183,9 @@ def _observability_health_report() -> dict:
     alert_rules = root / "ops" / "prometheus" / "arceus-alerts.yml"
     grafana_dashboard = root / "ops" / "grafana" / "arceus-code-overview.json"
     docs_runbook = root / "docs" / "observability.md"
+    verifier = root / "scripts" / "verify-observability.ps1"
+    datasource = root / "ops" / "grafana" / "provisioning" / "datasources" / "prometheus.yml"
+    dashboard_provider = root / "ops" / "grafana" / "provisioning" / "dashboards" / "arceus.yml"
     alert_text = alert_rules.read_text(encoding="utf-8") if alert_rules.exists() else ""
     required_alerts = [
         ("ArceusServiceDown", "API/service scrape failure"),
@@ -205,7 +212,10 @@ def _observability_health_report() -> dict:
         _readiness_item("Alert rules", alert_rules.exists(), "ops/prometheus/arceus-alerts.yml exists", "warning"),
         _readiness_item("Required alert coverage", all(item["present"] for item in alert_coverage), "service, error, latency, worker, queue, and dead-letter alerts exist", "warning"),
         _readiness_item("Grafana dashboard", grafana_dashboard.exists(), "ops/grafana/arceus-code-overview.json exists", "warning"),
+        _readiness_item("Grafana datasource provisioning", datasource.exists(), "ops/grafana/provisioning/datasources/prometheus.yml exists", "warning"),
+        _readiness_item("Grafana dashboard provisioning", dashboard_provider.exists(), "ops/grafana/provisioning/dashboards/arceus.yml exists", "warning"),
         _readiness_item("Observability runbook", docs_runbook.exists(), "docs/observability.md documents setup and incident checks", "warning"),
+        _readiness_item("Observability verifier", verifier.exists(), "scripts/verify-observability.ps1 can verify envs, files, and runtime targets", "warning"),
     ]
     warnings = [item for item in checks if not item["ok"]]
     return {
@@ -231,11 +241,15 @@ def _observability_health_report() -> dict:
         },
         "grafana": {
             "dashboard_path": "ops/grafana/arceus-code-overview.json",
+            "datasource_path": "ops/grafana/provisioning/datasources/prometheus.yml",
+            "provider_path": "ops/grafana/provisioning/dashboards/arceus.yml",
             "dashboard_ready": grafana_dashboard.exists(),
         },
         "runbook": {
             "setup": "docker compose -f docker-compose.prod-smoke.yml --profile observability up -d",
+            "verify": ".\\scripts\\verify-observability.ps1 -CheckRuntime -Strict",
             "targets": "http://localhost:9090/targets",
+            "grafana": "http://localhost:3001/d/arceus-code-overview",
             "admin_gate": "GET /api/v1/admin/observability-health",
             "docs": "docs/observability.md",
         },

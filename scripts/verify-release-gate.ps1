@@ -81,6 +81,15 @@ Add-GateItem "Database backup command" (Test-Path (Join-Path $repoRoot "scripts\
 Add-GateItem "Database restore command" (Test-Path (Join-Path $repoRoot "scripts\restore-postgres.ps1")) "blocker" "scripts/restore-postgres.ps1" "Keep restore command available for rollback drills."
 Add-GateItem "Deploy command" (Test-Path (Join-Path $repoRoot "scripts\deploy-railway.ps1")) "blocker" "scripts/deploy-railway.ps1" "Use the reviewed deploy wrapper, not an ad hoc Railway command."
 Add-GateItem "Smoke command" (Test-Path (Join-Path $repoRoot "scripts\smoke-test.ps1")) "blocker" "scripts/smoke-test.ps1" "Run post-deploy smoke tests after every deploy."
+Push-Location $repoRoot
+try {
+  .\scripts\verify-observability.ps1 -Strict:(!$AllowWarnings) | Out-Host
+  $observabilityReport = Read-JsonFile ".verify\observability-summary.json"
+  Add-GateItem "Observability verification" ($observabilityReport.ready -eq $true) "blocker" "blockers=$($observabilityReport.blockers), warnings=$($observabilityReport.warnings)" "Set Sentry envs, Prometheus/Grafana files, and alert coverage before release."
+} catch {
+  Add-GateItem "Observability verification" $false "blocker" $_.Exception.Message "Run .\scripts\verify-observability.ps1 and clear blockers."
+}
+Pop-Location
 Add-GateItem "Rollback notes" (Test-Path (Join-Path $repoRoot "RELEASE.md")) "warning" "RELEASE.md" "Document migration and rollback notes for this release."
 
 $blockers = @($items | Where-Object { $_.ok -ne $true -and $_.severity -eq "blocker" })

@@ -155,6 +155,12 @@ Step "Database operations surface" {
   Pop-Location
 }
 
+Step "Observability surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-observability.ps1 -Strict:$StrictSmoke
+  Pop-Location
+}
+
 if ($CheckProviders) {
   Step "External provider configuration" {
     Push-Location $repoRoot

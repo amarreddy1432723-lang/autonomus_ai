@@ -36,6 +36,19 @@ Then open:
 
 ```text
 http://localhost:9090/targets
+http://localhost:3001/d/arceus-code-overview
+```
+
+Automated verification:
+
+```powershell
+.\scripts\verify-observability.ps1
+```
+
+Runtime verification, after the stack is running:
+
+```powershell
+.\scripts\verify-observability.ps1 -CheckRuntime -Strict
 ```
 
 Prometheus config lives in:
@@ -57,6 +70,11 @@ Import the starter Grafana dashboard from:
 ```text
 ops/grafana/arceus-code-overview.json
 ```
+
+For the production-smoke stack, Grafana is auto-provisioned from:
+
+- `ops/grafana/provisioning/datasources/prometheus.yml`
+- `ops/grafana/provisioning/dashboards/arceus.yml`
 
 ## Logs
 
@@ -99,6 +117,27 @@ It checks:
 - alert rule files
 - required alert coverage
 - Grafana dashboard artifact
+- Grafana datasource/dashboard provisioning
+- `scripts/verify-observability.ps1`
 - observability runbook
 
 For production, the Observability Gate should have zero warnings before a public release.
+
+## Release Gate
+
+The release gate runs the observability verifier before production approval:
+
+```powershell
+.\scripts\verify-release-gate.ps1 -Environment production -Phase predeploy -ReleaseVersion arceus-code-v1.0.0
+```
+
+For a real release, set these variables in CI or the deployment shell:
+
+```text
+SENTRY_DSN=
+NEXT_PUBLIC_SENTRY_DSN=
+APP_RELEASE=arceus-code-v1.0.0
+NEXT_PUBLIC_APP_RELEASE=arceus-code-v1.0.0
+PROMETHEUS_URL=http://localhost:9090
+GRAFANA_URL=http://localhost:3001
+```
