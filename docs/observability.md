@@ -51,6 +51,13 @@ Runtime verification, after the stack is running:
 .\scripts\verify-observability.ps1 -CheckRuntime -Strict
 ```
 
+If Railway cannot provision Redis on the current plan, use Upstash Redis and apply it to backend services:
+
+```powershell
+$env:UPSTASH_REDIS_URL="rediss://default:<password>@<host>:6379"
+.\scripts\setup-upstash-redis.ps1
+```
+
 Prometheus config lives in:
 
 - `ops/prometheus/prometheus.yml`
