@@ -48,6 +48,10 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
         provider = getattr(settings, "LLM_PROVIDER", "").strip().lower()
     else:
         provider = provider.strip().lower()
+    if provider == "arceus_local":
+        provider = "ollama"
+    elif provider == "arceus_cloud":
+        provider = "autonomus"
 
     if not model:
         base_model = getattr(settings, "LLM_MODEL", "gpt-4o-mini").strip()

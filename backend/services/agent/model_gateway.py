@@ -92,6 +92,8 @@ class LangChainModelProvider:
 class ModelGateway:
     def __init__(self) -> None:
         self.providers: dict[str, ModelProvider] = {
+            "arceus_local": LangChainModelProvider("arceus_local"),
+            "arceus_cloud": LangChainModelProvider("arceus_cloud"),
             "autonomus": LangChainModelProvider("autonomus"),
             "nexus": LangChainModelProvider("nexus"),
             "openai": LangChainModelProvider("openai"),

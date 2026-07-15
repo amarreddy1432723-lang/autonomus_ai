@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
-import { AlertTriangle, Bell, CheckCircle2, Code2, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, Code2, Cpu, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
 import { deriveVaultKey, generateSaltHex, getVaultKey, setVaultKey, clearVaultKey } from '../../utils/vault';
 
@@ -67,6 +67,42 @@ type CodeProject = {
   last_opened_at?: string | null;
 };
 
+type LocalModelStatus = {
+  provider: string;
+  runtime: string;
+  running: boolean;
+  base_url: string;
+  active_model: string;
+  available_models: string[];
+  models: Array<{ name: string; size?: number; family?: string; parameter_size?: string; quantization_level?: string }>;
+  requires_api_key: boolean;
+  supports_offline: boolean;
+  error?: string | null;
+  setup?: { download_url: string; recommended_pull: string };
+  preferences?: ModelPreferences;
+};
+
+type ModelPreferences = {
+  mode: 'arceus_local' | 'arceus_cloud' | 'provider';
+  provider: string;
+  model: string;
+  allow_cloud_fallback: boolean;
+  confirm_before_cloud_transfer: boolean;
+};
+
+type ModelAccessSummary = {
+  plan: string;
+  providers: Array<{
+    provider: string;
+    label: string;
+    managed_configured: boolean;
+    byok_supported: boolean;
+    byok_connected: boolean;
+    privacy: { mode?: string; supports_offline?: boolean };
+    recommended_use: string[];
+  }>;
+};
+
 const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
   { value: 'observer', label: 'Observer' },
   { value: 'assistant', label: 'Assistant' },
@@ -75,7 +111,7 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code'>('autonomy');
+  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code' | 'models'>('autonomy');
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -92,6 +128,12 @@ export default function SettingsPage() {
   const [codeProjects, setCodeProjects] = useState<CodeProject[]>([]);
   const [codeProjectsLoading, setCodeProjectsLoading] = useState(false);
   const [codeProjectsError, setCodeProjectsError] = useState('');
+  const [localModelStatus, setLocalModelStatus] = useState<LocalModelStatus | null>(null);
+  const [modelAccess, setModelAccess] = useState<ModelAccessSummary | null>(null);
+  const [modelPreferences, setModelPreferences] = useState<ModelPreferences>({ mode: 'arceus_local', provider: 'ollama', model: 'qwen2.5-coder:7b', allow_cloud_fallback: false, confirm_before_cloud_transfer: true });
+  const [modelMessage, setModelMessage] = useState('');
+  const [modelTestPrompt, setModelTestPrompt] = useState('Reply with OK and your model name.');
+  const [modelTestResponse, setModelTestResponse] = useState('');
 
   const loadAutonomyStatus = async () => {
     setLoadingAutonomy(true);
@@ -136,6 +178,55 @@ export default function SettingsPage() {
       setCodeProjectsError(error instanceof Error ? error.message : 'Unable to load Arceus Code projects');
     } finally {
       setCodeProjectsLoading(false);
+    }
+  };
+
+  const loadModelSettings = async () => {
+    setModelMessage('');
+    try {
+      const [localStatus, accessSummary, preferences] = await Promise.all([
+        apiRequest('/api/v1/models/local/status'),
+        apiRequest('/api/v1/models/access'),
+        apiRequest('/api/v1/models/preferences'),
+      ]);
+      setLocalModelStatus(localStatus);
+      setModelAccess(accessSummary);
+      setModelPreferences(preferences);
+    } catch (error) {
+      setModelMessage(error instanceof Error ? error.message : 'Unable to load model settings');
+    }
+  };
+
+  const saveModelPreferences = async () => {
+    setModelMessage('');
+    try {
+      const updated = await apiRequest('/api/v1/models/preferences', {
+        method: 'PATCH',
+        body: JSON.stringify(modelPreferences),
+      });
+      setModelPreferences(updated);
+      setModelMessage('Model preferences saved.');
+      await loadModelSettings();
+    } catch (error) {
+      setModelMessage(error instanceof Error ? error.message : 'Unable to save model preferences');
+    }
+  };
+
+  const testLocalModel = async () => {
+    setModelMessage('');
+    setModelTestResponse('');
+    try {
+      const result = await apiRequest('/api/v1/models/local/test', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: modelTestPrompt, model: modelPreferences.model }),
+      });
+      if (result.ok) {
+        setModelTestResponse(result.response || 'Model responded successfully.');
+      } else {
+        setModelMessage(result.hint || result.error || 'Local model test failed.');
+      }
+    } catch (error) {
+      setModelMessage(error instanceof Error ? error.message : 'Unable to test local model');
     }
   };
 
@@ -185,6 +276,8 @@ export default function SettingsPage() {
       const params = new URLSearchParams(window.location.search);
       if (params.get('tab') === 'billing') {
         setActiveTab('billing');
+      } else if (params.get('tab') === 'models') {
+        setActiveTab('models');
       }
       if (params.get('checkout') === 'success') {
         setBillingMessage('Checkout completed. Your subscription will update after Stripe confirms the webhook.');
@@ -196,6 +289,7 @@ export default function SettingsPage() {
     loadTrainingData();
     loadBillingSummary();
     loadCodeProjects();
+    loadModelSettings();
   }, []);
 
   const startCheckout = async (plan: string) => {
@@ -305,6 +399,9 @@ export default function SettingsPage() {
             <button style={tabButtonStyle('training')} onClick={() => setActiveTab('training')}>
               <RefreshCw size={14} /> Model Self-Training
             </button>
+            <button style={tabButtonStyle('models')} onClick={() => setActiveTab('models')}>
+              <Cpu size={14} /> AI Models
+            </button>
             <button style={tabButtonStyle('code')} onClick={() => setActiveTab('code')}>
               <Code2 size={14} /> Arceus Code
             </button>
@@ -395,6 +492,145 @@ export default function SettingsPage() {
                     <AlertTriangle size={14} /> {billingMessage}
                   </span>
                 )}
+              </div>
+            )}
+
+            {activeTab === 'models' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div>
+                    <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 800 }}>AI Models</h2>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                      Choose local, managed cloud, or connected provider models. Local mode keeps code on this machine.
+                    </span>
+                  </div>
+                  <button
+                    onClick={loadModelSettings}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}
+                  >
+                    <RefreshCw size={14} /> Refresh
+                  </button>
+                </div>
+
+                {modelMessage && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: modelMessage.includes('saved') ? 'var(--color-success)' : 'var(--color-warning)' }}>
+                    <AlertTriangle size={14} /> {modelMessage}
+                  </span>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                  {[
+                    { id: 'arceus_local', title: 'Arceus Local', desc: 'Private, offline after model download, no API charges.' },
+                    { id: 'arceus_cloud', title: 'Arceus Cloud', desc: 'Managed Arceus model access through subscription credits.' },
+                    { id: 'provider', title: 'Connect Provider', desc: 'Use your own OpenAI, Anthropic, Google, Groq, or custom endpoint.' },
+                  ].map((mode) => {
+                    const active = modelPreferences.mode === mode.id;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => setModelPreferences((current) => ({ ...current, mode: mode.id as ModelPreferences['mode'], provider: mode.id === 'arceus_local' ? 'ollama' : mode.id === 'arceus_cloud' ? 'autonomus' : current.provider }))}
+                        style={{ textAlign: 'left', background: active ? 'rgba(124, 108, 240, 0.12)' : 'var(--color-bg-tertiary)', border: `1px solid ${active ? 'var(--color-accent-primary)' : 'var(--color-border)'}`, color: 'var(--color-text-primary)', borderRadius: 'var(--radius-md)', padding: '14px', cursor: 'pointer' }}
+                      >
+                        <strong style={{ display: 'block', fontSize: 'var(--text-sm)' }}>{mode.title}</strong>
+                        <span style={{ display: 'block', marginTop: '6px', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)', lineHeight: 1.5 }}>{mode.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', display: 'grid', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div>
+                      <strong style={{ display: 'block', fontSize: 'var(--text-sm)' }}>Local runtime</strong>
+                      <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
+                        Ollama at {localModelStatus?.base_url || 'http://127.0.0.1:11434'}
+                      </span>
+                    </div>
+                    <span style={{ color: localModelStatus?.running ? 'var(--color-success)' : 'var(--color-warning)', fontSize: 'var(--text-xs)', fontWeight: 800 }}>
+                      {localModelStatus?.running ? 'Running' : 'Offline'}
+                    </span>
+                  </div>
+                  {!localModelStatus?.running && (
+                    <div style={{ border: '1px solid rgba(234, 179, 8, 0.35)', background: 'rgba(234, 179, 8, 0.08)', borderRadius: 'var(--radius-sm)', padding: '10px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                      Install Ollama, then run <code>{localModelStatus?.setup?.recommended_pull || 'ollama pull qwen2.5-coder:7b'}</code>.
+                    </div>
+                  )}
+                  <label style={{ display: 'grid', gap: '6px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                    Selected local model
+                    <select
+                      value={modelPreferences.model}
+                      onChange={(event) => setModelPreferences((current) => ({ ...current, model: event.target.value }))}
+                      style={{ background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', borderRadius: 'var(--radius-sm)', padding: '9px 10px' }}
+                    >
+                      {(localModelStatus?.available_models?.length ? localModelStatus.available_models : [modelPreferences.model || 'qwen2.5-coder:7b']).map((name) => (
+                        <option value={name} key={name}>{name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {!!localModelStatus?.models?.length && (
+                    <div style={{ display: 'grid', gap: '8px' }}>
+                      {localModelStatus.models.slice(0, 6).map((model) => (
+                        <div key={model.name} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '8px 10px', fontSize: 'var(--text-xs)' }}>
+                          <strong>{model.name}</strong>
+                          <span style={{ color: 'var(--color-text-secondary)' }}>{model.parameter_size || model.family || 'local'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', display: 'grid', gap: '12px' }}>
+                  <strong style={{ fontSize: 'var(--text-sm)' }}>Privacy and fallback</strong>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                    <input
+                      type="checkbox"
+                      checked={modelPreferences.allow_cloud_fallback}
+                      onChange={(event) => setModelPreferences((current) => ({ ...current, allow_cloud_fallback: event.target.checked }))}
+                    />
+                    Allow cloud fallback when the local model cannot complete a task.
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)' }}>
+                    <input
+                      type="checkbox"
+                      checked={modelPreferences.confirm_before_cloud_transfer}
+                      onChange={(event) => setModelPreferences((current) => ({ ...current, confirm_before_cloud_transfer: event.target.checked }))}
+                    />
+                    Ask before sending project context to any cloud provider.
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <button onClick={saveModelPreferences} style={{ background: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-primary)', color: 'white', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 800 }}>
+                      Save model preferences
+                    </button>
+                    <button onClick={testLocalModel} style={{ background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', padding: '9px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 700 }}>
+                      Test local model
+                    </button>
+                  </div>
+                  <textarea
+                    value={modelTestPrompt}
+                    onChange={(event) => setModelTestPrompt(event.target.value)}
+                    rows={2}
+                    style={{ background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', borderRadius: 'var(--radius-sm)', padding: '10px', resize: 'vertical' }}
+                  />
+                  {modelTestResponse && (
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', background: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '10px', color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>{modelTestResponse}</pre>
+                  )}
+                </div>
+
+                <div style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '16px', display: 'grid', gap: '8px' }}>
+                  <strong style={{ fontSize: 'var(--text-sm)' }}>Provider access</strong>
+                  {(modelAccess?.providers || []).slice(0, 8).map((provider) => (
+                    <div key={provider.provider} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '8px 10px', fontSize: 'var(--text-xs)' }}>
+                      <div>
+                        <strong>{provider.label}</strong>
+                        <span style={{ display: 'block', color: 'var(--color-text-secondary)' }}>{provider.recommended_use.slice(0, 2).join(' · ')}</span>
+                      </div>
+                      <span style={{ color: provider.managed_configured || provider.byok_connected ? 'var(--color-success)' : 'var(--color-text-secondary)', fontWeight: 800 }}>
+                        {provider.byok_connected ? 'BYOK' : provider.managed_configured ? 'Ready' : provider.byok_supported ? 'Connect key' : 'Not configured'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

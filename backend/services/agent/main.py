@@ -444,6 +444,17 @@ class ModelByokRegisterRequest(BaseModel):
     provider: str
     label: str = ""
 
+class ModelPreferencesRequest(BaseModel):
+    mode: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    allow_cloud_fallback: Optional[bool] = None
+    confirm_before_cloud_transfer: Optional[bool] = None
+
+class LocalModelTestRequest(BaseModel):
+    prompt: str = "Reply with OK."
+    model: Optional[str] = None
+
 class NexusBlendRequest(BaseModel):
     prompt: str
     context: str = ""
@@ -1303,6 +1314,37 @@ def post_model_byok_register(request: ModelByokRegisterRequest, user_id: UUID = 
         return register_byok_placeholder(db, user_id, request.provider, request.label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/v1/models/local/status")
+def get_local_model_status(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_local import local_model_status
+
+    return local_model_status(db, user_id)
+
+@app.get("/api/v1/models/local/models")
+def get_local_model_models(user_id: UUID = Depends(get_current_user_id)):
+    from .model_local import list_local_models
+
+    return list_local_models()
+
+@app.post("/api/v1/models/local/test")
+def post_local_model_test(request: LocalModelTestRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_local import test_local_model
+
+    return test_local_model(db, user_id, request.prompt, request.model)
+
+@app.get("/api/v1/models/preferences")
+def get_models_preferences(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_local import get_model_preferences
+
+    return get_model_preferences(db, user_id)
+
+@app.patch("/api/v1/models/preferences")
+@app.post("/api/v1/models/preferences")
+def patch_models_preferences(request: ModelPreferencesRequest, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .model_local import update_model_preferences
+
+    return update_model_preferences(db, user_id, request.model_dump(exclude_unset=True))
 
 @app.post("/api/v1/models/health-check")
 def post_model_registry_health_check(user_id: UUID = Depends(get_current_user_id)):

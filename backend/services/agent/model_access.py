@@ -14,6 +14,22 @@ from .config import settings
 
 
 MODEL_PROVIDERS: dict[str, dict[str, Any]] = {
+    "arceus_local": {
+        "label": "Arceus Local",
+        "env_key": None,
+        "supports_byok": False,
+        "supports_zero_retention_contract": True,
+        "privacy": "local",
+        "supports_offline": True,
+    },
+    "arceus_cloud": {
+        "label": "Arceus Cloud",
+        "env_key": "AUTONOMUS_LLM_API_KEY",
+        "supports_byok": False,
+        "supports_zero_retention_contract": True,
+        "privacy": "arceus_cloud",
+        "supports_offline": False,
+    },
     "openai": {
         "label": "OpenAI",
         "env_key": "OPENAI_API_KEY",
@@ -62,8 +78,10 @@ MODEL_PROVIDERS: dict[str, dict[str, Any]] = {
 def _platform_key_configured(provider: str) -> bool:
     meta = MODEL_PROVIDERS.get(provider) or {}
     env_key = meta.get("env_key")
-    if provider == "ollama":
+    if provider in {"ollama", "arceus_local"}:
         return True
+    if provider == "arceus_cloud":
+        return _platform_key_configured("autonomus")
     if not env_key:
         return False
     value = getattr(settings, env_key, None) or os.getenv(env_key)
@@ -100,6 +118,8 @@ def model_access_summary(db: Session, user_id: UUID) -> dict[str, Any]:
             "byok_connected": bool(byok),
             "byok_status": byok.status if byok else "not_connected",
             "privacy": {
+                "mode": meta.get("privacy", "provider_cloud"),
+                "supports_offline": bool(meta.get("supports_offline")),
                 "platform_zero_log_personal_data": bool(settings.ZERO_LOG_PERSONAL_DATA),
                 "provider_zero_retention_contract_possible": bool(meta.get("supports_zero_retention_contract")),
                 "notes": "Enterprise provider contract required for guaranteed zero-data-retention terms.",
@@ -132,6 +152,8 @@ def _recommended_use(provider: str) -> list[str]:
         "groq": ["low-latency chat", "quick interview answers", "cheap extraction"],
         "custom": ["hosted Autonomus AI", "vLLM/LM Studio compatible deployments"],
         "autonomus": ["first-party NEXUS identity", "fine-tuned product behavior"],
+        "arceus_local": ["private local coding", "offline development", "no API charges"],
+        "arceus_cloud": ["managed Arceus models", "subscription credits", "best default quality"],
         "ollama": ["local/private workloads", "offline development"],
     }.get(provider, ["general use"])
 
@@ -141,6 +163,10 @@ def resolve_model_access_mode(db: Session, user_id: UUID, provider: str | None, 
     if normalized == "gemini":
         normalized = "google"
     if normalized == "nexus":
+        normalized = "autonomus"
+    if normalized == "arceus_local":
+        normalized = "ollama"
+    if normalized == "arceus_cloud":
         normalized = "autonomus"
     if normalized not in MODEL_PROVIDERS:
         return {
