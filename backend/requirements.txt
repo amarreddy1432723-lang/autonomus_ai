@@ -19,7 +19,7 @@ python-lsp-server[all]==1.13.1
 playwright==1.49.1
 pillow==11.1.0
 stripe==11.6.0
-sentry-sdk[fastapi]==2.20.0
+sentry-sdk[fastapi]==2.47.0
 prometheus-fastapi-instrumentator==7.0.0
 email-validator>=2.0.0
 pytest==8.3.4
@@ -36,5 +36,6 @@ langchain-openai==0.2.3
 langchain-anthropic
 langchain-google-genai
 langchain-groq
+langchain-mistralai
 # pip install langchain-ollama           # Local Ollama models
 # pip install sentence-transformers      # Local HuggingFace embeddings

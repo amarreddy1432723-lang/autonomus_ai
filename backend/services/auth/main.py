@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import List
 from uuid import UUID
 
+from common.sentry_setup import initialize_sentry
 from services.shared.database import get_db
 from services.shared.models import User, UserProfile, Integration, UserSession
 from services.shared.error_handler import register_error_handlers
@@ -53,6 +54,8 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     yield
+
+initialize_sentry("auth")
 
 app = FastAPI(title="my-ai Auth Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "auth-service")

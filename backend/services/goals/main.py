@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from common.sentry_setup import initialize_sentry
 from services.shared.database import get_db
 from services.shared.models import Goal, Task, Approval, Schedule, Project, Memory
 from services.shared.error_handler import register_error_handlers
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     yield
+
+initialize_sentry("goals")
 
 app = FastAPI(title="my-ai Goals Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "goals-service")

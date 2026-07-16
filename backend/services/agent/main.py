@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import Session
 
+from common.sentry_setup import initialize_sentry
 from .config import settings
 from services.shared.database import get_db
 from services.shared.models import FileReference, Memory
@@ -63,6 +64,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         worker_queue.stop()
+
+initialize_sentry("agent")
 
 app = FastAPI(title="my-ai Agent Service", version="1.0.0", lifespan=lifespan)
 install_api_foundation(app, "agent-service")
@@ -312,6 +315,24 @@ class CodeWorkspaceTaskUpdate(BaseModel):
     alternatives: Optional[List[str]] = None
     next_after_done: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+
+class ProjectNavigatorCheckRequest(BaseModel):
+    completed_actions: List[int] = Field(default_factory=list)
+
+class ProjectNavigatorResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    active_objective: str
+    recommended_task: str
+    why_reason: str
+    associated_risks: Optional[str] = None
+    suggested_actions: List[str] = Field(default_factory=list)
+    manual_steps: List[str] = Field(default_factory=list)
+    automated_prompt: str
+    completed_actions: List[int] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
 
 class CodeAgentLoopRequest(BaseModel):
     task: str = Field(min_length=1, max_length=10000)
@@ -3942,6 +3963,43 @@ def apply_code_session_patch(
             intent="Apply",
             preview=result.get("changed") or [],
             approval_state="approved",
+        ),
+    }
+
+@app.post("/api/v1/code/sessions/{session_id}/apply-safe")
+def apply_safe_code_session_patch(
+    session_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .agent_jobs import create_agent_job, serialize_job
+    from .code_workspace import apply_safe_patch_payload, build_work_receipt, get_code_session
+
+    session = get_code_session(db, user_id, session_id)
+    require_session_project_role(db, user_id, session, "editor")
+    require_entitlement_or_402(db, user_id, "code_runtime_command")
+    job = create_agent_job(db, user_id, session.id, "apply_safe", "Auto-apply safe workspace changes", approval_state="approved")
+    result = apply_safe_patch_payload(db, user_id, session, job)
+    changed_count = len(result.get("changed") or [])
+    remaining_count = len(result.get("remaining") or [])
+    approval_state = "applied with review required" if remaining_count else "applied"
+    if changed_count == 0:
+        approval_state = "review required"
+    return {
+        **result,
+        "job": serialize_job(job),
+        "work_receipt": build_work_receipt(
+            session,
+            summary=(
+                f"Applied {changed_count} safe change{'s' if changed_count != 1 else ''}."
+                if changed_count
+                else "No safe changes were applied; review is required."
+            ),
+            mode="code",
+            intent="Auto-apply",
+            preview=result.get("changed") or [],
+            checks=[{"label": "Review required changes", "status": "pending"}] if remaining_count else [],
+            approval_state=approval_state,
         ),
     }
 
