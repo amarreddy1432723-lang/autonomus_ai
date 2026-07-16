@@ -13,3 +13,5 @@ if (dsn) {
     sendDefaultPii: false,
   });
 }
+
+export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
