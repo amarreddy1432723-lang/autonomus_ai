@@ -30,10 +30,43 @@ let dirWatcherBatch = [];
 let dirWatcherTimer = null;
 let managedPostgres = null;
 const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/workspace";
+const DESKTOP_CODE_ALLOWED_ROUTE_PREFIXES = [
+    "/workspace",
+    "/settings",
+    "/auth/desktop",
+    "/sign-in",
+    "/sign-up",
+    "/signup",
+    "/download",
+    "/ui-preview"
+];
 const WORKSPACE_IGNORED_DIRS = new Set([".git", ".hg", ".svn", "node_modules", ".next", "dist", "build", "coverage", ".venv", "venv", "__pycache__", "pycache", ".pytest_cache", ".turbo", ".cache"]);
 const WORKSPACE_IGNORED_EXTS = new Set([".pyc", ".pyo", ".map"]);
 const WORKSPACE_MAX_TREE_FILES = Number(process.env.NEXUS_DESKTOP_MAX_TREE_FILES || 5000);
 const WORKSPACE_MAX_FILE_BYTES = Number(process.env.NEXUS_DESKTOP_MAX_FILE_BYTES || 1500000);
+
+function sanitizeDesktopCodeRoute(route) {
+    let candidate = typeof route === "string" && route.trim() ? route.trim() : DEFAULT_ROUTE;
+    try {
+        if (/^https?:\/\//i.test(candidate)) {
+            const parsed = new URL(candidate);
+            candidate = `${parsed.pathname || "/"}${parsed.search || ""}${parsed.hash || ""}`;
+        }
+    } catch {
+        candidate = DEFAULT_ROUTE;
+    }
+
+    if (!candidate.startsWith("/")) {
+        candidate = DEFAULT_ROUTE;
+    }
+
+    const pathOnly = candidate.split("?")[0].split("#")[0];
+    const allowed = DESKTOP_CODE_ALLOWED_ROUTE_PREFIXES.some((prefix) => (
+        pathOnly === prefix || pathOnly.startsWith(`${prefix}/`)
+    ));
+
+    return allowed ? candidate : "/workspace";
+}
 
 function configureAutoUpdater() {
     if (!autoUpdater || isDev || process.env.ARCEUS_DISABLE_AUTO_UPDATE === "true") {
@@ -553,7 +586,7 @@ async function resolveFrontendOrigin() {
 async function loadFrontendRoute(windowRef, route) {
     await waitForFrontend();
     if (!windowRef || windowRef.isDestroyed()) return;
-    const safeRoute = typeof route === "string" && route.startsWith("/") ? route : DEFAULT_ROUTE;
+    const safeRoute = sanitizeDesktopCodeRoute(route);
     windowRef.loadURL(`${frontendOrigin}${safeRoute}`);
 }
 
