@@ -321,7 +321,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             className={styles.serviceStatusPill}
             data-state={serviceHealth.state}
             title={`${serviceHealth.label}: ${serviceHealth.detail}`}
-            onClick={() => void refreshServiceHealth()}
+            onClick={() => {
+              if (isElectron && serviceHealth.state === 'auth_required') {
+                router.push('/auth/desktop');
+                return;
+              }
+              void refreshServiceHealth();
+            }}
           >
             <span />
             <strong>{serviceHealth.label}</strong>

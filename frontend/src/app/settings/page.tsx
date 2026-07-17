@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
+import ServiceRecoveryBanner from '../../components/ServiceRecoveryBanner';
 import { AlertTriangle, Bell, CheckCircle2, Code2, Cpu, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
-import { hasDesktopAuthToken } from '../../utils/serviceHealth';
+import { probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../../utils/serviceHealth';
 import { deriveVaultKey, generateSaltHex, getVaultKey, setVaultKey, clearVaultKey } from '../../utils/vault';
 
 type AutonomyLevel = 'observer' | 'assistant' | 'partner' | 'chief_of_staff';
@@ -116,7 +117,10 @@ type SettingsTab = 'autonomy' | 'billing' | 'profile' | 'notifications' | 'train
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('code');
   const [isElectron, setIsElectron] = useState(false);
-  const [desktopAuthReady, setDesktopAuthReady] = useState(false);
+  const [serviceHealth, setServiceHealth] = useState<ServiceHealthSnapshot>(() => {
+    const copy = serviceHealthCopy('auth_required');
+    return { state: 'auth_required', label: copy.label, detail: copy.detail, online: false, authReady: false, checkedAt: '' };
+  });
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -184,6 +188,12 @@ export default function SettingsPage() {
     } finally {
       setCodeProjectsLoading(false);
     }
+  };
+
+  const refreshServiceHealth = async () => {
+    if (typeof window === 'undefined') return;
+    const snapshot = await probeServiceHealth();
+    setServiceHealth(snapshot);
   };
 
   const loadModelSettings = async () => {
@@ -268,7 +278,7 @@ export default function SettingsPage() {
   useEffect(() => {
     const desktop = typeof window !== 'undefined' && Boolean((window as any).electron);
     setIsElectron(desktop);
-    setDesktopAuthReady(hasDesktopAuthToken());
+    void refreshServiceHealth();
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('tab') === 'billing') {
@@ -391,15 +401,11 @@ export default function SettingsPage() {
           System Settings
         </h1>
 
-        {isElectron && !desktopAuthReady && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, border: '1px solid rgba(234, 179, 8, 0.35)', background: 'rgba(234, 179, 8, 0.08)', borderRadius: 'var(--radius-md)', padding: '12px 14px' }}>
-            <span style={{ color: 'var(--color-text-secondary)', fontSize: 'var(--text-xs)' }}>
-              Connect your Arceus account to unlock cloud agent, billing, GitHub, and managed model settings. Local files and terminal still work without it.
-            </span>
-            <Link href="/auth/desktop" style={{ flex: '0 0 auto', color: '#c4b5fd', fontWeight: 800, fontSize: 'var(--text-xs)', textDecoration: 'none' }}>
-              Connect account
-            </Link>
-          </div>
+        {isElectron && (
+          <ServiceRecoveryBanner
+            health={serviceHealth}
+            onRetry={refreshServiceHealth}
+          />
         )}
 
         <div style={{
