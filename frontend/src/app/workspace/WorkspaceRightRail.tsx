@@ -1,4 +1,4 @@
-import { AppWindow, ChevronLeft, ChevronRight, FileDiff, FolderTree, GitPullRequest, ListChecks, Network, Play, Terminal, Workflow } from 'lucide-react';
+import { AppWindow, ChevronLeft, ChevronRight, FileDiff, FolderTree, GitPullRequest, ListChecks, Play, Terminal, Workflow } from 'lucide-react';
 import type { AgentJob, PreviewCheck, TerminalSession } from './ActivityPanel';
 import styles from './Workspace.module.css';
 import type { WorkspaceRightPanelView } from './workspacePageUtils';
@@ -40,7 +40,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'explorer' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Folder structure"
+        title="Explorer: show folder structure"
         onClick={() => onOpenRightTool('explorer')}
       >
         <FolderTree size={14} />
@@ -49,24 +49,16 @@ export default function WorkspaceRightRail({
       <button
         className={terminalPanelOpen ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title={terminalPanelOpen ? 'Hide terminal' : 'Open terminal'}
+        title={terminalPanelOpen ? 'Hide bottom terminal' : 'Open bottom terminal'}
         onClick={onToggleTerminal}
       >
         <Terminal size={14} />
         {terminalCount > 0 && <span className={styles.railBadge}>{terminalCount}</span>}
       </button>
       <button
-        className={rightPanelOpen && rightPanelView === 'org' ? styles.rightRailButtonActive : styles.rightRailButton}
-        type="button"
-        title="Engineering organization"
-        onClick={() => onOpenRightTool('org')}
-      >
-        <Network size={14} />
-      </button>
-      <button
         className={rightPanelOpen && rightPanelView === 'changes' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Changes"
+        title={patchPreviewCount > 0 ? `${patchPreviewCount} review-required change(s)` : 'Changes: history and review-required diffs'}
         onClick={() => onOpenRightTool('changes')}
       >
         <FileDiff size={14} />
@@ -75,7 +67,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'jobs' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Jobs"
+        title="Jobs: background runs, logs, pause, retry, cancel"
         onClick={() => onOpenRightTool('jobs')}
       >
         <Workflow size={14} />
@@ -84,7 +76,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'preview' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Preview"
+        title={previewChecks.some((check) => check.status !== 'passed') ? 'Preview needs attention' : 'Preview: app iframe and verification evidence'}
         onClick={() => onOpenRightTool('preview')}
       >
         <Play size={14} />
@@ -93,7 +85,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'git' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Git / PR"
+        title="Git / PR: approved changes, branch, commit, checks"
         onClick={() => onOpenRightTool('git')}
       >
         <GitPullRequest size={14} />
@@ -101,7 +93,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'apps' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Apps / Connectors"
+        title="Apps / Connectors: GitHub, local tools, providers"
         onClick={() => onOpenRightTool('apps')}
       >
         <AppWindow size={14} />
@@ -109,7 +101,7 @@ export default function WorkspaceRightRail({
       <button
         className={rightPanelOpen && rightPanelView === 'tasks' ? styles.rightRailButtonActive : styles.rightRailButton}
         type="button"
-        title="Suggested Tasks"
+        title="Suggested Tasks: next actions for this project"
         onClick={() => onOpenRightTool('tasks')}
       >
         <ListChecks size={14} />

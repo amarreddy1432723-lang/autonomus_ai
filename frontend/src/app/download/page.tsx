@@ -86,11 +86,15 @@ async function fetchReleaseManifest(): Promise<ReleaseManifest> {
 
 function DownloadButton({ item, children, primary = false, compact = false }: { item: ReleaseDownload; children: React.ReactNode; primary?: boolean; compact?: boolean }) {
   const disabled = !item.available;
+  const disabledReason = item.status === 'pending_release'
+    ? 'Release artifact is not published yet. Configure the download URL and checksum on the backend/Railway release manifest.'
+    : 'This download is unavailable.';
   return (
     <a
       href={disabled ? undefined : item.url}
       aria-disabled={disabled}
-      title={disabled ? 'Release artifact is not published yet.' : item.label}
+      aria-label={disabled ? `${item.label} unavailable` : item.label}
+      title={disabled ? disabledReason : item.label}
       style={{
         background: primary ? (disabled ? '#2A2F3A' : '#4F8EF7') : '#161B27',
         color: primary && !disabled ? '#08090E' : '#F0F2F5',
@@ -295,7 +299,7 @@ export default function DownloadPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                 <DownloadButton item={windowsInstaller} primary>
                   <Download size={20} />
-                  {windowsInstaller.available ? 'Download Installer (.exe)' : 'Installer pending release'}
+                  {windowsInstaller.available ? 'Download Installer (.exe)' : 'Installer unavailable - release artifact missing'}
                 </DownloadButton>
                 <div style={{ color: '#8B919E', fontSize: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <span>SHA-256 Checksum: <code>{windowsInstaller.checksum_sha256 || 'pending signed release artifact'}</code></span>
