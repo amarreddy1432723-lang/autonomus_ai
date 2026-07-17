@@ -6,7 +6,7 @@ import AppShell from '../../components/AppShell';
 import ServiceRecoveryBanner from '../../components/ServiceRecoveryBanner';
 import { AlertTriangle, Bell, CheckCircle2, Code2, Cpu, CreditCard, Play, RefreshCw, Shield, User } from 'lucide-react';
 import { apiRequest } from '../../utils/api';
-import { probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../../utils/serviceHealth';
+import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../../utils/serviceHealth';
 import { deriveVaultKey, generateSaltHex, getVaultKey, setVaultKey, clearVaultKey } from '../../utils/vault';
 
 type AutonomyLevel = 'observer' | 'assistant' | 'partner' | 'chief_of_staff';
@@ -113,10 +113,15 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
 ];
 
 type SettingsTab = 'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code' | 'models';
+const DESKTOP_SETTINGS_TABS: SettingsTab[] = ['code', 'models', 'vault'];
+
+function initialDesktopSettingsState() {
+  return typeof window !== 'undefined' && isElectronRuntime();
+}
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('code');
-  const [isElectron, setIsElectron] = useState(false);
+  const [isElectron, setIsElectron] = useState(initialDesktopSettingsState);
   const [serviceHealth, setServiceHealth] = useState<ServiceHealthSnapshot>(() => {
     const copy = serviceHealthCopy('auth_required');
     return { state: 'auth_required', label: copy.label, detail: copy.detail, online: false, authReady: false, checkedAt: '' };
@@ -276,17 +281,18 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    const desktop = typeof window !== 'undefined' && Boolean((window as any).electron);
+    const desktop = isElectronRuntime();
     setIsElectron(desktop);
     void refreshServiceHealth();
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('tab') === 'billing') {
+      const requestedTab = params.get('tab') as SettingsTab | null;
+      if (desktop) {
+        setActiveTab(requestedTab && DESKTOP_SETTINGS_TABS.includes(requestedTab) ? requestedTab : 'code');
+      } else if (requestedTab === 'billing') {
         setActiveTab('billing');
-      } else if (params.get('tab') === 'models') {
+      } else if (requestedTab === 'models') {
         setActiveTab('models');
-      } else if (desktop) {
-        setActiveTab('code');
       }
       if (params.get('checkout') === 'success') {
         setBillingMessage('Checkout completed. Your subscription will update after Stripe confirms the webhook.');
@@ -304,6 +310,12 @@ export default function SettingsPage() {
     loadCodeProjects();
     loadModelSettings();
   }, []);
+
+  useEffect(() => {
+    if (isElectron && !DESKTOP_SETTINGS_TABS.includes(activeTab)) {
+      setActiveTab('code');
+    }
+  }, [activeTab, isElectron]);
 
   const startCheckout = async (plan: string) => {
     setBillingMessage('');
@@ -398,7 +410,7 @@ export default function SettingsPage() {
     <AppShell>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
         <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, letterSpacing: 0 }}>
-          System Settings
+          {isElectron ? 'Arceus Code Settings' : 'System Settings'}
         </h1>
 
         {isElectron && (
