@@ -122,6 +122,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isElectron) return;
+    setProductMenuOpen(false);
     const allowed = DESKTOP_ALLOWED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
     if (!allowed) router.replace('/workspace');
   }, [isElectron, pathname, router]);
@@ -296,6 +297,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && searchQuery.trim()) {
+                if (isElectron) {
+                  const firstCommand = filteredCommands[0];
+                  if (firstCommand) {
+                    runCommand(firstCommand.action);
+                  } else {
+                    router.push(`/workspace?query=${encodeURIComponent(searchQuery.trim())}`);
+                    setPaletteOpen(false);
+                  }
+                  return;
+                }
                 router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`);
                 setPaletteOpen(false);
               }
@@ -441,7 +452,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 ref={searchInputRef}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Type a command or search memory"
+                placeholder={isElectron ? 'Type a Code command or search workspace' : 'Type a command or search memory'}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && filteredCommands[0]) {
                     runCommand(filteredCommands[0].action);

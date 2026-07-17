@@ -766,7 +766,7 @@ function createLauncherWindow() {
     launcherWindow = new BrowserWindow({
         width: 600,
         height: 160,
-        title: "Arceus Launcher",
+        title: "Arceus Code Quick Open",
         frame: false,
         resizable: false,
         show: false,
@@ -781,7 +781,7 @@ function createLauncherWindow() {
 
     launcherWindow.setMenuBarVisibility(false);
 
-    loadFrontendRoute(launcherWindow, "/launcher");
+    loadFrontendRoute(launcherWindow, "/workspace");
 
     launcherWindow.on("blur", () => {
         if (launcherWindow) launcherWindow.hide();
@@ -796,7 +796,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1366,
         height: 768,
-        title: "Arceus OS",
+        title: "Arceus Code",
         frame: false, // Frameless design for custom titles
         transparent: false,
         webPreferences: {

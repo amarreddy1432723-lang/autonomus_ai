@@ -5,6 +5,7 @@ import "./globals.css";
 import Providers from "./providers";
 import TitleBar from "../components/TitleBar";
 import DesktopAuthBridge from "../components/DesktopAuthBridge";
+import DesktopCodeRouteGuard from "../components/DesktopCodeRouteGuard";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -17,8 +18,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "my-ai | Autonomous Personal AI Agent",
-  description: "Manage your goals, tasks, and memory with an executive AI agent helper.",
+  title: "Arceus Code",
+  description: "Proof-first AI engineering workspace for planning, coding, terminal execution, diffs, checks, and pull requests.",
+  icons: {
+    icon: "/arceus-logo.svg",
+  },
 };
 
 export default function RootLayout({
@@ -32,7 +36,9 @@ export default function RootLayout({
         <Providers>
           <TitleBar />
           <DesktopAuthBridge />
-          {children}
+          <DesktopCodeRouteGuard>
+            {children}
+          </DesktopCodeRouteGuard>
         </Providers>
       </body>
     </html>
