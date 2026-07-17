@@ -17,7 +17,10 @@ export type ServiceHealthSnapshot = {
 };
 
 export function isElectronRuntime() {
-  return typeof window !== 'undefined' && Boolean((window as any).electron);
+  if (typeof window === 'undefined') return false;
+  const electronBridge = (window as any).electron;
+  const userAgent = window.navigator?.userAgent || '';
+  return Boolean(electronBridge?.isDesktop || electronBridge || userAgent.includes('Electron'));
 }
 
 export function hasDesktopAuthToken() {

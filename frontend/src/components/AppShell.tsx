@@ -74,9 +74,6 @@ const DESKTOP_ALLOWED_PREFIXES = [
   '/workspace',
   '/settings',
   '/auth/desktop',
-  '/sign-in',
-  '/sign-up',
-  '/signup',
   '/download',
   '/ui-preview',
 ];
@@ -333,14 +330,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <strong>{serviceHealth.label}</strong>
           </button>
 
-          <button 
-            onClick={() => setActivityCollapsed(!activityCollapsed)}
-            className={styles.iconButton}
-            title="Agent activity"
-            aria-label="Toggle agent activity"
-          >
-            <Activity size={16} />
-          </button>
+          {!isElectron && (
+            <button 
+              onClick={() => setActivityCollapsed(!activityCollapsed)}
+              className={styles.iconButton}
+              title="Agent activity"
+              aria-label="Toggle agent activity"
+            >
+              <Activity size={16} />
+            </button>
+          )}
 
           {isElectron ? (
             <DesktopAccountSection />
@@ -422,30 +421,31 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </main>
           
-          {/* RIGHT AGENT ACTIVITY TICKER */}
-          <aside className={`${styles.activityBar} ${activityCollapsed ? styles.activityBarCollapsed : ''}`}>
-            <div className={styles.activityHeader}>
-              <span>Agent Activity</span>
-              <button 
-                onClick={() => setActivityCollapsed(true)} 
-                style={{ background: 'none', border: 'none', color: 'var(--color-text-tertiary)', cursor: 'pointer' }}
-              >
-                ×
-              </button>
-            </div>
-            <div className={styles.activityList}>
-              {agentActivityFeed.map((event) => (
-                <div key={event.id} className={styles.activityItem}>
-                  <div className={styles.activityAgent}>
-                    <Cpu size={12} />
-                    <span>{event.agent}</span>
+          {!isElectron && (
+            <aside className={`${styles.activityBar} ${activityCollapsed ? styles.activityBarCollapsed : ''}`}>
+              <div className={styles.activityHeader}>
+                <span>Agent Activity</span>
+                <button 
+                  onClick={() => setActivityCollapsed(true)} 
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-tertiary)', cursor: 'pointer' }}
+                >
+                  ×
+                </button>
+              </div>
+              <div className={styles.activityList}>
+                {agentActivityFeed.map((event) => (
+                  <div key={event.id} className={styles.activityItem}>
+                    <div className={styles.activityAgent}>
+                      <Cpu size={12} />
+                      <span>{event.agent}</span>
+                    </div>
+                    <div className={styles.activityText}>{event.activity}</div>
+                    <div className={styles.activityTime}>{event.timestamp}</div>
                   </div>
-                  <div className={styles.activityText}>{event.activity}</div>
-                  <div className={styles.activityTime}>{event.timestamp}</div>
-                </div>
-              ))}
-            </div>
-          </aside>
+                ))}
+              </div>
+            </aside>
+          )}
         </div>
       </div>
 
