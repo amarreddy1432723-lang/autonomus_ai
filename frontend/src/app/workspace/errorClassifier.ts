@@ -40,7 +40,7 @@ export function classifyError(error: unknown, statusCode?: number): ClassifiedEr
     return {
       class: 'auth_error',
       message: 'Authentication required',
-      hint: 'Sign in again or check your API key',
+      hint: 'Connect your Arceus account inside the desktop app and try again',
       raw: msg,
     };
   }
@@ -48,7 +48,7 @@ export function classifyError(error: unknown, statusCode?: number): ClassifiedEr
     return {
       class: 'api_offline',
       message: 'Agent API is offline',
-      hint: 'Start the backend service on port 8003',
+      hint: 'Retry services. Local folder, editor, and terminal can still work while cloud actions are offline',
       raw: msg,
     };
   }

@@ -19,9 +19,10 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
+    const hostedAgentUrl = 'https://agent-production-8568.up.railway.app';
     const authUrl = process.env.NEXT_PUBLIC_AUTH_URL || 'http://localhost:8001';
     const goalsUrl = process.env.NEXT_PUBLIC_GOALS_URL || 'http://localhost:8002';
-    const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8003';
+    const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || process.env.ARCEUS_AGENT_URL || (process.env.NODE_ENV === 'production' ? hostedAgentUrl : 'http://localhost:8003');
 
     return [
       {
@@ -59,6 +60,10 @@ const nextConfig: NextConfig = {
       {
         source: '/api/v1/agents/:path*',
         destination: `${agentUrl}/api/v1/agents/:path*`,
+      },
+      {
+        source: '/api/v1/ready',
+        destination: `${agentUrl}/api/v1/ready`,
       },
       {
         source: '/api/v1/models/:path*',

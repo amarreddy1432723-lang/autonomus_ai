@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
+import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../utils/serviceHealth';
 import styles from './AppShell.module.css';
 
 function ClerkUserSection() {
@@ -37,11 +38,24 @@ function ClerkUserSection() {
 
 function DesktopAccountSection() {
   const { isSignedIn } = useAuth();
-  if (isSignedIn) {
+  const [hasStoredToken, setHasStoredToken] = useState(false);
+
+  useEffect(() => {
+    setHasStoredToken(typeof window !== 'undefined' && Boolean(window.localStorage.getItem('my-ai.access_token')));
+  }, []);
+
+  if (isSignedIn || hasStoredToken) {
     return (
-      <div className={styles.avatar}>
-        <UserButton />
-      </div>
+      isSignedIn ? (
+        <div className={styles.avatar}>
+          <UserButton />
+        </div>
+      ) : (
+        <Link href="/auth/desktop" className={styles.authLink} title="Refresh desktop account session">
+          <MonitorCheck size={15} />
+          <span>Connected</span>
+        </Link>
+      )
     );
   }
   return (
@@ -51,6 +65,21 @@ function DesktopAccountSection() {
     </Link>
   );
 }
+
+function initialElectronState() {
+  return typeof window !== 'undefined' && isElectronRuntime();
+}
+
+const DESKTOP_ALLOWED_PREFIXES = [
+  '/workspace',
+  '/settings',
+  '/auth/desktop',
+  '/sign-in',
+  '/sign-up',
+  '/signup',
+  '/download',
+  '/ui-preview',
+];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -66,13 +95,36 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [productMenuOpen, setProductMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isDemoSignedIn, setIsDemoSignedIn] = useState(false);
-  const [isElectron, setIsElectron] = useState(false);
+  const [isElectron, setIsElectron] = useState(initialElectronState);
+  const [serviceHealth, setServiceHealth] = useState<ServiceHealthSnapshot>(() => {
+    const state = initialElectronState() ? 'auth_required' : 'partially_online';
+    const copy = serviceHealthCopy(state);
+    return { state, label: copy.label, detail: copy.detail, online: false, authReady: false, checkedAt: '' };
+  });
+
+  const refreshServiceHealth = async () => {
+    if (typeof window === 'undefined') return;
+    const snapshot = await probeServiceHealth();
+    setServiceHealth(snapshot);
+  };
 
   useEffect(() => {
     const hasDemoCookie = typeof document !== 'undefined' && document.cookie.includes('my-ai.mock_token');
     setIsDemoSignedIn(hasDemoCookie);
-    setIsElectron(typeof window !== 'undefined' && Boolean((window as any).electron));
+    setIsElectron(isElectronRuntime());
   }, []);
+
+  useEffect(() => {
+    void refreshServiceHealth();
+    const id = window.setInterval(() => void refreshServiceHealth(), 30000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const allowed = DESKTOP_ALLOWED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+    if (!allowed) router.replace('/workspace');
+  }, [isElectron, pathname, router]);
 
   const handleDemoSignOut = () => {
     document.cookie = 'my-ai.mock_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
@@ -253,11 +305,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         
         <div className={styles.topbarActions}>
-          <div className={styles.statusDots} title="Auth, goals, and agent services online">
-            <span className={styles.statusDot} />
-            <span className={styles.statusDot} />
-            <span className={styles.statusDot} />
-          </div>
+          <button
+            type="button"
+            className={styles.serviceStatusPill}
+            data-state={serviceHealth.state}
+            title={`${serviceHealth.label}: ${serviceHealth.detail}`}
+            onClick={() => void refreshServiceHealth()}
+          >
+            <span />
+            <strong>{serviceHealth.label}</strong>
+          </button>
 
           <button 
             onClick={() => setActivityCollapsed(!activityCollapsed)}
