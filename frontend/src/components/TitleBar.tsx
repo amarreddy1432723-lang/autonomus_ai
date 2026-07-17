@@ -29,8 +29,8 @@ export default function TitleBar() {
   return (
     <div className={styles.titleBar}>
       <div className={styles.titleDragRegion}>
-        <span className={styles.logo}>N</span>
-        <span className={styles.titleText}>Arceus OS</span>
+        <img className={styles.logo} src="/arceus-logo.svg" alt="" aria-hidden="true" />
+        <span className={styles.titleText}>Arceus Code</span>
       </div>
       <div className={styles.windowControls}>
         <button className={styles.controlButton} onClick={handleMinimize} aria-label="Minimize">

@@ -21,7 +21,8 @@ let mainWindow;
 let launcherWindow;
 let backendProcesses = [];
 let frontendProcess = null;
-let frontendOrigin = process.env.NEXUS_FRONTEND_URL || "http://localhost:3000";
+const PACKAGED_FRONTEND_URL = process.env.ARCEUS_WEB_URL || "https://frontend-production-fbde.up.railway.app";
+let frontendOrigin = process.env.NEXUS_FRONTEND_URL || (isDev ? "http://localhost:3000" : PACKAGED_FRONTEND_URL);
 let terminalSessions = new Map();
 let dirWatcher;
 let dirWatcherRoot = "";
@@ -341,6 +342,10 @@ function runProcess(command, args, options = {}) {
 }
 
 async function startLocalDependencies() {
+    if (shouldUseHostedControlPlane()) {
+        console.log(`Packaged Arceus install detected without local repo. Using hosted control plane: ${PACKAGED_FRONTEND_URL}`);
+        return false;
+    }
     if (process.env.NEXUS_SKIP_DOCKER_DEPS === "true") return true;
 
     const configuredDatabase = process.env.AGENT_DATABASE_URL || process.env.DATABASE_URL;
@@ -460,7 +465,7 @@ async function frontendResponds(origin, attempts = 1) {
     const normalized = origin.replace(/\/$/, "");
     for (let i = 0; i < attempts; i += 1) {
         try {
-            const response = await fetch(`${normalized}/hub`, { method: "HEAD" });
+            const response = await fetch(`${normalized}/workspace`, { method: "HEAD" });
             if (response.ok) return true;
         } catch {
             // The frontend may still be booting or this port belongs to another app.
@@ -506,7 +511,7 @@ async function detectExistingNextFrontend(frontendDir) {
         }
         if (hasNextLock) {
             frontendOrigin = defaultOrigin;
-            console.warn("Next.js dev lock is present but /hub is not ready yet. Reusing http://localhost:3000 instead of starting a second server.");
+            console.warn("Next.js dev lock is present but /workspace is not ready yet. Reusing http://localhost:3000 instead of starting a second server.");
             return { origin: defaultOrigin, port: "3000", reuse: true, pending: true };
         }
     }
@@ -518,6 +523,11 @@ async function resolveFrontendOrigin() {
     if (process.env.NEXUS_FRONTEND_URL) {
         frontendOrigin = process.env.NEXUS_FRONTEND_URL;
         return { origin: frontendOrigin, port: new URL(frontendOrigin).port || "3000", reuse: await frontendResponds(frontendOrigin) };
+    }
+
+    if (shouldUseHostedControlPlane()) {
+        frontendOrigin = PACKAGED_FRONTEND_URL;
+        return { origin: frontendOrigin, port: new URL(frontendOrigin).port || "443", reuse: true };
     }
 
     const rootDir = findRepoRoot();
@@ -602,6 +612,30 @@ function findRepoRoot() {
     }
 
     throw new Error("Could not find Arceus repo root. Set NEXUS_REPO_ROOT to the folder that contains backend and frontend.");
+}
+
+function tryFindRepoRoot() {
+    try {
+        return findRepoRoot();
+    } catch {
+        return null;
+    }
+}
+
+function shouldUseHostedControlPlane() {
+    return !isDev && process.env.NEXUS_FORCE_LOCAL_SERVICES !== "true";
+}
+
+function logDesktopEvent(message, detail = "") {
+    const line = `[${new Date().toISOString()}] ${message}${detail ? ` ${detail}` : ""}\n`;
+    try {
+        const logFile = path.join(app.getPath("userData"), "arceus-desktop.log");
+        fs.mkdirSync(path.dirname(logFile), { recursive: true });
+        fs.appendFileSync(logFile, line, "utf8");
+    } catch {
+        // Best-effort diagnostics only.
+    }
+    console.log(message, detail);
 }
 
 function getBackendEnv(port) {
@@ -1173,6 +1207,36 @@ ipcMain.on("watch-directory", async (event, dirPath) => {
 
 app.whenReady().then(async () => {
     configureAutoUpdater();
+
+    if (shouldUseHostedControlPlane()) {
+        frontendOrigin = PACKAGED_FRONTEND_URL;
+        logDesktopEvent("Packaged Arceus install using hosted control plane:", frontendOrigin);
+        createWindow();
+        createLauncherWindow();
+        checkForAppUpdates();
+
+        const shortcutRegistered = globalShortcut.register("CommandOrControl+Shift+Space", () => {
+            if (launcherWindow) {
+                if (launcherWindow.isVisible()) {
+                    launcherWindow.hide();
+                } else {
+                    launcherWindow.show();
+                    launcherWindow.focus();
+                }
+            }
+        });
+        if (!shortcutRegistered) {
+            console.warn("Global launcher shortcut CommandOrControl+Shift+Space could not be registered.");
+        }
+
+        app.on("activate", () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+                createLauncherWindow();
+            }
+        });
+        return;
+    }
 
     // 1. Launch local infrastructure required by the FastAPI services.
     const dependenciesReady = await startLocalDependencies();

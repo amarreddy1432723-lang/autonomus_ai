@@ -110,8 +110,11 @@ const autonomyOptions: { value: AutonomyLevel; label: string }[] = [
   { value: 'chief_of_staff', label: 'Chief of staff' },
 ];
 
+type SettingsTab = 'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code' | 'models';
+
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'autonomy' | 'billing' | 'profile' | 'notifications' | 'training' | 'vault' | 'code' | 'models'>('autonomy');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('code');
+  const [isElectron, setIsElectron] = useState(false);
   const [githubConnected, setGithubConnected] = useState(true);
   const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatus | null>(null);
   const [dryRunResult, setDryRunResult] = useState<string>('');
@@ -231,18 +234,7 @@ export default function SettingsPage() {
   };
 
   const renameCodeProject = async (project: CodeProject) => {
-    const nextName = window.prompt('Project name', project.name)?.trim();
-    if (!nextName || nextName === project.name) return;
-    setCodeProjectsError('');
-    try {
-      await apiRequest(`/api/v1/code/projects/${project.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: nextName }),
-      });
-      await loadCodeProjects();
-    } catch (error) {
-      setCodeProjectsError(error instanceof Error ? error.message : 'Unable to rename project');
-    }
+    setCodeProjectsError(`Rename "${project.name}" from the project menu. Native browser prompts are disabled in Arceus.`);
   };
 
   const archiveCodeProject = async (project: CodeProject) => {
@@ -272,12 +264,16 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
+    const desktop = typeof window !== 'undefined' && Boolean((window as any).electron);
+    setIsElectron(desktop);
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('tab') === 'billing') {
         setActiveTab('billing');
       } else if (params.get('tab') === 'models') {
         setActiveTab('models');
+      } else if (desktop) {
+        setActiveTab('code');
       }
       if (params.get('checkout') === 'success') {
         setBillingMessage('Checkout completed. Your subscription will update after Stripe confirms the webhook.');
@@ -285,9 +281,13 @@ export default function SettingsPage() {
         setBillingMessage('Checkout cancelled. Your current plan is unchanged.');
       }
     }
-    loadAutonomyStatus();
-    loadTrainingData();
-    loadBillingSummary();
+    if (!desktop) {
+      loadAutonomyStatus();
+      loadTrainingData();
+      loadBillingSummary();
+    } else {
+      setLoadingAutonomy(false);
+    }
     loadCodeProjects();
     loadModelSettings();
   }, []);
@@ -351,7 +351,22 @@ export default function SettingsPage() {
     }
   };
 
-  const tabButtonStyle = (tab: typeof activeTab) => ({
+  const visibleTabs: Array<{ tab: SettingsTab; label: string; icon: React.ElementType }> = isElectron ? [
+    { tab: 'code', label: 'Arceus Code', icon: Code2 },
+    { tab: 'models', label: 'AI Models', icon: Cpu },
+    { tab: 'vault', label: 'Privacy Vault', icon: Shield },
+  ] : [
+    { tab: 'autonomy', label: 'Autonomy policy', icon: Shield },
+    { tab: 'billing', label: 'Usage & Billing', icon: CreditCard },
+    { tab: 'profile', label: 'Profile settings', icon: User },
+    { tab: 'notifications', label: 'Notifications', icon: Bell },
+    { tab: 'training', label: 'Model Self-Training', icon: RefreshCw },
+    { tab: 'models', label: 'AI Models', icon: Cpu },
+    { tab: 'code', label: 'Arceus Code', icon: Code2 },
+    { tab: 'vault', label: 'Privacy Vault', icon: Shield },
+  ];
+
+  const tabButtonStyle = (tab: SettingsTab) => ({
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
@@ -384,30 +399,14 @@ export default function SettingsPage() {
         }}>
           {/* Settings Sidebar */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderRight: '1px solid var(--color-border)', paddingRight: '16px' }}>
-            <button style={tabButtonStyle('autonomy')} onClick={() => setActiveTab('autonomy')}>
-              <Shield size={14} /> Autonomy policy
-            </button>
-            <button style={tabButtonStyle('billing')} onClick={() => setActiveTab('billing')}>
-              <CreditCard size={14} /> Usage & Billing
-            </button>
-            <button style={tabButtonStyle('profile')} onClick={() => setActiveTab('profile')}>
-              <User size={14} /> Profile settings
-            </button>
-            <button style={tabButtonStyle('notifications')} onClick={() => setActiveTab('notifications')}>
-              <Bell size={14} /> Notifications
-            </button>
-            <button style={tabButtonStyle('training')} onClick={() => setActiveTab('training')}>
-              <RefreshCw size={14} /> Model Self-Training
-            </button>
-            <button style={tabButtonStyle('models')} onClick={() => setActiveTab('models')}>
-              <Cpu size={14} /> AI Models
-            </button>
-            <button style={tabButtonStyle('code')} onClick={() => setActiveTab('code')}>
-              <Code2 size={14} /> Arceus Code
-            </button>
-            <button style={tabButtonStyle('vault')} onClick={() => setActiveTab('vault')}>
-              <Shield size={14} /> Privacy Vault
-            </button>
+            {visibleTabs.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button key={item.tab} style={tabButtonStyle(item.tab)} onClick={() => setActiveTab(item.tab)}>
+                  <Icon size={14} /> {item.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Settings Content Area */}
@@ -923,34 +922,35 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* INTEGRATIONS SYNC */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
-              <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>Connected Developer Tools</h2>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                backgroundColor: 'var(--color-bg-tertiary)',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--color-border)',
-                marginTop: '8px'
-              }}>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <div style={{ width: '28px', height: '28px', backgroundColor: '#24292e', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>G</div>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>GitHub integration</span>
-                    <span style={{ fontSize: '10px', color: 'var(--color-text-secondary)' }}>Status: {githubConnected ? 'Active · Connected to 12 repos' : 'Disconnected'}</span>
+            {(!isElectron || activeTab === 'code') && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
+                <h2 style={{ fontSize: 'var(--text-base)', fontWeight: 700 }}>Connected Developer Tools</h2>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  backgroundColor: 'var(--color-bg-tertiary)',
+                  padding: '12px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--color-border)',
+                  marginTop: '8px'
+                }}>
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    <div style={{ width: '28px', height: '28px', backgroundColor: '#24292e', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>G</div>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>GitHub integration</span>
+                      <span style={{ fontSize: '10px', color: 'var(--color-text-secondary)' }}>Status: {githubConnected ? 'Active · Connected to 12 repos' : 'Disconnected'}</span>
+                    </div>
                   </div>
+                  <button
+                    style={{ backgroundColor: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '6px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600 }}
+                    onClick={() => setGithubConnected((value) => !value)}
+                  >
+                    {githubConnected ? 'Disconnect' : 'Reconnect'}
+                  </button>
                 </div>
-                <button
-                  style={{ backgroundColor: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', padding: '6px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 'var(--text-xs)', fontWeight: 600 }}
-                  onClick={() => setGithubConnected((value) => !value)}
-                >
-                  {githubConnected ? 'Disconnect' : 'Reconnect'}
-                </button>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

@@ -3,11 +3,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { 
-  CheckSquare,
-  Calendar, ShieldAlert,
+import {
+  ShieldAlert,
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
-  LogIn, UserPlus, LogOut, Mic, Sparkles, Lightbulb, PanelLeft, BriefcaseBusiness, ShieldCheck
+  LogIn, UserPlus, LogOut, PanelLeft, ShieldCheck, MonitorCheck
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
@@ -36,6 +35,23 @@ function ClerkUserSection() {
   );
 }
 
+function DesktopAccountSection() {
+  const { isSignedIn } = useAuth();
+  if (isSignedIn) {
+    return (
+      <div className={styles.avatar}>
+        <UserButton />
+      </div>
+    );
+  }
+  return (
+    <Link href="/auth/desktop" className={styles.authLink} title="Connect your Arceus account to enable protected Code actions">
+      <MonitorCheck size={15} />
+      <span>Connect account</span>
+    </Link>
+  );
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -50,10 +66,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [productMenuOpen, setProductMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isDemoSignedIn, setIsDemoSignedIn] = useState(false);
+  const [isElectron, setIsElectron] = useState(false);
 
   useEffect(() => {
     const hasDemoCookie = typeof document !== 'undefined' && document.cookie.includes('my-ai.mock_token');
     setIsDemoSignedIn(hasDemoCookie);
+    setIsElectron(typeof window !== 'undefined' && Boolean((window as any).electron));
   }, []);
 
   const handleDemoSignOut = () => {
@@ -62,52 +80,33 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     router.push('/sign-in');
   };
 
-  const products = useMemo(() => [
-    { label: 'Product Hub', href: '/hub', match: ['/hub'], icon: Sparkles },
-    { label: 'Arceus Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
-    { label: 'Arceus PA', href: '/pa', match: ['/pa', '/calendar', '/tasks', '/timeline'], icon: BriefcaseBusiness },
-    { label: 'Arceus Interview', href: '/interview', match: ['/interview'], icon: Mic },
-    { label: 'Settings', href: '/settings', match: ['/settings'], icon: Settings },
-    { label: 'Admin', href: '/admin', match: ['/admin'], icon: ShieldCheck },
-  ], []);
+  const products = useMemo(() => {
+    const codeProducts = [
+      { label: 'Arceus Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
+      { label: 'Settings', href: '/settings', match: ['/settings'], icon: Settings },
+    ];
+    return isElectron ? codeProducts : [
+      ...codeProducts,
+      { label: 'Admin', href: '/admin', match: ['/admin'], icon: ShieldCheck },
+    ];
+  }, [isElectron]);
 
-  const allNavItems = useMemo(() => [
-    { label: 'Hub', icon: Sparkles, href: '/hub' },
-    { label: 'Arceus Code', icon: Code2, href: '/workspace' },
-    { label: 'Arceus PA', icon: BriefcaseBusiness, href: '/pa' },
-    { label: 'Arceus Interview', icon: Mic, href: '/interview' },
-    { label: 'Settings', icon: Settings, href: '/settings' },
-    { label: 'Admin', icon: ShieldCheck, href: '/admin' },
-  ], []);
+  const allNavItems = useMemo(() => {
+    const codeItems = [
+      { label: 'Arceus Code', icon: Code2, href: '/workspace' },
+      { label: 'Settings', icon: Settings, href: '/settings' },
+    ];
+    return isElectron ? codeItems : [...codeItems, { label: 'Admin', icon: ShieldCheck, href: '/admin' }];
+  }, [isElectron]);
 
   const activeProduct = products.find((product) => product.match.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) || products[0];
 
   const sidebarItems = useMemo(() => {
-    if (activeProduct.label === 'Arceus PA') {
-      return [
-        { label: 'PA Home', icon: BriefcaseBusiness, href: '/pa' },
-        { label: 'Planner', icon: Calendar, href: '/pa/planner' },
-        { label: 'Tasks', icon: CheckSquare, href: '/tasks' },
-        { label: 'Calendar', icon: Calendar, href: '/calendar' },
-        { label: 'Reflection', icon: Lightbulb, href: '/pa/reflection' },
-      ];
-    }
-    if (activeProduct.label === 'Arceus Interview') {
-      return [{ label: 'Arceus Interview', icon: Mic, href: '/interview' }];
-    }
     if (activeProduct.label === 'Settings') {
       return [{ label: 'Settings', icon: Settings, href: '/settings' }];
     }
     if (activeProduct.label === 'Admin') {
       return [{ label: 'Admin', icon: ShieldCheck, href: '/admin' }];
-    }
-    if (activeProduct.label === 'Product Hub') {
-      return [
-        { label: 'Hub', icon: Sparkles, href: '/hub' },
-        { label: 'Arceus Code', icon: Code2, href: '/workspace' },
-        { label: 'Arceus PA', icon: BriefcaseBusiness, href: '/pa' },
-        { label: 'Arceus Interview', icon: Mic, href: '/interview' },
-      ];
     }
     return [
       { label: 'Workspace', icon: Code2, href: '/workspace' },
@@ -129,8 +128,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       hint: index < 9 ? `${index + 1}` : '',
       action: () => router.push(item.href),
     })),
-    { id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) },
-  ], [allNavItems, router, searchQuery, toggleSidebar]);
+    ...(isElectron ? [] : [{ id: 'memory-search', label: 'Search memory', hint: 'Enter', action: () => searchQuery.trim() && router.push(`/memory?query=${encodeURIComponent(searchQuery.trim())}`) }]),
+  ], [allNavItems, isElectron, router, searchQuery, toggleSidebar]);
 
   const filteredCommands = commands.filter((command) => (
     !searchQuery.trim() || command.label.toLowerCase().includes(searchQuery.trim().toLowerCase())
@@ -197,14 +196,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             className={styles.logoArea}
-            aria-label="Open product switcher"
-            onClick={() => setProductMenuOpen((value) => !value)}
+            aria-label={isElectron ? 'Open Arceus Code workspace' : 'Open product switcher'}
+            onClick={() => {
+              if (isElectron) {
+                router.push('/workspace');
+                return;
+              }
+              setProductMenuOpen((value) => !value);
+            }}
             style={{ border: 'none', background: 'transparent', cursor: 'pointer' }}
           >
             <Cpu className={styles.logoGlow} size={20} />
-            <span>Arceus</span>
+            <span>{isElectron ? 'Arceus Code' : 'Arceus'}</span>
           </button>
-          {productMenuOpen && (
+          {!isElectron && productMenuOpen && (
             <div className={styles.productMenu}>
               {products.map((product) => {
                 const Icon = product.icon;
@@ -263,7 +268,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Activity size={16} />
           </button>
 
-          {typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? (
+          {isElectron ? (
+            <DesktopAccountSection />
+          ) : typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? (
             <ClerkUserSection />
           ) : (
             <>
