@@ -67,6 +67,11 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "workflow.retry",
         "workflow.skip",
         "audit.view",
+        "security.policy.view",
+        "security.evaluate",
+        "security.audit.view",
+        "security.incident.create",
+        "security.compliance.view",
     }
 )
 

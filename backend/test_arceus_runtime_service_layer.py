@@ -140,6 +140,11 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/runtime/usage/summary", "GET") in routes
     assert ("/api/v1/missions/{mission_id}/usage", "GET") in routes
     assert ("/api/v1/runtime/health", "GET") in routes
+    assert ("/api/v1/security/policies", "GET") in routes
+    assert ("/api/v1/security/evaluate", "POST") in routes
+    assert ("/api/v1/security/audit", "GET") in routes
+    assert ("/api/v1/security/incidents", "POST") in routes
+    assert ("/api/v1/security/compliance", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
