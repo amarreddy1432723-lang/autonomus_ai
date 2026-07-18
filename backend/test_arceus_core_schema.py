@@ -35,7 +35,11 @@ EXPECTED_ARCEUS_TABLES = {
     "arceus_artifacts",
     "arceus_artifact_versions",
     "arceus_evidence",
+    "arceus_verification_plans",
     "arceus_verification_runs",
+    "arceus_quality_gates",
+    "arceus_trust_scores",
+    "arceus_completion_certificates",
     "arceus_context_packages",
     "arceus_model_executions",
     "arceus_participants",
@@ -169,3 +173,19 @@ def test_approval_votes_distinguish_human_authority() -> None:
     assert "is_human_vote" in approval_votes.columns
     assert "voter_user_id" in approval_votes.columns
     assert "voter_member_id" in approval_votes.columns
+
+
+def test_verification_governance_schema_tracks_evidence_gates_and_certificates() -> None:
+    evidence = Base.metadata.tables["arceus_evidence"]
+    for column in ["workflow_id", "verification_method", "content_hash", "trust_level", "immutable"]:
+        assert column in evidence.columns
+
+    for table_name in [
+        "arceus_verification_plans",
+        "arceus_quality_gates",
+        "arceus_trust_scores",
+        "arceus_completion_certificates",
+    ]:
+        table = Base.metadata.tables[table_name]
+        assert "tenant_id" in table.columns
+        assert "mission_id" in table.columns

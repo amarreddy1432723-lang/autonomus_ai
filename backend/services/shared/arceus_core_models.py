@@ -645,17 +645,47 @@ class ArceusEvidence(KernelTenantMixin, Base):
     __tablename__ = "arceus_evidence"
 
     mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    workflow_id = Column(UUID(as_uuid=True), ForeignKey("arceus_workflow_definitions.id"))
     task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
     artifact_id = Column(UUID(as_uuid=True), ForeignKey("arceus_artifacts.id"))
     evidence_type = Column(String(100), nullable=False)
     status = Column(String(60), default="collected", nullable=False)
     summary = Column(Text, nullable=False)
     payload = Column(JSON, default=dict, nullable=False)
+    verification_method = Column(String(120), default="manual", nullable=False)
+    content_hash = Column(String(128), nullable=False)
+    trust_level = Column(String(60), default="unverified", nullable=False)
+    immutable = Column(Boolean, default=True, nullable=False)
     collected_by_member_id = Column(UUID(as_uuid=True), ForeignKey("arceus_organization_members.id"))
 
     __table_args__ = (
-        CheckConstraint("status IN ('collected', 'verified', 'failed')", name="ck_arceus_evidence_status"),
+        CheckConstraint("status IN ('generated', 'collected', 'validated', 'trusted', 'referenced', 'archived', 'verified', 'failed')", name="ck_arceus_evidence_status"),
+        CheckConstraint("trust_level IN ('unverified', 'ai_reviewed', 'tool_verified', 'independent_review', 'human_approved', 'production_observed')", name="ck_arceus_evidence_trust_level"),
+        Index("ix_arceus_evidence_hash", "tenant_id", "mission_id", "content_hash"),
         Index("ix_arceus_evidence_mission", "tenant_id", "mission_id", "evidence_type"),
+    )
+
+
+class ArceusVerificationPlan(KernelTenantMixin, Base):
+    __tablename__ = "arceus_verification_plans"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    workflow_id = Column(UUID(as_uuid=True), ForeignKey("arceus_workflow_definitions.id"))
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    target_type = Column(String(100), default="mission", nullable=False)
+    target_id = Column(UUID(as_uuid=True), nullable=False)
+    criteria = Column(JSON, default=list, nullable=False)
+    methods = Column(JSON, default=list, nullable=False)
+    evidence_required = Column(JSON, default=list, nullable=False)
+    reviewers = Column(JSON, default=list, nullable=False)
+    environment = Column(String(120), default="local", nullable=False)
+    blocking = Column(Boolean, default=True, nullable=False)
+    timeout_seconds = Column(Integer, default=900, nullable=False)
+    status = Column(String(60), default="planned", nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('planned', 'running', 'passed', 'failed', 'cancelled', 'superseded')", name="ck_arceus_verification_plans_status"),
+        Index("ix_arceus_verification_plans_mission", "tenant_id", "mission_id", "status"),
     )
 
 
@@ -675,6 +705,74 @@ class ArceusVerificationRun(KernelTenantMixin, Base):
     __table_args__ = (
         CheckConstraint("status IN ('running', 'passed', 'failed', 'cancelled')", name="ck_arceus_verification_runs_status"),
         Index("ix_arceus_verification_runs_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
+class ArceusQualityGate(KernelTenantMixin, Base):
+    __tablename__ = "arceus_quality_gates"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    verification_plan_id = Column(UUID(as_uuid=True), ForeignKey("arceus_verification_plans.id"))
+    gate_key = Column(String(160), nullable=False)
+    name = Column(Text, nullable=False)
+    category = Column(String(100), nullable=False)
+    gate_type = Column(String(60), default="mandatory", nullable=False)
+    required = Column(Boolean, default=True, nullable=False)
+    verifier = Column(String(120), nullable=False)
+    timeout_seconds = Column(Integer, default=300, nullable=False)
+    status = Column(String(60), default="pending", nullable=False)
+    result = Column(JSON, default=dict, nullable=False)
+    evidence_ids = Column(JSON, default=list, nullable=False)
+    last_run_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("gate_type IN ('mandatory', 'conditional', 'optional', 'manual')", name="ck_arceus_quality_gates_type"),
+        CheckConstraint("status IN ('pending', 'running', 'passed', 'failed', 'waived', 'cancelled')", name="ck_arceus_quality_gates_status"),
+        UniqueConstraint("mission_id", "gate_key", name="uq_arceus_quality_gate_key"),
+        Index("ix_arceus_quality_gates_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
+class ArceusTrustScore(KernelTenantMixin, Base):
+    __tablename__ = "arceus_trust_scores"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    target_type = Column(String(100), default="mission", nullable=False)
+    target_id = Column(UUID(as_uuid=True), nullable=False)
+    trust_level = Column(Integer, default=0, nullable=False)
+    score = Column(Float, default=0.0, nullable=False)
+    confidence = Column(Float, default=0.0, nullable=False)
+    contributors = Column(JSON, default=dict, nullable=False)
+    calculated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("trust_level >= 0 AND trust_level <= 5", name="ck_arceus_trust_scores_level"),
+        Index("ix_arceus_trust_scores_target", "tenant_id", "target_type", "target_id", "calculated_at"),
+    )
+
+
+class ArceusCompletionCertificate(KernelTenantMixin, Base):
+    __tablename__ = "arceus_completion_certificates"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    certificate_version = Column(Integer, default=1, nullable=False)
+    status = Column(String(60), default="draft", nullable=False)
+    completed_requirements = Column(JSON, default=list, nullable=False)
+    evidence_ids = Column(JSON, default=list, nullable=False)
+    gate_ids = Column(JSON, default=list, nullable=False)
+    approval_ids = Column(JSON, default=list, nullable=False)
+    trust_score_id = Column(UUID(as_uuid=True), ForeignKey("arceus_trust_scores.id"))
+    blockers = Column(JSON, default=list, nullable=False)
+    certificate_hash = Column(String(128), nullable=False)
+    signature = Column(String(256), nullable=False)
+    signed_at = Column(DateTime(timezone=True))
+    immutable = Column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'blocked', 'certified', 'approved')", name="ck_arceus_completion_certificates_status"),
+        UniqueConstraint("mission_id", "certificate_version", name="uq_arceus_completion_certificate_version"),
+        UniqueConstraint("tenant_id", "certificate_hash", name="uq_arceus_completion_certificate_hash"),
+        Index("ix_arceus_completion_certificates_mission", "tenant_id", "mission_id", "status"),
     )
 
 

@@ -10,12 +10,17 @@ from pydantic import BaseModel
 class EvidenceResponse(BaseModel):
     id: UUID
     mission_id: UUID
+    workflow_id: UUID | None = None
     task_id: UUID | None
     artifact_id: UUID | None
     evidence_type: str
     status: str
     summary: str
     payload: dict[str, Any]
+    verification_method: str = "manual"
+    content_hash: str = ""
+    trust_level: str = "unverified"
+    immutable: bool = True
     collected_by_member_id: UUID | None
     created_at: datetime
     updated_at: datetime

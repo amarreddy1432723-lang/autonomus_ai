@@ -54,6 +54,12 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/evidence/{evidence_id}", "GET") in routes
     assert ("/api/v1/missions/{mission_id}/verification-runs", "GET") in routes
     assert ("/api/v1/verification-runs/{verification_run_id}", "GET") in routes
+    assert ("/api/v1/verifications", "POST") in routes
+    assert ("/api/v1/verifications/{verification_id}", "GET") in routes
+    assert ("/api/v1/evidence", "POST") in routes
+    assert ("/api/v1/quality-gates/run", "POST") in routes
+    assert ("/api/v1/completion/{mission_id}", "GET") in routes
+    assert ("/api/v1/completion/approve", "POST") in routes
     assert ("/api/v1/missions/{mission_id}/tasks", "GET") in routes
     assert ("/api/v1/tasks/{task_id}", "GET") in routes
     assert ("/api/v1/tasks/{task_id}/attempts", "GET") in routes
