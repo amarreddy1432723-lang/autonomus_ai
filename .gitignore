@@ -35,3 +35,7 @@ runtime/
 *.njsproj
 *.sln
 *.swp
+
+# Local Codex/agent tooling
+.agents/
+skills-lock.json
