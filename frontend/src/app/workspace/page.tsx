@@ -3,14 +3,17 @@
 import { Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
+import ServiceRecoveryBanner from '../../components/ServiceRecoveryBanner';
 import { ApiError, apiRequest, createApiHeadersAsync } from '../../utils/api';
+import { probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../../utils/serviceHealth';
 import ActivityPanel, { ActivityEvent, AgentJob, GitHubBranch, GitHubRepository, GitHubStatus, PatchPreviewItem, PreviewCheck, PreviewLogs, RollbackSnapshot, RuntimeStatus, TerminalSession, WorkerStatus, WorkspaceAnalysis, WorkspaceCommand } from './ActivityPanel';
 import ConversationPanel, { WorkspaceMessage, WorkspaceMode } from './ConversationPanel';
 import EditorPanel, { OpenWorkspaceFile, WorkspaceDiagnostic } from './EditorPanel';
-import EngineeringOrgPanel, { EngineeringOrgState } from './EngineeringOrgPanel';
+import type { EngineeringOrgState } from './EngineeringOrgPanel';
 import ProjectNavigator from './ProjectNavigator';
 import OnboardingWizard from './OnboardingWizard';
 import FileExplorer, { WorkspaceFile, WorkspaceSearchMatch } from './FileExplorer';
+import type { CompiledMissionPreview } from './MissionPreviewPanel';
 import WorkspaceAppsPanel from './WorkspaceAppsPanel';
 import WorkspaceSidebar, { WorkspaceRecentItem } from './WorkspaceSidebar';
 import WorkspaceRightRail from './WorkspaceRightRail';
@@ -40,6 +43,18 @@ import {
   summarizePatch,
   summarizePreview,
 } from './workspacePageUtils';
+
+type SafeApplyResult = {
+  changed?: any[];
+  remaining?: PatchPreviewItem[];
+  impact?: any;
+  review_required?: any[];
+  conflicts?: any[];
+  rollback_snapshot_id?: string | null;
+  summary?: string;
+  job?: AgentJob;
+  work_receipt?: any;
+};
 
 export default function WorkspacePage() {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -81,23 +96,9 @@ export default function WorkspacePage() {
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelView, setRightPanelView] = useState<WorkspaceRightPanelView>('explorer');
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [terminalPanelOpen, setTerminalPanelOpen] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return JSON.parse(localStorage.getItem(TERMINAL_PREFS_KEY) || '{}')?.open === true;
-    } catch {
-      return false;
-    }
-  });
-  const [terminalPanelSize, setTerminalPanelSize] = useState<TerminalPanelSize>(() => {
-    if (typeof window === 'undefined') return 'half';
-    try {
-      const value = JSON.parse(localStorage.getItem(TERMINAL_PREFS_KEY) || '{}')?.size;
-      return value === 'compact' || value === 'half' || value === 'max' ? value : 'half';
-    } catch {
-      return 'half';
-    }
-  });
+  const [clientReady, setClientReady] = useState(false);
+  const [terminalPanelOpen, setTerminalPanelOpen] = useState(false);
+  const [terminalPanelSize, setTerminalPanelSize] = useState<TerminalPanelSize>('half');
   const [typedSuggestionId, setTypedSuggestionId] = useState('');
   const [backendSuggestions, setBackendSuggestions] = useState<WorkspaceSuggestion[]>([]);
   const [workspaceTasks, setWorkspaceTasks] = useState<WorkspaceSuggestion[]>([]);
@@ -106,6 +107,10 @@ export default function WorkspacePage() {
   const [sandboxType, setSandboxType] = useState('local');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentOnline, setAgentOnline] = useState<boolean | null>(null);
+  const [serviceHealth, setServiceHealth] = useState<ServiceHealthSnapshot>(() => {
+    const copy = serviceHealthCopy('partially_online');
+    return { state: 'partially_online', label: copy.label, detail: copy.detail, online: false, authReady: false, checkedAt: '' };
+  });
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState('');
   const [openProjectIds, setOpenProjectIds] = useState<string[]>([]);
@@ -119,6 +124,7 @@ export default function WorkspacePage() {
   const [terminalSessions, setTerminalSessions] = useState<Record<string, TerminalSession>>({});
   const [activeTerminalId, setActiveTerminalId] = useState('');
   const [terminalCommand, setTerminalCommand] = useState('');
+  const [missionPreview, setMissionPreview] = useState<CompiledMissionPreview | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastAutoOpenedTerminalRef = useRef('');
   const autoCreatedTerminalRef = useRef('');
@@ -192,6 +198,13 @@ export default function WorkspacePage() {
     : agentOnline === false
       ? 'Open a folder to start local terminal, or start agent-service on port 8003 for cloud terminal.'
       : 'Open a folder for local terminal, or use backend workspace runtime.';
+
+  const refreshServiceHealth = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    const snapshot = await probeServiceHealth();
+    setServiceHealth(snapshot);
+    setAgentOnline(snapshot.online);
+  }, []);
 
   const startFolderWatch = (path: string) => {
     const electron = typeof window !== 'undefined' ? (window as any).electron : null;
@@ -541,13 +554,8 @@ export default function WorkspacePage() {
   useEffect(() => {
     let cancelled = false;
     const checkAgentHealth = async () => {
-      try {
-        const headers = await createApiHeadersAsync();
-        const response = await fetch('/api/v1/code/projects', { headers });
-        if (!cancelled) setAgentOnline(response.ok);
-      } catch {
-        if (!cancelled) setAgentOnline(false);
-      }
+      if (cancelled) return;
+      await refreshServiceHealth();
     };
     void checkAgentHealth();
     const timer = window.setInterval(checkAgentHealth, 10000);
@@ -555,7 +563,7 @@ export default function WorkspacePage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshServiceHealth]);
 
   useEffect(() => {
     const handleTerminalShortcut = (event: KeyboardEvent) => {
@@ -569,6 +577,19 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => {
+    setClientReady(true);
+    try {
+      const value = JSON.parse(localStorage.getItem(TERMINAL_PREFS_KEY) || '{}');
+      setTerminalPanelOpen(value?.open === true);
+      setTerminalPanelSize(value?.size === 'compact' || value?.size === 'half' || value?.size === 'max' ? value.size : 'half');
+    } catch {
+      setTerminalPanelOpen(false);
+      setTerminalPanelSize('half');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!clientReady) return;
     try {
       localStorage.setItem(TERMINAL_PREFS_KEY, JSON.stringify({
         open: terminalPanelOpen,
@@ -577,7 +598,7 @@ export default function WorkspacePage() {
     } catch {
       // Terminal layout preference is optional.
     }
-  }, [terminalPanelOpen, terminalPanelSize]);
+  }, [clientReady, terminalPanelOpen, terminalPanelSize]);
 
   useEffect(() => {
     const electron = typeof window !== 'undefined' ? (window as any).electron : null;
@@ -894,10 +915,10 @@ export default function WorkspacePage() {
     setWorkspaceTasks([]);
   };
 
-  const createProject = async () => {
+  const createProject = async (providedName?: string) => {
     if (busy) return;
     const fallbackName = `Arceus Code Project ${new Date().toLocaleDateString()}`;
-    const name = window.prompt('Project name', fallbackName)?.trim() || fallbackName;
+    const name = providedName?.trim() || fallbackName;
     setBusy(true);
     try {
       resetWorkspaceForProject();
@@ -2282,7 +2303,7 @@ export default function WorkspacePage() {
     }
     const defaultName = type === 'folder' ? 'new-folder' : 'new-file.txt';
     const suggested = basePath ? `${basePath.replace(/\\/g, '/').replace(/\/$/, '')}/${defaultName}` : defaultName;
-    const relativePath = window.prompt(type === 'folder' ? 'Folder path' : 'File path', suggested)?.trim().replace(/\\/g, '/');
+    const relativePath = suggested.trim().replace(/\\/g, '/');
     if (!relativePath) return;
     setBusy(true);
     try {
@@ -2307,7 +2328,11 @@ export default function WorkspacePage() {
       addEvent({ kind: 'error', message: 'Open a folder first', detail: 'Local rename works inside a trusted Electron folder.' });
       return;
     }
-    const nextPath = (providedNextPath || window.prompt('Rename file to', file.filename) || '').trim().replace(/\\/g, '/');
+    if (!providedNextPath) {
+      addEvent({ kind: 'error', message: 'Rename needs a target path', detail: 'Use the file tree rename action so Arceus can avoid unsupported browser prompts.' });
+      return;
+    }
+    const nextPath = providedNextPath.trim().replace(/\\/g, '/');
     if (!nextPath || nextPath === file.filename) return;
     setBusy(true);
     try {
@@ -2445,6 +2470,49 @@ export default function WorkspacePage() {
     }
   };
 
+  const compileMissionPreview = async (instruction: string): Promise<CompiledMissionPreview | null> => {
+    if (!autoCompile) return null;
+    const projectRef = projectId || activeProject?.id || 'local-workspace';
+    try {
+      const compiled = await apiRequest('/api/v1/os/missions/compile', {
+        method: 'POST',
+        body: JSON.stringify({
+          tenant_id: 'default',
+          project_id: projectRef,
+          objective: instruction,
+          repository_ids: repoUrl ? [repoUrl] : [],
+          constraints: trustedLocalPath ? [`Trusted local workspace: ${trustedLocalPath}`] : [],
+          desired_outcomes: [],
+          budget: { currency: 'USD', maximum: 10 },
+        }),
+      });
+      setMissionPreview(compiled);
+      addEvent({
+        kind: compiled.state === 'CLARIFICATION_REQUIRED' ? 'error' : 'code',
+        message: compiled.state === 'CLARIFICATION_REQUIRED' ? 'Mission needs clarification' : 'Mission compiled',
+        detail: compiled.definition?.title || instruction,
+      });
+      return compiled;
+    } catch (error) {
+      const classified = classifyError(error);
+      addEvent({
+        kind: 'error',
+        message: classified.message || 'Mission compile failed',
+        detail: classified.hint || 'The request can still continue through the existing workspace flow.',
+      });
+      return null;
+    }
+  };
+
+  const approveMissionPlanPath = () => {
+    if (!missionPreview) return;
+    addEvent({
+      kind: 'code',
+      message: 'Mission plan path approved',
+      detail: missionPreview.definition?.title || 'Arceus can continue with the compiled mission path.',
+    });
+  };
+
   const runWorkspace = async (customPrompt?: string) => {
     const instruction = typeof customPrompt === 'string' ? customPrompt.trim() : prompt.trim();
     if (!instruction || busy) return;
@@ -2469,6 +2537,16 @@ export default function WorkspacePage() {
     addMessage('user', instruction);
     setPrompt('');
     setBackendSuggestions([]);
+    const compiledMission = await compileMissionPreview(instruction);
+    if (compiledMission?.state === 'CLARIFICATION_REQUIRED') {
+      const questions = compiledMission.definition?.unknowns || compiledMission.intent?.unknowns || [];
+      addMessage(
+        'assistant',
+        `I compiled this into a mission, but execution is blocked until these questions are answered:\n\n${questions.map((item) => `- ${item}`).join('\n') || '- Clarify the high-risk unknowns before execution.'}`
+      );
+      setBusy(false);
+      return;
+    }
     if (activeTask?.id) {
       try {
         const accepted = await apiRequest(`/api/v1/code/tasks/${activeTask.id}/accept`, { method: 'POST' });
@@ -2488,6 +2566,7 @@ export default function WorkspacePage() {
     const checksSummary: Array<{ label: string; status?: string }> = [];
     const commandSummary: Array<{ label: string; status?: string }> = [];
     let producedPatch = false;
+    let reviewRequiredAfterPatch = false;
 
     try {
       if (autoBoundActiveFile && openFile) {
@@ -2538,7 +2617,7 @@ export default function WorkspacePage() {
         planText = plan.plan || '';
         outputs.push(`Implementation plan:\n${plan.plan}`);
         if (modes.includes('code')) {
-          addEvent({ kind: 'edit', message: 'Preparing patch', detail: 'Patch is generated but not applied until you approve it.' });
+          addEvent({ kind: 'edit', message: 'Preparing changes', detail: 'Safe file changes apply automatically; risky changes stay in review.' });
           const patch = await apiRequest(`/api/v1/code/sessions/${sid}/patch`, {
             method: 'POST',
             body: JSON.stringify({ instruction: agentInstruction, file_ids: effectiveFileIds, ...model }),
@@ -2554,15 +2633,68 @@ export default function WorkspacePage() {
             preview.forEach((item: any) => {
               addEvent({
                 kind: 'edit',
-                message: `Patch ready: ${item.filename}`,
+                message: `Prepared ${item.operation || 'modify'}: ${item.new_filename || item.filename}`,
                 detail: `+${item.additions || 0} / -${item.deletions || 0}`,
                 diff: item.diff,
               });
             });
-            outputs.push(`Patch prepared. Open the Changes drawer to review and approve.\n\n${summarizePreview(preview)}`);
           } else {
-            addEvent({ kind: 'edit', message: 'Patch ready for review', detail: summarizePatch(patch.patch), diff: patch.patch });
-            outputs.push(`Patch prepared. Open the Changes drawer to review and approve.\n\n${summarizePatch(patch.patch)}`);
+            addEvent({ kind: 'edit', message: 'Patch prepared', detail: summarizePatch(patch.patch), diff: patch.patch });
+          }
+          try {
+            const safeApply: SafeApplyResult = await apiRequest(`/api/v1/code/sessions/${sid}/apply-safe`, { method: 'POST' });
+            latestBackendPayload = safeApply;
+            if (safeApply.job) setJobs((current) => [safeApply.job!, ...current.filter((job) => job.id !== safeApply.job!.id)].slice(0, 20));
+            const changed = safeApply.changed || [];
+            const remaining = safeApply.remaining || [];
+            const impact = safeApply.impact || {};
+            reviewRequiredAfterPatch = Boolean(remaining.length);
+            currentPreview = changed.length ? changed : remaining;
+            setPatchPreview(remaining);
+            setPatchReady(Boolean(remaining.length));
+            if (changed.length) {
+              addEvent({
+                kind: 'done',
+                message: 'Changes applied',
+                detail: `${changed.length} safe change${changed.length === 1 ? '' : 's'} applied. Undo is available.`,
+              });
+              changed.forEach((item: any) => {
+                addEvent({
+                  kind: 'edit',
+                  message: `Applied ${item.new_filename || item.filename}`,
+                  detail: `${item.operation || 'modify'} · +${item.additions || 0} / -${item.deletions || 0}`,
+                  diff: item.diff,
+                });
+              });
+              outputs.push(
+                `Applied ${changed.length} safe change${changed.length === 1 ? '' : 's'} automatically. Undo is available.\n` +
+                `+${impact.total_additions || 0} / -${impact.total_deletions || 0}` +
+                (remaining.length ? `\n\n${remaining.length} review-required change${remaining.length === 1 ? '' : 's'} remain in Changes.` : '')
+              );
+              await loadFiles();
+              await hydrateSession(sid);
+              await loadRollbackSnapshots(sid);
+              await refreshGithubStagedState(sid);
+            } else {
+              outputs.push(`Review required before applying changes.\n\n${summarizePreview(remaining.length ? remaining : preview)}`);
+            }
+            if (remaining.length) {
+              addEvent({
+                kind: 'edit',
+                message: 'Review required',
+                detail: `${remaining.length} risky or conflicted change${remaining.length === 1 ? '' : 's'} need manual review.`,
+              });
+              setRightPanelView('changes');
+              setRightPanelOpen(true);
+            }
+          } catch (error) {
+            const classified = classifyError(error);
+            addEvent({
+              kind: 'error',
+              message: classified.message || 'Auto-apply failed',
+              detail: classified.hint || 'Open Changes to review the pending patch.',
+            });
+            outputs.push(`Changes prepared but not applied automatically.\n\n${summarizePreview(preview)}`);
           }
         }
       }
@@ -2574,16 +2706,16 @@ export default function WorkspacePage() {
       if (!commandSummary.length) {
         commandSummary.push(...commands.slice(0, 4).map((command) => ({ label: command.command || command.label, status: 'recommended' })));
       }
-      if (producedPatch) checksSummary.push({ label: 'Review patch before apply', status: 'pending approval' });
+      if (producedPatch && reviewRequiredAfterPatch) checksSummary.push({ label: 'Review remaining changes', status: 'pending' });
       const fallbackReceipt = buildReceipt({
-        summary: producedPatch ? `Prepared ${currentPreview.length || 1} reviewable change${currentPreview.length === 1 ? '' : 's'}.` : 'Workspace request completed.',
+        summary: producedPatch ? `Applied ${currentPreview.length || 1} workspace change${currentPreview.length === 1 ? '' : 's'}.` : 'Workspace request completed.',
         receiptMode: modes.length > 1 ? 'mixed' : modes[0],
         intent: modes.map((item) => item[0].toUpperCase() + item.slice(1)).join(' + '),
         plan: planText,
         preview: currentPreview,
         commandsRun: commandSummary,
         checks: checksSummary,
-        approvalState: producedPatch ? 'waiting approval' : 'done',
+        approvalState: producedPatch ? (reviewRequiredAfterPatch ? 'applied with review required' : 'applied') : 'done',
         nextActions: nextActionSnapshot,
         contextFileIds: effectiveFileIds,
       });
@@ -3697,6 +3829,18 @@ export default function WorkspacePage() {
           <UserCircle size={18} />
         </div>
       </header>
+      <div className={styles.serviceRecoverySlot}>
+        <ServiceRecoveryBanner
+          health={serviceHealth}
+          compact
+          onRetry={refreshServiceHealth}
+          onOpenTerminal={() => setTerminalPanelOpen(true)}
+          onOpenDiagnostics={() => {
+            setRightPanelOpen(true);
+            setRightPanelView('jobs');
+          }}
+        />
+      </div>
       <div className={styles.layout}>
         <div className={`${styles.workspaceBody} ${!editorOpen ? styles.layoutNoEditor : ''} ${!rightPanelOpen ? styles.layoutRightCollapsed : ''}`}>
           {editorOpen && (
@@ -3728,6 +3872,7 @@ export default function WorkspacePage() {
           busy={busy}
           selectedFileCount={selectedFileIds.length}
           suggestions={suggestions}
+          missionPreview={missionPreview}
           activeProjectName={activeProject?.name || ''}
           activeSessionLabel={sessionId ? `session ${sessionId.slice(0, 8)}` : ''}
           onModeChange={setMode}
@@ -3736,6 +3881,8 @@ export default function WorkspacePage() {
           onSubmit={runWorkspace}
           onSubmitBackground={runWorkspaceBackground}
           onAttachClick={() => fileInputRef.current?.click()}
+          onClearMissionPreview={() => setMissionPreview(null)}
+          onApproveMissionPlan={approveMissionPlanPath}
             onOpenTool={(tool) => {
               if (tool === 'terminal') {
                 setTerminalPanelOpen(true);
@@ -3878,24 +4025,6 @@ export default function WorkspacePage() {
             onRunChecks={runChecks}
           />
         )}
-        {rightPanelOpen && rightPanelView === 'org' && (
-          <EngineeringOrgPanel
-            projectName={activeProject?.name || ''}
-            state={engineeringOrgState}
-            problem={engineeringProblem}
-            busy={busy}
-            onProblemChange={setEngineeringProblem}
-            onAnalyze={analyzeEngineeringProblem}
-            onRefresh={() => loadEngineeringOrg()}
-            onSelectProposal={selectEngineeringProposal}
-            onApproveArchitecture={approveEngineeringArchitecture}
-            onMaterializeTasks={materializeEngineeringTasks}
-            onTypeTask={typeEngineeringTask}
-            onSyncProgress={syncEngineeringProgress}
-            onRunReviewBoard={runEngineeringReviewBoard}
-            onPrepareDelivery={prepareEngineeringDelivery}
-          />
-        )}
         {rightPanelOpen && rightPanelView === 'tasks' && (
           <ProjectNavigator
             task={navigatorTask}
@@ -3903,6 +4032,7 @@ export default function WorkspacePage() {
           />
         )}
         </div>
+        {clientReady && (
         <WorkspaceTerminalPanel
           open={terminalPanelOpen}
           size={terminalPanelSize}
@@ -3926,6 +4056,7 @@ export default function WorkspacePage() {
           onRestart={restartTerminal}
           onClear={clearTerminal}
         />
+        )}
         <WorkspaceRightRail
           rightPanelOpen={rightPanelOpen}
           rightPanelView={rightPanelView}

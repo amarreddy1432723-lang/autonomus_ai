@@ -3,7 +3,7 @@ import type { WorkspaceMode } from './ConversationPanel';
 import type { WorkspaceWorkReceipt } from './WorkReceipt';
 import { normalizeWorkspaceSuggestion } from './workspaceSuggestions';
 
-export const model = { llm_provider: 'nexus', llm_model: 'Arceus-Code' };
+export const model = { llm_provider: 'registry', llm_model: 'arceus-codex' };
 export const OPEN_PROJECTS_KEY = 'nexus.code.open_projects';
 export const ACTIVE_PROJECT_KEY = 'nexus.code.active_project';
 export const TERMINAL_PREFS_KEY = 'nexus.code.terminal_preferences';

@@ -537,10 +537,10 @@ export default function ActivityPanel({
         {activeTab === 'changes' && (
           <div className={styles.changesPanel}>
             <div className={styles.changesHeader}>
-              <span>Pending Changes</span>
+              <span>{patchPreview.length ? 'Review Required' : 'Changes'}</span>
               <strong>{patchPreview.length}</strong>
             </div>
-            {patchPreview.length === 0 && <div className={styles.meta}>No pending changes. Ask Arceus to edit code, then review diffs here.</div>}
+            {patchPreview.length === 0 && <div className={styles.meta}>No review-required changes. Safe edits apply automatically and can be undone from the chat receipt.</div>}
             {patchPreview.length > 0 && (
               <>
                 <div className={styles.reviewSummary}>
@@ -588,14 +588,16 @@ export default function ActivityPanel({
                 )}
               </>
             )}
-            <div className={styles.tabActionStack}>
-              <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply || allPatchHunksRejected} title={allPatchHunksRejected ? 'All hunks rejected' : undefined}>
-                <Check size={15} /> Approve all changes
-              </button>
-              <button className={styles.rejectButton} type="button" onClick={onReject} disabled={!hasPatch}>
-                <X size={15} /> Reject changes
-              </button>
-            </div>
+            {patchPreview.length > 0 && (
+              <div className={styles.tabActionStack}>
+                <button className={styles.approveButton} type="button" onClick={onApply} disabled={!canApply || allPatchHunksRejected} title={allPatchHunksRejected ? 'All hunks rejected' : undefined}>
+                  <Check size={15} /> Apply reviewed changes
+                </button>
+                <button className={styles.rejectButton} type="button" onClick={onReject} disabled={!hasPatch}>
+                  <X size={15} /> Remove from review
+                </button>
+              </div>
+            )}
           </div>
         )}
 

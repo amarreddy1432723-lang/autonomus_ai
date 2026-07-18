@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from services.agent.code_workspace import apply_patch_payload, get_file_text, rollback_last_apply
+from services.agent.code_workspace import apply_patch_payload, apply_safe_patch_payload, get_file_text, preview_patch_payload, rollback_last_apply
 from services.agent.file_service import delete_object, put_object, storage_provider
 from services.shared.database import SessionLocal, verify_default_user
 from services.shared.models import CodeProject, CodeSession, FileReference
@@ -177,3 +177,152 @@ def test_mixed_patch_apply_and_rollback_restores_all_operation_types(tmp_path):
                 delete_object(key)
             except Exception:
                 pass
+
+
+def test_safe_auto_apply_applies_safe_operations_and_leaves_risky_for_review(tmp_path):
+    db = SessionLocal()
+    project = None
+    session = None
+    try:
+        try:
+            db.execute(text("SELECT 1"))
+        except SQLAlchemyError as exc:
+            pytest.skip(f"Postgres is not reachable for auto-apply test: {exc}")
+        verify_default_user(db)
+        project = CodeProject(user_id=USER_ID, name="auto-apply-safe", status="active")
+        db.add(project)
+        db.flush()
+        local_root = tmp_path / "auto-apply-workspace"
+        local_root.mkdir()
+        session = CodeSession(
+            user_id=USER_ID,
+            project_id=project.id,
+            title="auto apply",
+            file_ids=[],
+            status="active",
+            metadata_json={"local_workspace_path": str(local_root), "patch_preview": [], "rollback_snapshots": []},
+        )
+        db.add(session)
+        db.flush()
+        modify_file = _create_file(db, session, "src/existing.txt", "before\n")
+        delete_file = _create_file(db, session, "src/delete-me.txt", "delete me\n")
+        session.file_ids = [str(modify_file.id), str(delete_file.id)]
+        db.commit()
+
+        session.patch_text = json.dumps({
+            "summary": "Safe auto apply mixed patch",
+            "operations": [
+                {"type": "modify", "file_id": str(modify_file.id), "filename": modify_file.filename, "content": "after\n"},
+                {"type": "create", "filename": "src/created.txt", "content": "created\n"},
+                {"type": "folder", "filename": "src/generated"},
+                {"type": "delete", "file_id": str(delete_file.id), "filename": delete_file.filename},
+            ],
+        })
+        db.commit()
+
+        result = apply_safe_patch_payload(db, USER_ID, session)
+        assert {item["operation"] for item in result["changed"]} == {"modify", "create", "folder"}
+        assert len(result["remaining"]) == 1
+        assert result["remaining"][0]["operation"] == "delete"
+        assert result["rollback_snapshot_id"]
+
+        db.refresh(modify_file)
+        db.refresh(delete_file)
+        created_file = (
+            db.query(FileReference)
+            .filter(FileReference.owner_id == session.id, FileReference.filename == "src/created.txt")
+            .first()
+        )
+        assert get_file_text(db, USER_ID, modify_file.id) == "after\n"
+        assert created_file is not None
+        assert delete_file.status == "active"
+        assert (session.metadata_json or {}).get("workspace_folders") == ["src/generated"]
+
+        rolled_back = rollback_last_apply(db, USER_ID, session)
+        assert rolled_back["status"] == "rolled_back"
+        db.refresh(modify_file)
+        db.refresh(created_file)
+        assert get_file_text(db, USER_ID, modify_file.id) == "before\n"
+        assert created_file.status == "deleted"
+    finally:
+        if session is not None and getattr(session, "id", None):
+            for record in db.query(FileReference).filter(FileReference.owner_id == session.id).all():
+                try:
+                    delete_object(record.object_key)
+                except Exception:
+                    pass
+                db.delete(record)
+            db.delete(session)
+        if project is not None and getattr(project, "id", None):
+            db.delete(project)
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+        db.close()
+
+
+def test_safe_auto_apply_blocks_conflicted_modify(tmp_path):
+    db = SessionLocal()
+    project = None
+    session = None
+    try:
+        try:
+            db.execute(text("SELECT 1"))
+        except SQLAlchemyError as exc:
+            pytest.skip(f"Postgres is not reachable for auto-apply conflict test: {exc}")
+        verify_default_user(db)
+        project = CodeProject(user_id=USER_ID, name="auto-apply-conflict", status="active")
+        db.add(project)
+        db.flush()
+        local_root = tmp_path / "auto-apply-conflict-workspace"
+        local_root.mkdir()
+        session = CodeSession(
+            user_id=USER_ID,
+            project_id=project.id,
+            title="auto apply conflict",
+            file_ids=[],
+            status="active",
+            metadata_json={"local_workspace_path": str(local_root), "patch_preview": [], "rollback_snapshots": []},
+        )
+        db.add(session)
+        db.flush()
+        modify_file = _create_file(db, session, "src/conflict.txt", "base\n")
+        session.file_ids = [str(modify_file.id)]
+        session.patch_text = json.dumps({
+            "summary": "Conflict auto apply patch",
+            "operations": [
+                {"type": "modify", "file_id": str(modify_file.id), "filename": modify_file.filename, "content": "agent change\n"},
+            ],
+        })
+        db.commit()
+
+        preview_patch_payload(db, USER_ID, session)
+        external = "external change\n".encode("utf-8")
+        put_object(modify_file.object_key, external, "text/plain")
+        modify_file.size_bytes = len(external)
+        modify_file.checksum_sha256 = hashlib.sha256(external).hexdigest()
+        db.commit()
+
+        result = apply_safe_patch_payload(db, USER_ID, session)
+        assert result["changed"] == []
+        assert len(result["conflicts"]) == 1
+        assert len(result["remaining"]) == 1
+        assert get_file_text(db, USER_ID, modify_file.id) == "external change\n"
+        assert not (session.metadata_json or {}).get("rollback_snapshots")
+    finally:
+        if session is not None and getattr(session, "id", None):
+            for record in db.query(FileReference).filter(FileReference.owner_id == session.id).all():
+                try:
+                    delete_object(record.object_key)
+                except Exception:
+                    pass
+                db.delete(record)
+            db.delete(session)
+        if project is not None and getattr(project, "id", None):
+            db.delete(project)
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+        db.close()

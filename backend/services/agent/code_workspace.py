@@ -3776,6 +3776,155 @@ def apply_patch_payload(
     }
 
 
+SAFE_AUTO_APPLY_OPERATIONS = {"create", "modify", "folder"}
+REVIEW_REQUIRED_OPERATIONS = {"delete", "rename"}
+
+
+def classify_auto_apply_operations(db: Session, user_id: UUID, session: CodeSession) -> dict:
+    """Classify pending patch operations for safe automatic apply.
+
+    Auto-apply is intentionally conservative: clean create/modify/folder operations
+    are safe, while destructive, conflicted, missing, or unknown operations stay in
+    the manual review queue.
+    """
+    if not session.patch_text:
+        return {"safe": [], "review_required": [], "conflicts": []}
+
+    payload = _parse_patch_payload(session.patch_text)
+    operations = _normalize_patch_operations(payload)
+    preview_by_operation = {
+        str(item.get("operation_id") or ""): item
+        for item in preview_patch_payload(db, user_id, session)
+    }
+    preview_by_file = {
+        str(item.get("file_id") or ""): item
+        for item in preview_by_operation.values()
+        if item.get("file_id")
+    }
+
+    safe: list[dict] = []
+    review_required: list[dict] = []
+    conflicts: list[dict] = []
+
+    for item in operations:
+        op_type = str(item.get("type") or "modify").lower()
+        operation_id = str(item.get("operation_id") or "")
+        file_id = str(item.get("file_id") or "")
+        preview = preview_by_operation.get(operation_id) or preview_by_file.get(file_id) or {}
+        classified = {
+            "operation_id": operation_id,
+            "file_id": file_id,
+            "filename": item.get("new_filename") or item.get("filename") or preview.get("filename") or "",
+            "operation": op_type,
+            "reason": "",
+        }
+
+        if preview.get("conflict"):
+            classified["reason"] = "conflict"
+            conflicts.append({**classified, "base_checksum": preview.get("base_checksum") or "", "current_checksum": preview.get("current_checksum") or ""})
+            review_required.append(classified)
+            continue
+        if op_type in REVIEW_REQUIRED_OPERATIONS:
+            classified["reason"] = "destructive_operation"
+            review_required.append(classified)
+            continue
+        if op_type not in SAFE_AUTO_APPLY_OPERATIONS:
+            classified["reason"] = "unsupported_operation"
+            review_required.append(classified)
+            continue
+        if op_type == "modify" and not file_id:
+            classified["reason"] = "missing_target_file"
+            review_required.append(classified)
+            continue
+
+        classified["reason"] = "safe"
+        safe.append(classified)
+
+    return {"safe": safe, "review_required": review_required, "conflicts": conflicts}
+
+
+def apply_safe_patch_payload(db: Session, user_id: UUID, session: CodeSession, job=None) -> dict:
+    classification = classify_auto_apply_operations(db, user_id, session)
+    safe = classification["safe"]
+    if not safe:
+        metadata = _metadata(session)
+        metadata["patch_auto_apply"] = {
+            "status": "review_required",
+            "review_required": classification["review_required"],
+            "conflicts": classification["conflicts"],
+            "updated_at": _now(),
+        }
+        _set_metadata(session, metadata)
+        db.commit()
+        complete_job(
+            db,
+            job,
+            "completed",
+            {
+                "changed": [],
+                "remaining": metadata.get("patch_preview") or [],
+                "review_required": classification["review_required"],
+                "conflicts": classification["conflicts"],
+            },
+            approval_state="review_required",
+        )
+        return {
+            "changed": [],
+            "summary": "No safe changes were auto-applied.",
+            "impact": _patch_impact_summary([]),
+            "remaining": preview_patch_payload(db, user_id, session),
+            "review_required": classification["review_required"],
+            "conflicts": classification["conflicts"],
+            "rollback_snapshot_id": None,
+        }
+
+    before_snapshot_ids = {
+        str(item.get("snapshot_id") or "")
+        for item in (_metadata(session).get("rollback_snapshots") or [])
+        if item.get("snapshot_id")
+    }
+    result = apply_patch_payload(
+        db,
+        user_id,
+        session,
+        job=job,
+        operation_ids=[item["operation_id"] for item in safe if item.get("operation_id")],
+        allow_conflicts=False,
+    )
+    metadata = _metadata(session)
+    snapshots = metadata.get("rollback_snapshots") or []
+    new_snapshot = next(
+        (
+            item for item in reversed(snapshots)
+            if item.get("snapshot_id") and str(item.get("snapshot_id")) not in before_snapshot_ids
+        ),
+        snapshots[-1] if snapshots else None,
+    )
+    metadata["patch_auto_apply"] = {
+        "status": "applied" if not result.get("remaining") else "applied_with_review_required",
+        "applied": safe,
+        "review_required": classification["review_required"],
+        "conflicts": classification["conflicts"],
+        "rollback_snapshot_id": (new_snapshot or {}).get("snapshot_id"),
+        "updated_at": _now(),
+    }
+    _set_metadata(session, metadata)
+    db.commit()
+    append_activity(
+        db,
+        session,
+        "done",
+        "Changes applied",
+        f"{len(result.get('changed') or [])} safe change(s) applied automatically. Undo is available.",
+    )
+    return {
+        **result,
+        "review_required": classification["review_required"],
+        "conflicts": classification["conflicts"],
+        "rollback_snapshot_id": (new_snapshot or {}).get("snapshot_id"),
+    }
+
+
 def list_rollback_snapshots(session: CodeSession) -> dict:
     metadata = _metadata(session)
     snapshots = list(metadata.get("rollback_snapshots") or [])

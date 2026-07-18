@@ -3,6 +3,7 @@
 import { ArrowUp, Bot, ChevronDown, Code2, Layers, Mic, Paperclip, Plus, X } from 'lucide-react';
 import styles from './Workspace.module.css';
 import WorkReceipt, { type WorkspaceWorkReceipt } from './WorkReceipt';
+import MissionPreviewPanel, { type CompiledMissionPreview } from './MissionPreviewPanel';
 import type { WorkspaceSuggestion } from './workspaceSuggestions';
 
 export type WorkspaceMode = 'auto' | 'code' | 'plan' | 'design' | 'deploy' | 'research';
@@ -21,6 +22,7 @@ type Props = {
   busy: boolean;
   selectedFileCount: number;
   suggestions: WorkspaceSuggestion[];
+  missionPreview?: CompiledMissionPreview | null;
   activeProjectName?: string;
   activeSessionLabel?: string;
   onModeChange: (mode: WorkspaceMode) => void;
@@ -29,6 +31,8 @@ type Props = {
   onSubmit: () => void;
   onSubmitBackground: () => void;
   onAttachClick: () => void;
+  onClearMissionPreview?: () => void;
+  onApproveMissionPlan?: () => void;
   onOpenTool?: (tool: 'terminal' | 'changes' | 'jobs' | 'preview') => void;
   onOpenFile?: (filename: string) => void | Promise<void>;
   onRollback?: () => void | Promise<void>;
@@ -170,6 +174,7 @@ export default function ConversationPanel({
   busy,
   selectedFileCount,
   suggestions,
+  missionPreview,
   activeProjectName,
   activeSessionLabel,
   onModeChange,
@@ -178,6 +183,8 @@ export default function ConversationPanel({
   onSubmit,
   onSubmitBackground,
   onAttachClick,
+  onClearMissionPreview,
+  onApproveMissionPlan,
   onOpenTool,
   onOpenFile,
   onRollback,
@@ -200,6 +207,12 @@ export default function ConversationPanel({
         </div>
       </div>
       <div className={styles.messages}>
+        <MissionPreviewPanel
+          preview={missionPreview || null}
+          busy={busy}
+          onClear={onClearMissionPreview || (() => undefined)}
+          onContinue={onApproveMissionPlan || (() => undefined)}
+        />
         {messages.length === 0 ? (
           <div className={styles.emptyState}>
             <div>
@@ -273,9 +286,9 @@ export default function ConversationPanel({
               <ChevronDown size={12} />
             </div>
             <select className={styles.modelSelect} defaultValue="composer-2.5-fast" title="Agent model">
-              <option value="composer-2.5-fast">Composer 2.5 Fast</option>
-              <option value="nexus-agent-pro">Arceus Agent Pro</option>
-              <option value="autonomus-ai">Autonomus AI</option>
+              <option value="arceus-codex">Arceus Codex Auto</option>
+              <option value="arceus-reasoning">Arceus Reasoning</option>
+              <option value="arceus-local-code">Arceus Local Code</option>
             </select>
             <span className={styles.contextCount}>{selectedFileCount} ctx</span>
           </div>

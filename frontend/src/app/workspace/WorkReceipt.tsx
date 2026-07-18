@@ -127,7 +127,7 @@ export default function WorkReceipt({ receipt, onTypeSuggestion, onOpenTool, onO
           {rollbackAvailable && onRollback && (
             <button type="button" className={styles.receiptRollbackButton} onClick={() => onRollback()} disabled={busy}>
               <RotateCcw size={12} />
-              Rollback
+              Undo changes
             </button>
           )}
         </div>
