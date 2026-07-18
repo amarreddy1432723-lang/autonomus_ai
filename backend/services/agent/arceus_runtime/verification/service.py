@@ -80,14 +80,146 @@ def build_default_quality_gate(*, plan: ArceusVerificationPlan, method: str, evi
     )
 
 
-def gate_passes_with_evidence(gate: ArceusQualityGate, evidence: list[ArceusEvidence]) -> tuple[bool, dict[str, Any]]:
-    required_type = (gate.result or {}).get("required_evidence_type") or gate.verifier
-    trusted_evidence = [
+def _is_verified_evidence(item: ArceusEvidence) -> bool:
+    return item.status in {"validated", "trusted", "verified"}
+
+
+def _tool_evidence_type(tool_key: str, action_key: str) -> str:
+    return f"tool_{tool_key}_{action_key}".replace("-", "_")
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _matching_evidence(*, evidence: list[ArceusEvidence], evidence_type: str, verification_method: str | None = None) -> list[ArceusEvidence]:
+    return [
         item
         for item in evidence
-        if item.status in {"validated", "trusted", "verified"}
-        and (item.evidence_type == required_type or item.verification_method == gate.verifier)
+        if _is_verified_evidence(item)
+        and (item.evidence_type == evidence_type or (verification_method is not None and item.verification_method == verification_method))
     ]
+
+
+def evaluate_tool_evidence_requirement(requirement: str | dict[str, Any], evidence: list[ArceusEvidence]) -> tuple[bool, dict[str, Any]]:
+    if isinstance(requirement, str):
+        evidence_type = requirement
+        verification_method = None
+        require_passing_checks = evidence_type == "tool_github_check_runs"
+        allow_empty_checks = False
+    else:
+        tool_key = str(requirement.get("tool_key") or "").strip()
+        action_key = str(requirement.get("action_key") or "").strip()
+        evidence_type = str(requirement.get("evidence_type") or _tool_evidence_type(tool_key, action_key)).strip()
+        verification_method = requirement.get("verification_method")
+        require_passing_checks = bool(requirement.get("require_passing_checks", evidence_type == "tool_github_check_runs"))
+        allow_empty_checks = bool(requirement.get("allow_empty_checks", False))
+
+    matches = _matching_evidence(evidence=evidence, evidence_type=evidence_type, verification_method=verification_method)
+    if not matches:
+        return False, {
+            "reason": "missing_tool_evidence",
+            "required_evidence_type": evidence_type,
+        }
+
+    if not require_passing_checks:
+        return True, {
+            "reason": "matching_tool_evidence",
+            "required_evidence_type": evidence_type,
+            "matched_evidence_ids": [str(item.id) for item in matches],
+        }
+
+    latest_blocker: dict[str, Any] | None = None
+    for item in matches:
+        payload = item.payload or {}
+        total = _coerce_int(payload.get("total"))
+        failed = _coerce_int(payload.get("failed"))
+        running = _coerce_int(payload.get("running"))
+        passed = _coerce_int(payload.get("passed"))
+        if total <= 0 and not allow_empty_checks:
+            latest_blocker = {
+                "reason": "github_checks_missing",
+                "required_evidence_type": evidence_type,
+                "matched_evidence_ids": [str(item.id)],
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "running": running,
+            }
+            continue
+        if failed > 0:
+            latest_blocker = {
+                "reason": "github_checks_failed",
+                "required_evidence_type": evidence_type,
+                "matched_evidence_ids": [str(item.id)],
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "running": running,
+            }
+            continue
+        if running > 0:
+            latest_blocker = {
+                "reason": "github_checks_running",
+                "required_evidence_type": evidence_type,
+                "matched_evidence_ids": [str(item.id)],
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "running": running,
+            }
+            continue
+        return True, {
+            "reason": "github_checks_passing",
+            "required_evidence_type": evidence_type,
+            "matched_evidence_ids": [str(item.id)],
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "running": running,
+        }
+
+    return False, latest_blocker or {
+        "reason": "github_checks_not_passing",
+        "required_evidence_type": evidence_type,
+        "matched_evidence_ids": [str(item.id) for item in matches],
+    }
+
+
+def evaluate_tool_evidence_requirements(requirements: list[str | dict[str, Any]], evidence: list[ArceusEvidence]) -> tuple[bool, dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    matched_ids: list[str] = []
+    for requirement in requirements:
+        passed, result = evaluate_tool_evidence_requirement(requirement, evidence)
+        results.append({"passed": passed, **result})
+        matched_ids.extend(result.get("matched_evidence_ids") or [])
+
+    blockers = [result for result in results if not result["passed"]]
+    if blockers:
+        return False, {
+            "reason": "tool_evidence_requirements_blocked",
+            "requirements": results,
+            "matched_evidence_ids": sorted(set(matched_ids)),
+        }
+    return True, {
+        "reason": "tool_evidence_requirements_met",
+        "requirements": results,
+        "matched_evidence_ids": sorted(set(matched_ids)),
+    }
+
+
+def gate_passes_with_evidence(gate: ArceusQualityGate, evidence: list[ArceusEvidence]) -> tuple[bool, dict[str, Any]]:
+    tool_requirements = (gate.result or {}).get("required_tool_evidence") or (gate.result or {}).get("tool_evidence_required")
+    if tool_requirements:
+        if isinstance(tool_requirements, (str, dict)):
+            tool_requirements = [tool_requirements]
+        return evaluate_tool_evidence_requirements(list(tool_requirements), evidence)
+
+    required_type = (gate.result or {}).get("required_evidence_type") or gate.verifier
+    trusted_evidence = _matching_evidence(evidence=evidence, evidence_type=required_type, verification_method=gate.verifier)
     if trusted_evidence:
         return True, {
             "reason": "matching_trusted_evidence",

@@ -4,6 +4,8 @@ from services.agent.arceus_runtime.verification.service import (
     build_completion_certificate,
     calculate_trust_score,
     evaluate_completion,
+    evaluate_tool_evidence_requirement,
+    evaluate_tool_evidence_requirements,
     evidence_content_hash,
     gate_passes_with_evidence,
 )
@@ -65,6 +67,27 @@ def _evidence(mission: ArceusMission, evidence_type: str = "backend_tests", trus
     )
 
 
+def _tool_evidence(mission: ArceusMission, evidence_type: str, payload: dict) -> ArceusEvidence:
+    return ArceusEvidence(
+        id=uuid.uuid4(),
+        tenant_id=mission.tenant_id,
+        mission_id=mission.id,
+        evidence_type=evidence_type,
+        status="validated",
+        summary=f"Tool evidence collected: {evidence_type}.",
+        payload=payload,
+        verification_method=evidence_type.replace("tool_", "gateway_tool:", 1).replace("_", "."),
+        content_hash=evidence_content_hash(
+            mission_id=mission.id,
+            evidence_type=evidence_type,
+            summary=f"Tool evidence collected: {evidence_type}.",
+            payload=payload,
+        ),
+        trust_level="tool_verified",
+        immutable=True,
+    )
+
+
 def _gate(mission: ArceusMission, status: str = "passed") -> ArceusQualityGate:
     return ArceusQualityGate(
         id=uuid.uuid4(),
@@ -119,6 +142,114 @@ def test_gate_passes_only_with_matching_validated_evidence() -> None:
 
     assert passed is True
     assert result["reason"] == "matching_trusted_evidence"
+
+
+def test_tool_evidence_requirement_accepts_pull_request_artifact() -> None:
+    mission = _mission()
+    evidence = _tool_evidence(
+        mission,
+        "tool_github_open_pull_request",
+        {"pull_request_url": "https://github.com/acme/platform/pull/42", "pull_request_number": 42},
+    )
+
+    passed, result = evaluate_tool_evidence_requirement(
+        {"tool_key": "github", "action_key": "open_pull_request"},
+        [evidence],
+    )
+
+    assert passed is True
+    assert result["reason"] == "matching_tool_evidence"
+    assert result["matched_evidence_ids"] == [str(evidence.id)]
+
+
+def test_tool_evidence_requirement_blocks_failed_github_checks() -> None:
+    mission = _mission()
+    evidence = _tool_evidence(
+        mission,
+        "tool_github_check_runs",
+        {"total": 3, "passed": 2, "failed": 1, "running": 0},
+    )
+
+    passed, result = evaluate_tool_evidence_requirement(
+        {"tool_key": "github", "action_key": "check_runs", "require_passing_checks": True},
+        [evidence],
+    )
+
+    assert passed is False
+    assert result["reason"] == "github_checks_failed"
+    assert result["failed"] == 1
+
+
+def test_tool_evidence_requirement_blocks_running_github_checks() -> None:
+    mission = _mission()
+    evidence = _tool_evidence(
+        mission,
+        "tool_github_check_runs",
+        {"total": 3, "passed": 2, "failed": 0, "running": 1},
+    )
+
+    passed, result = evaluate_tool_evidence_requirement("tool_github_check_runs", [evidence])
+
+    assert passed is False
+    assert result["reason"] == "github_checks_running"
+    assert result["running"] == 1
+
+
+def test_tool_evidence_requirements_pass_with_pr_and_green_checks() -> None:
+    mission = _mission()
+    pr_evidence = _tool_evidence(
+        mission,
+        "tool_github_open_pull_request",
+        {"pull_request_url": "https://github.com/acme/platform/pull/42", "pull_request_number": 42},
+    )
+    check_evidence = _tool_evidence(
+        mission,
+        "tool_github_check_runs",
+        {"total": 3, "passed": 3, "failed": 0, "running": 0},
+    )
+
+    passed, result = evaluate_tool_evidence_requirements(
+        [
+            {"tool_key": "github", "action_key": "open_pull_request"},
+            {"tool_key": "github", "action_key": "check_runs", "require_passing_checks": True},
+        ],
+        [pr_evidence, check_evidence],
+    )
+
+    assert passed is True
+    assert result["reason"] == "tool_evidence_requirements_met"
+    assert sorted(result["matched_evidence_ids"]) == sorted([str(pr_evidence.id), str(check_evidence.id)])
+
+
+def test_tool_evidence_quality_gate_blocks_missing_pull_request() -> None:
+    mission = _mission()
+    gate = ArceusQualityGate(
+        id=uuid.uuid4(),
+        tenant_id=mission.tenant_id,
+        mission_id=mission.id,
+        gate_key="github_release",
+        name="GitHub Release Evidence",
+        category="release",
+        gate_type="mandatory",
+        required=True,
+        verifier="gateway_tool",
+        timeout_seconds=300,
+        status="pending",
+        result={
+            "required_tool_evidence": [
+                {"tool_key": "github", "action_key": "open_pull_request"},
+                {"tool_key": "github", "action_key": "check_runs", "require_passing_checks": True},
+            ]
+        },
+        evidence_ids=[],
+    )
+    checks = _tool_evidence(mission, "tool_github_check_runs", {"total": 2, "passed": 2, "failed": 0, "running": 0})
+
+    passed, result = gate_passes_with_evidence(gate, [checks])
+
+    assert passed is False
+    assert result["reason"] == "tool_evidence_requirements_blocked"
+    assert result["requirements"][0]["reason"] == "missing_tool_evidence"
 
 
 def test_trust_score_is_derived_from_evidence_gates_reviews_and_human_approval() -> None:
