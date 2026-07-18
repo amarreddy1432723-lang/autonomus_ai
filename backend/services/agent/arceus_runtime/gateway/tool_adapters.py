@@ -246,10 +246,14 @@ class GitToolAdapter:
             if profile.side_effect_class != "REPOSITORY_MUTATION":
                 raise ValueError("create_branch requires a REPOSITORY_MUTATION git profile.")
             output = self._create_branch(request)
+        elif request.action_key == "commit_approved":
+            if profile.side_effect_class != "REPOSITORY_MUTATION":
+                raise ValueError("commit_approved requires a REPOSITORY_MUTATION git profile.")
+            output = self._commit_approved(request)
         else:
             raise ValueError(f"Unsupported git action: {request.action_key}")
         latency_ms = int((time.perf_counter() - started) * 1000)
-        rollback_required = request.action_key == "create_branch" and bool(output.get("created"))
+        rollback_required = request.action_key in {"create_branch", "commit_approved"} and bool(output.get("rollback"))
         evidence = {
             "tool_key": request.tool_key,
             "action_key": request.action_key,
@@ -280,6 +284,13 @@ class GitToolAdapter:
         root = self._workspace_root(request)
         path = resolve_workspace_path(str(root), str(relative_path))
         return "." if path == root else path.relative_to(root).as_posix()
+
+    def _relative_path_from_value(self, request: ToolExecutionRequest, path_value: Any) -> str:
+        root = self._workspace_root(request)
+        path = resolve_workspace_path(str(root), str(path_value))
+        if path == root:
+            raise ValueError("Git artifact path must identify a file, not the workspace root.")
+        return path.relative_to(root).as_posix()
 
     def _run_git(self, request: ToolExecutionRequest, args: list[str]) -> dict[str, Any]:
         root = self._workspace_root(request)
@@ -346,6 +357,80 @@ class GitToolAdapter:
             "existed": False,
             "result": result,
             "rollback": {"operation": "delete_branch", "branch": branch},
+        }
+
+    def _approved_artifact_paths(self, request: ToolExecutionRequest) -> list[str]:
+        approved_artifacts = request.arguments.get("approved_artifacts")
+        if not isinstance(approved_artifacts, list) or not approved_artifacts:
+            raise ValueError("approved_artifacts is required for commit_approved.")
+        paths: list[str] = []
+        for artifact in approved_artifacts:
+            if not isinstance(artifact, dict) or not artifact.get("path"):
+                raise ValueError("Each approved artifact must include a path.")
+            relative_path = self._relative_path_from_value(request, artifact["path"])
+            if relative_path not in paths:
+                paths.append(relative_path)
+        return paths
+
+    def _verify_artifact_hashes(self, request: ToolExecutionRequest) -> None:
+        root = self._workspace_root(request)
+        for artifact in request.arguments.get("approved_artifacts") or []:
+            expected_hash = artifact.get("expected_hash")
+            if not expected_hash:
+                continue
+            relative_path = self._relative_path_from_value(request, artifact["path"])
+            path = root / relative_path
+            if not path.is_file():
+                raise ValueError(f"Approved artifact is not a file: {relative_path}")
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if stable_hash(content) != expected_hash:
+                raise ValueError(f"Approved artifact hash changed before commit: {relative_path}")
+
+    def _name_only(self, request: ToolExecutionRequest, args: list[str]) -> list[str]:
+        result = self._run_git(request, args)
+        if result.get("return_code") != 0:
+            raise ValueError("Git inspection failed: " + "\n".join(result.get("lines") or []))
+        return [line.strip() for line in result.get("lines") or [] if line.strip()]
+
+    def _commit_approved(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        if not request.task_id:
+            raise ValueError("task_id is required for commit_approved.")
+        if not request.approval_id and not request.dry_run:
+            raise ValueError("approval_id is required for commit_approved.")
+        message = str(request.arguments.get("message") or "").strip()
+        if not message:
+            raise ValueError("message is required for commit_approved.")
+        approved_paths = self._approved_artifact_paths(request)
+        self._verify_artifact_hashes(request)
+        if request.dry_run:
+            return {"would_commit": approved_paths, "message": message, "task_id": str(request.task_id), "approval_id": str(request.approval_id)}
+        existing_staged = self._name_only(request, ["diff", "--cached", "--name-only"])
+        unexpected_staged = sorted(set(existing_staged) - set(approved_paths))
+        if unexpected_staged:
+            raise ValueError("Unapproved files are already staged: " + ", ".join(unexpected_staged))
+        add_result = self._run_git(request, ["add", "--", *approved_paths])
+        if add_result["return_code"] != 0:
+            raise ValueError("Git add failed: " + "\n".join(add_result["lines"]))
+        staged_after_add = self._name_only(request, ["diff", "--cached", "--name-only"])
+        unexpected_after_add = sorted(set(staged_after_add) - set(approved_paths))
+        if unexpected_after_add:
+            raise ValueError("Git staged unapproved files: " + ", ".join(unexpected_after_add))
+        if not staged_after_add:
+            raise ValueError("No approved changes are staged for commit.")
+        commit_result = self._run_git(request, ["commit", "-m", message])
+        if commit_result["return_code"] != 0:
+            raise ValueError("Git commit failed: " + "\n".join(commit_result["lines"]))
+        head = self._run_git(request, ["rev-parse", "HEAD"])
+        commit_sha = head["lines"][0].strip() if head["return_code"] == 0 and head["lines"] else None
+        return {
+            "operation": "commit_approved",
+            "commit_sha": commit_sha,
+            "approved_paths": approved_paths,
+            "message": message,
+            "task_id": str(request.task_id),
+            "approval_id": str(request.approval_id),
+            "result": commit_result,
+            "rollback": {"operation": "revert_commit", "commit_sha": commit_sha},
         }
 
 

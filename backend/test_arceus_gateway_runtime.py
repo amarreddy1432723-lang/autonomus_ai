@@ -577,7 +577,7 @@ def git_tool(*, side_effect_class: str = "READ_ONLY") -> ArceusToolProfile:
         adapter_type="git",
         version="1",
         capabilities=["git_status", "git_diff", "git_branch"],
-        supported_actions=["status", "diff", "create_branch"],
+        supported_actions=["status", "diff", "create_branch", "commit_approved"],
         risk_level="low" if side_effect_class == "READ_ONLY" else "medium",
         side_effect_class=side_effect_class,
         requires_sandbox=True,
@@ -671,6 +671,83 @@ def test_git_adapter_creates_branch_with_rollback_metadata(tmp_path: Path) -> No
     assert result.output["rollback"] == {"operation": "delete_branch", "branch": "feature/test"}
     assert result.evidence["rollback_required"] is True
     assert verify.returncode == 0
+
+
+def test_git_adapter_commits_only_approved_artifacts(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    commit_initial_file(tmp_path)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("unapproved\n", encoding="utf-8")
+    req = git_request(
+        tmp_path,
+        "commit_approved",
+        message="Apply approved README update",
+        approved_artifacts=[{"path": "README.md", "expected_hash": stable_hash("changed\n")}],
+    )
+    req.approval_id = uuid.uuid4()
+    req.task_id = uuid.uuid4()
+
+    result = GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
+
+    changed_files = subprocess.run(["git", "show", "--name-only", "--pretty=format:", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert result.output["operation"] == "commit_approved"
+    assert result.output["approved_paths"] == ["README.md"]
+    assert result.output["commit_sha"]
+    assert result.output["rollback"]["operation"] == "revert_commit"
+    assert "README.md" in changed_files.stdout
+    assert "notes.txt" not in changed_files.stdout
+
+
+def test_git_adapter_commit_blocks_prestaged_unapproved_files(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    commit_initial_file(tmp_path)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("unapproved\n", encoding="utf-8")
+    subprocess.run(["git", "add", "notes.txt"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    req = git_request(
+        tmp_path,
+        "commit_approved",
+        message="Apply approved README update",
+        approved_artifacts=[{"path": "README.md", "expected_hash": stable_hash("changed\n")}],
+    )
+    req.approval_id = uuid.uuid4()
+    req.task_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="Unapproved files"):
+        GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
+
+
+def test_git_adapter_commit_blocks_stale_artifact_hash(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    commit_initial_file(tmp_path)
+    (tmp_path / "README.md").write_text("changed after approval\n", encoding="utf-8")
+    req = git_request(
+        tmp_path,
+        "commit_approved",
+        message="Apply approved README update",
+        approved_artifacts=[{"path": "README.md", "expected_hash": stable_hash("approved content\n")}],
+    )
+    req.approval_id = uuid.uuid4()
+    req.task_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="hash changed"):
+        GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
+
+
+def test_git_adapter_commit_requires_task_linkage(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    commit_initial_file(tmp_path)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    req = git_request(
+        tmp_path,
+        "commit_approved",
+        message="Apply approved README update",
+        approved_artifacts=[{"path": "README.md", "expected_hash": stable_hash("changed\n")}],
+    )
+    req.approval_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="task_id"):
+        GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
 
 
 def test_git_adapter_rejects_unsafe_branch_names(tmp_path: Path) -> None:
