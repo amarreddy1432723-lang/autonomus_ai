@@ -92,6 +92,10 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "product.view",
         "product.requirement.create",
         "product.experiment.create",
+        "automation.view",
+        "automation.trigger.create",
+        "automation.template.create",
+        "automation.execute",
     }
 )
 

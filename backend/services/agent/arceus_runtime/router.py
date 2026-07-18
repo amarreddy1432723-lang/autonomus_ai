@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from .approvals.routes import router as approvals_router
 from .artifacts.routes import router as artifacts_router
 from .audit.routes import router as audit_router
+from .automation.routes import router as automation_router
 from .api.responses import handle_domain_error
 from .application.errors import DomainError
 from .capabilities.routes import router as capabilities_router
@@ -34,6 +35,7 @@ from .workspaces.routes import router as workspaces_router
 def install_arceus_runtime(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, handle_domain_error)
     app.include_router(missions_router)
+    app.include_router(automation_router)
     app.include_router(events_router)
     app.include_router(execution_router)
     app.include_router(approvals_router)

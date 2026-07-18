@@ -11,6 +11,7 @@ from services.agent.arceus_runtime.application.errors import TaskStateConflict
 from services.agent.arceus_runtime.application.unit_of_work import DecisionRepository, TaskRepository, UsageRepository
 from services.agent.arceus_runtime.approvals.service import quorum_satisfied, resolve_approval_if_ready
 from services.agent.arceus_runtime.audit.routes import _replay_event_response
+from services.agent.arceus_runtime.automation.service import automation_dashboard, create_trigger, evaluate_automation_policy, execute_automation, infer_risk, list_organizations
 from services.agent.arceus_runtime.capabilities.routes import _capability_response
 from services.agent.arceus_runtime.constitution.service import evaluate_constitution, evaluate_evolution_change, evaluate_fitness, evaluate_lesson_promotion, list_rules
 from services.agent.arceus_runtime.events.routes import sse_event, sse_heartbeat
@@ -186,6 +187,13 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/product/releases", "GET") in routes
     assert ("/api/v1/product/metrics", "GET") in routes
     assert ("/api/v1/product/dashboard", "GET") in routes
+    assert ("/api/v1/automation/triggers", "POST") in routes
+    assert ("/api/v1/automation/missions", "GET") in routes
+    assert ("/api/v1/automation/templates", "POST") in routes
+    assert ("/api/v1/automation/templates", "GET") in routes
+    assert ("/api/v1/automation/organizations", "GET") in routes
+    assert ("/api/v1/automation/execute", "POST") in routes
+    assert ("/api/v1/automation/dashboard", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -561,6 +569,80 @@ def test_product_dashboard_combines_metrics_recommendations_and_roadmap() -> Non
     assert dashboard["opportunities"]
     assert dashboard["roadmap"]
     assert "generate_prd_for_top_opportunity" in dashboard["recommendations"]
+
+
+def test_automation_risk_inference_flags_production_incidents() -> None:
+    assert infer_risk("database latency incident in production") == "critical"
+    assert infer_risk("weekly report generation") == "low"
+
+
+def test_automation_policy_blocks_high_risk_without_autonomy_or_approval() -> None:
+    policy = evaluate_automation_policy(
+        autonomy_level="L2",
+        risk_level="high",
+        dry_run=False,
+        template={"approval_gates": ["production_change_approval"], "rollback_required": True},
+    )
+
+    assert policy["accepted"] is False
+    assert policy["decision"] == "needs_human_approval"
+    assert "rollback_plan_review" in policy["required_approvals"]
+    assert "security_reviewer" in policy["required_approvals"]
+
+
+def test_automation_trigger_generates_governed_incident_mission() -> None:
+    result = create_trigger(
+        {
+            "trigger_type": "condition",
+            "source": "monitoring",
+            "condition": "database latency > 500ms",
+            "payload": {"metric": "db_latency_ms", "value": 800},
+            "domain": "devops",
+            "mission_template": "incident_response",
+            "autonomy_level": "L2",
+            "dry_run": True,
+        }
+    )
+
+    assert result["accepted"] is True
+    assert result["generated_mission"]["mission_id"].startswith("auto_msn_")
+    assert "MISSION_GENERATED" in result["events"]
+    assert "Database Specialist" in result["generated_mission"]["required_specialists"]
+
+
+def test_automation_execution_uses_connector_plan_and_policy_events() -> None:
+    result = execute_automation(
+        {
+            "objective": "Deploy release to production",
+            "domain": "engineering",
+            "template_key": "release",
+            "autonomy_level": "L2",
+            "risk_level": "high",
+            "dry_run": False,
+            "connector_keys": ["github", "ci_cd"],
+        }
+    )
+
+    assert result["accepted"] is False
+    assert result["status"] == "blocked_by_policy"
+    assert "POLICY_BLOCKED" in result["audit_events"]
+    assert result["connector_plan"][0]["connector_id"] == "github"
+
+
+def test_automation_organizations_have_domain_specific_policies() -> None:
+    organizations = {item["domain"]: item for item in list_organizations()}
+
+    assert "cybersecurity" in organizations
+    assert "no_secret_exfiltration" in organizations["cybersecurity"]["policies"]
+    assert organizations["finance"]["autonomy_ceiling"] == "L1"
+
+
+def test_automation_dashboard_surfaces_policy_visibility() -> None:
+    dashboard = automation_dashboard()
+
+    assert dashboard["active_missions"] >= 1
+    assert dashboard["policy_violations"] >= 1
+    assert "review_high_risk_automation_approval_queue" in dashboard["recommendations"]
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:
