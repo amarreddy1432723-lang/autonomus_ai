@@ -85,6 +85,10 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "reasoning.view",
         "evolution.simulate",
         "evolution.propose",
+        "knowledge.view",
+        "knowledge.search",
+        "knowledge.index",
+        "knowledge.impact",
     }
 )
 

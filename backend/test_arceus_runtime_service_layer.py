@@ -18,6 +18,7 @@ from services.agent.arceus_runtime.gateway.api_schemas import ToolExecutionReque
 from services.agent.arceus_runtime.gateway.routes import _tool_execution_evidence
 from services.agent.arceus_runtime.execution_traces.routes import _model_execution_response
 from services.agent.arceus_runtime.health.routes import classify_runtime_health
+from services.agent.arceus_runtime.knowledge.service import analyze_impact, index_repository, search_graph, should_index_path
 from services.agent.arceus_runtime.missions.api_schemas import CreateMissionRequest
 from services.agent.arceus_runtime.missions.domain import transition_mission
 from services.agent.arceus_runtime.operations.service import calculate_slo_posture, classify_queue_health, classify_worker_pool, operation_guard
@@ -171,6 +172,11 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/reasoning/{reasoning_id}", "GET") in routes
     assert ("/api/v1/evolution/simulate", "POST") in routes
     assert ("/api/v1/evolution/propose", "POST") in routes
+    assert ("/api/v1/knowledge/search", "GET") in routes
+    assert ("/api/v1/knowledge/node/{node_id}", "GET") in routes
+    assert ("/api/v1/knowledge/graph", "GET") in routes
+    assert ("/api/v1/knowledge/index", "POST") in routes
+    assert ("/api/v1/knowledge/impact", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -365,6 +371,93 @@ def test_organization_fitness_detects_delivery_bottlenecks() -> None:
 
     assert result["status"] == "needs_attention"
     assert "dead_letter_events" in result["bottlenecks"]
+
+
+def test_knowledge_index_extracts_repository_nodes_edges_and_apis() -> None:
+    result = index_repository(
+        {
+            "repository_id": "repo-1",
+            "repository_name": "Acme Platform",
+            "files": [
+                {
+                    "path": "backend/services/users.py",
+                    "language": "python",
+                    "content": "from db import Session\n@router.get('/api/v1/users')\ndef list_users():\n    pass\nclass UserService:\n    pass\n",
+                },
+                {
+                    "path": "README.md",
+                    "language": "markdown",
+                    "content": "# Acme Platform\nArchitecture decision records live here.",
+                },
+            ],
+        }
+    )
+
+    node_names = {node["name"] for node in result["nodes"]}
+    edge_types = {edge["relationship"] for edge in result["edges"]}
+
+    assert result["node_count"] >= 7
+    assert "GET /api/v1/users" in node_names
+    assert "UserService" in node_names
+    assert "IMPLEMENTS" in edge_types
+    assert result["ontology_counts"]["Architecture"] >= 1
+    assert result["events"] == ["REPOSITORY_INDEXED", "GRAPH_UPDATED"]
+
+
+def test_knowledge_index_ignores_generated_dependency_folders() -> None:
+    assert should_index_path("src/app/page.tsx") is True
+    assert should_index_path("node_modules/react/index.js") is False
+    assert should_index_path(".git/config") is False
+
+
+def test_knowledge_search_combines_keyword_and_graph_adjacency() -> None:
+    graph = index_repository(
+        {
+            "repository_id": "repo-2",
+            "repository_name": "Auth Repo",
+            "files": [
+                {
+                    "path": "src/auth.ts",
+                    "language": "typescript",
+                    "content": "import Redis from 'redis';\nexport function loginUser() { return true }\n",
+                }
+            ],
+        }
+    )
+
+    result = search_graph("redis auth", graph=graph)
+
+    assert result["strategy"] == ["keyword", "graph_adjacency", "confidence_ranking"]
+    assert result["results"]
+    assert any(edge["relationship"] == "DEPENDS_ON" for edge in result["related_edges"])
+
+
+def test_knowledge_impact_adds_api_and_database_verification_steps() -> None:
+    graph = index_repository(
+        {
+            "repository_id": "repo-3",
+            "repository_name": "User Repo",
+            "files": [
+                {
+                    "path": "api/users.py",
+                    "language": "python",
+                    "content": "@router.patch('/api/v1/users/{id}')\ndef update_user():\n    pass\n",
+                },
+                {
+                    "path": "migrations/001_users.sql",
+                    "language": "sql",
+                    "content": "CREATE TABLE users (id uuid primary key, email text);",
+                },
+            ],
+        }
+    )
+
+    result = analyze_impact("users", graph=graph)
+
+    assert result["risk_level"] == "high"
+    assert "run_api_contract_tests" in result["verification_plan"]
+    assert "verify_database_migration" in result["verification_plan"]
+    assert "prepare_forward_and_rollback_database_migration" in result["migration_notes"]
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:
