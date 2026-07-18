@@ -5,10 +5,12 @@ import pytest
 
 from services.agent.arceus_runtime.gateway.adapters import DeterministicLocalAdapter, OpenAICompatibleAdapter
 from services.agent.arceus_runtime.gateway.api_schemas import AIExecutionRequest, ToolExecutionRequest
+from services.agent.arceus_runtime.gateway.budgeting import budget_status, remaining_budget
+from services.agent.arceus_runtime.gateway.health import record_provider_failure, record_provider_success
 from services.agent.arceus_runtime.gateway.prompting import compile_prompt, select_context_items
 from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request
 from services.agent.arceus_runtime.gateway.validation import scan_output_for_sensitive_material, validate_model_output
-from services.shared.arceus_core_models import ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
+from services.shared.arceus_core_models import ArceusBudget, ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
 
 
 TENANT_ID = uuid.uuid4()
@@ -281,3 +283,35 @@ def test_openai_compatible_adapter_rejects_inline_secret_profiles() -> None:
 
     assert result["status"] == "misconfigured"
     assert "inline secret" in result["reason"]
+
+
+def test_budget_status_tracks_remaining_warning_and_exhaustion() -> None:
+    active = ArceusBudget(limit_amount=Decimal("10"), reserved_amount=Decimal("1"), actual_amount=Decimal("2"), warning_threshold_percent=80)
+    warning = ArceusBudget(limit_amount=Decimal("10"), reserved_amount=Decimal("4"), actual_amount=Decimal("4"), warning_threshold_percent=80)
+    exhausted = ArceusBudget(limit_amount=Decimal("10"), reserved_amount=Decimal("5"), actual_amount=Decimal("5"), warning_threshold_percent=80)
+
+    assert remaining_budget(active) == Decimal("7")
+    assert budget_status(active) == "active"
+    assert budget_status(warning) == "warning"
+    assert budget_status(exhausted) == "exhausted"
+
+
+def test_provider_health_opens_circuit_for_auth_failures_and_recovers_on_success() -> None:
+    item = provider("openai")
+
+    record_provider_failure(item, "Provider credentials are not configured.")
+    assert item.health_status == "misconfigured"
+    assert item.circuit_state == "open"
+
+    record_provider_success(item)
+    assert item.health_status == "healthy"
+    assert item.circuit_state == "closed"
+
+
+def test_provider_health_half_opens_for_transient_failure() -> None:
+    item = provider("openai")
+
+    record_provider_failure(item, "timeout while contacting provider")
+
+    assert item.health_status == "degraded"
+    assert item.circuit_state == "half_open"

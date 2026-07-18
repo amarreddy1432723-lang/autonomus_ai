@@ -38,6 +38,8 @@ from .api_schemas import (
     ToolProfileResponse,
 )
 from .adapters import adapter_for
+from .budgeting import BudgetExceededError, release_budget, reserve_budget, settle_budget
+from .health import record_provider_failure, record_provider_success
 from .prompting import compile_prompt
 from .service import authorize_tool, execution_request_hash, route_model_request, stable_hash
 from .validation import validate_model_output
@@ -340,10 +342,32 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
     if provider is None or selected_model is None:
         raise HTTPException(status_code=409, detail={"code": "ROUTED_PROFILE_MISSING", "provider_key": decision.selected_provider_key, "model_key": decision.selected_model_key})
     try:
+        reservation = reserve_budget(
+            db=db,
+            tenant_id=context.tenant_id,
+            mission_id=payload.mission_id,
+            task_id=payload.task_id,
+            amount=Decimal(decision.estimated_cost_usd or 0),
+            idempotency_key=f"ai:{payload.idempotency_key}:budget",
+        )
+    except BudgetExceededError as exc:
+        db.commit()
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "BUDGET_EXCEEDED",
+                "budget_id": str(exc.budget_id),
+                "requested": str(exc.requested),
+                "remaining": str(exc.remaining),
+            },
+        )
+    try:
         compiled_prompt = compile_prompt(request=payload, model=selected_model, routing=decision)
         provider_response = adapter_for(provider).generate(provider=provider, model=selected_model, prompt=compiled_prompt, request=payload)
         validation = validate_model_output(provider_response.output, payload.required_output_schema)
     except Exception as exc:
+        release_budget(db=db, reservation=reservation)
+        record_provider_failure(provider, str(exc))
         ledger = ArceusAIExecutionLedger(
             tenant_id=context.tenant_id,
             mission_id=payload.mission_id,
@@ -357,6 +381,7 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
             status="failed",
             estimated_cost=decision.estimated_cost_usd,
             routing_decision_id=decision.id,
+            cost_reservation_id=reservation.id if reservation is not None else None,
             completed_at=datetime.now(timezone.utc),
             error={"code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)},
         )
@@ -366,6 +391,9 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
     output = validation.normalized_output
     response_hash = provider_response.response_hash
     status = "completed" if validation.status == "valid" else "failed"
+    settle_budget(db=db, reservation=reservation, actual_amount=Decimal(provider_response.cost_usd or 0))
+    if validation.status == "valid":
+        record_provider_success(provider)
     ledger = ArceusAIExecutionLedger(
         tenant_id=context.tenant_id,
         mission_id=payload.mission_id,
@@ -385,6 +413,7 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
         actual_cost=provider_response.cost_usd,
         latency_ms=provider_response.latency_ms,
         routing_decision_id=decision.id,
+        cost_reservation_id=reservation.id if reservation is not None else None,
         completed_at=datetime.now(timezone.utc),
         result={
             "normalized_output": output,
