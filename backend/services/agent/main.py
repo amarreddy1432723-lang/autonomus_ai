@@ -27,7 +27,10 @@ from .deps import get_current_user_id, parse_vault_key, require_entitlement_or_4
 from .routes_admin import router as admin_router
 from .routes_billing import router as billing_router
 from .routes_public import router as public_router
+from .routes_os_kernel import router as os_kernel_router
+from .arceus_runtime.router import install_arceus_runtime
 from .orchestration import router as orchestration_router
+from .intelligence_routes import router as intelligence_router
 from .schemas import (
     MemoryCreate,
     MemoryExtractRequest,
@@ -74,9 +77,12 @@ register_error_handlers(app)
 app.include_router(terminal_router)
 app.include_router(lsp_router)
 app.include_router(public_router)
+app.include_router(os_kernel_router)
 app.include_router(billing_router)
 app.include_router(admin_router)
 app.include_router(orchestration_router)
+app.include_router(intelligence_router)
+install_arceus_runtime(app)
 
 class ChatMessage(BaseModel):
     role: str # "user", "assistant"

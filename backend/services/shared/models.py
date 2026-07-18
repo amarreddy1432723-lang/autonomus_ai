@@ -48,6 +48,7 @@ class User(Base):
     weekly_reflections = relationship("WeeklyReflection", back_populates="user", cascade="all, delete-orphan")
     devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
     entitlements = relationship("ProductEntitlement", back_populates="user", cascade="all, delete-orphan")
+    navigator_sessions = relationship("ProjectNavigatorSession", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserSession(Base):
@@ -244,6 +245,205 @@ class CodeProjectDecision(Base):
     rationale = Column(Text, default="")
     payload = Column(JSON, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class IntelligenceTask(Base):
+    __tablename__ = "intelligence_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="SET NULL"), nullable=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=True)
+    created_by = Column(UUID(as_uuid=True), nullable=True)
+    title = Column(String(255), nullable=False)
+    raw_request = Column(Text, nullable=False)
+    normalized_objective = Column(Text, default="")
+    task_type = Column(String(80), default="engineering")
+    planning_depth = Column(String(50), default="standard")
+    risk_level = Column(String(50), default="low")
+    priority = Column(String(50), default="normal")
+    status = Column(String(50), default="created")
+    budget_limit = Column(Float, nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    requirements = relationship("TaskRequirement", back_populates="task", cascade="all, delete-orphan")
+    plans = relationship("ExecutionPlan", back_populates="task", cascade="all, delete-orphan")
+    agent_executions = relationship("AgentExecution", back_populates="task", cascade="all, delete-orphan")
+    evidence_records = relationship("EvidenceRecord", back_populates="task", cascade="all, delete-orphan")
+    review_decisions = relationship("ReviewDecision", back_populates="task", cascade="all, delete-orphan")
+    founder_approvals = relationship("FounderApproval", back_populates="task", cascade="all, delete-orphan")
+
+
+class TaskRequirement(Base):
+    __tablename__ = "task_requirements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    requirement_type = Column(String(80), default="functional")
+    description = Column(Text, nullable=False)
+    source = Column(String(80), default="intake")
+    confidence = Column(Float, default=0.7)
+    requires_confirmation = Column(Boolean, default=False)
+    status = Column(String(50), default="open")
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("IntelligenceTask", back_populates="requirements")
+
+
+class ExecutionPlan(Base):
+    __tablename__ = "execution_plans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, default=1)
+    summary = Column(Text, default="")
+    architecture_option = Column(String(120), default="default")
+    estimated_cost = Column(Float, default=0.0)
+    estimated_duration = Column(String(120), default="unknown")
+    risk_score = Column(Float, default=0.0)
+    status = Column(String(50), default="draft")
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    task = relationship("IntelligenceTask", back_populates="plans")
+    steps = relationship("PlanStep", back_populates="plan", cascade="all, delete-orphan")
+    review_decisions = relationship("ReviewDecision", back_populates="plan", cascade="all, delete-orphan")
+    founder_approvals = relationship("FounderApproval", back_populates="plan", cascade="all, delete-orphan")
+
+
+class PlanStep(Base):
+    __tablename__ = "plan_steps"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("execution_plans.id", ondelete="CASCADE"), nullable=False)
+    parent_step_id = Column(UUID(as_uuid=True), ForeignKey("plan_steps.id", ondelete="SET NULL"), nullable=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, default="")
+    assigned_role = Column(String(80), default="agent")
+    dependency_ids = Column(JSON, default=list)
+    owned_paths = Column(JSON, default=list)
+    acceptance_criteria = Column(JSON, default=list)
+    status = Column(String(50), default="planned")
+    order_index = Column(Integer, default=0)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    plan = relationship("ExecutionPlan", back_populates="steps")
+    parent = relationship("PlanStep", remote_side=[id])
+
+
+class AgentInstance(Base):
+    __tablename__ = "agent_instances"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=True)
+    role = Column(String(80), nullable=False)
+    model_provider = Column(String(80), nullable=True)
+    model_name = Column(String(160), nullable=True)
+    capability_profile = Column(JSON, default=dict)
+    status = Column(String(50), default="available")
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentExecution(Base):
+    __tablename__ = "agent_executions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    plan_step_id = Column(UUID(as_uuid=True), ForeignKey("plan_steps.id", ondelete="SET NULL"), nullable=True)
+    agent_instance_id = Column(UUID(as_uuid=True), ForeignKey("agent_instances.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(50), default="queued")
+    attempt_number = Column(Integer, default=1)
+    input_summary = Column(Text, default="")
+    output_summary = Column(Text, default="")
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    task = relationship("IntelligenceTask", back_populates="agent_executions")
+    tool_calls = relationship("ToolCall", back_populates="execution", cascade="all, delete-orphan")
+    evidence_records = relationship("EvidenceRecord", back_populates="execution", cascade="all, delete-orphan")
+
+
+class ToolCall(Base):
+    __tablename__ = "tool_calls"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(UUID(as_uuid=True), ForeignKey("agent_executions.id", ondelete="CASCADE"), nullable=False)
+    tool_name = Column(String(120), nullable=False)
+    tool_input = Column(JSON, default=dict)
+    tool_output = Column(JSON, default=dict)
+    status = Column(String(50), default="recorded")
+    duration_ms = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    execution = relationship("AgentExecution", back_populates="tool_calls")
+
+
+class EvidenceRecord(Base):
+    __tablename__ = "evidence_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    execution_id = Column(UUID(as_uuid=True), ForeignKey("agent_executions.id", ondelete="SET NULL"), nullable=True)
+    evidence_type = Column(String(80), nullable=False)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, default="")
+    uri = Column(Text, nullable=True)
+    payload = Column(JSON, default=dict)
+    confidence = Column(Float, default=1.0)
+    created_by = Column(String(100), default="system")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("IntelligenceTask", back_populates="evidence_records")
+    execution = relationship("AgentExecution", back_populates="evidence_records")
+
+
+class ReviewDecision(Base):
+    __tablename__ = "review_decisions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("execution_plans.id", ondelete="SET NULL"), nullable=True)
+    decision_type = Column(String(80), nullable=False)
+    status = Column(String(50), default="pending")
+    rationale = Column(Text, default="")
+    decided_by = Column(UUID(as_uuid=True), nullable=True)
+    payload = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+
+    task = relationship("IntelligenceTask", back_populates="review_decisions")
+    plan = relationship("ExecutionPlan", back_populates="review_decisions")
+
+
+class FounderApproval(Base):
+    __tablename__ = "founder_approvals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("intelligence_tasks.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("execution_plans.id", ondelete="SET NULL"), nullable=True)
+    approval_type = Column(String(80), nullable=False)
+    status = Column(String(50), default="approved")
+    notes = Column(Text, default="")
+    approved_by = Column(UUID(as_uuid=True), nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("IntelligenceTask", back_populates="founder_approvals")
+    plan = relationship("ExecutionPlan", back_populates="founder_approvals")
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -748,6 +948,17 @@ Index("idx_code_projects_user_opened", CodeProject.user_id, CodeProject.last_ope
 Index("idx_code_orchestration_project", CodeProjectOrchestration.project_id, CodeProjectOrchestration.user_id)
 Index("idx_code_proposals_project", CodeSolutionProposal.project_id, CodeSolutionProposal.user_id)
 Index("idx_code_decisions_project", CodeProjectDecision.project_id, CodeProjectDecision.user_id)
+Index("idx_intelligence_tasks_user_status", IntelligenceTask.user_id, IntelligenceTask.status)
+Index("idx_intelligence_tasks_project_created", IntelligenceTask.project_id, IntelligenceTask.created_at)
+Index("idx_task_requirements_task_status", TaskRequirement.task_id, TaskRequirement.status)
+Index("idx_execution_plans_task_version", ExecutionPlan.task_id, ExecutionPlan.version)
+Index("idx_plan_steps_plan_order", PlanStep.plan_id, PlanStep.order_index)
+Index("idx_agent_instances_user_role", AgentInstance.user_id, AgentInstance.role)
+Index("idx_agent_executions_task_status", AgentExecution.task_id, AgentExecution.status)
+Index("idx_tool_calls_execution_created", ToolCall.execution_id, ToolCall.created_at)
+Index("idx_evidence_records_task_created", EvidenceRecord.task_id, EvidenceRecord.created_at)
+Index("idx_review_decisions_task_status", ReviewDecision.task_id, ReviewDecision.status)
+Index("idx_founder_approvals_task_created", FounderApproval.task_id, FounderApproval.created_at)
 Index("idx_agent_jobs_user_created", AgentJob.user_id, AgentJob.created_at)
 Index("idx_agent_jobs_session_created", AgentJob.code_session_id, AgentJob.created_at)
 Index("idx_agent_jobs_user_status", AgentJob.user_id, AgentJob.status)
@@ -913,3 +1124,26 @@ class ProductEntitlement(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="entitlements")
+
+class ProjectNavigatorSession(Base):
+    __tablename__ = "project_navigator_sessions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("code_projects.id", ondelete="CASCADE"), nullable=False)
+    active_objective = Column(String(500), nullable=False)
+    recommended_task = Column(String(500), nullable=False)
+    why_reason = Column(Text, nullable=False)
+    associated_risks = Column(Text)
+    suggested_actions = Column(JSON, default=list)
+    manual_steps = Column(JSON, default=list)
+    automated_prompt = Column(Text, nullable=False)
+    completed_actions = Column(JSON, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="navigator_sessions")
+
+
+# Import the Arceus Core Kernel schema so Alembic sees these tables in
+# Base.metadata without colliding with the legacy product tables above.
+from . import arceus_core_models  # noqa: E402,F401
