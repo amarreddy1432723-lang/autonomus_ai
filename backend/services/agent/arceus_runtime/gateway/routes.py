@@ -37,7 +37,10 @@ from .api_schemas import (
     ToolProfileRequest,
     ToolProfileResponse,
 )
+from .adapters import adapter_for
+from .prompting import compile_prompt
 from .service import authorize_tool, execution_request_hash, route_model_request, stable_hash
+from .validation import validate_model_output
 
 
 router = APIRouter(tags=["gateway"])
@@ -332,39 +335,80 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
         db.add(ledger)
         db.commit()
         raise HTTPException(status_code=409, detail={"code": "NO_POLICY_COMPATIBLE_MODEL", "hard_exclusions": decision.hard_exclusions})
-    output = {"status": "routed", "objective": payload.objective, "model_key": decision.selected_model_key}
-    response_hash = stable_hash(output)
+    provider = db.query(ArceusProviderProfile).filter(ArceusProviderProfile.provider_key == decision.selected_provider_key).first()
+    selected_model = db.query(ArceusModelProfile).filter(ArceusModelProfile.model_key == decision.selected_model_key).first()
+    if provider is None or selected_model is None:
+        raise HTTPException(status_code=409, detail={"code": "ROUTED_PROFILE_MISSING", "provider_key": decision.selected_provider_key, "model_key": decision.selected_model_key})
+    try:
+        compiled_prompt = compile_prompt(request=payload, model=selected_model, routing=decision)
+        provider_response = adapter_for(provider).generate(provider=provider, model=selected_model, prompt=compiled_prompt, request=payload)
+        validation = validate_model_output(provider_response.output, payload.required_output_schema)
+    except Exception as exc:
+        ledger = ArceusAIExecutionLedger(
+            tenant_id=context.tenant_id,
+            mission_id=payload.mission_id,
+            task_id=payload.task_id,
+            execution_kind="model",
+            task_type=payload.task_type,
+            provider_key=decision.selected_provider_key,
+            model_key=decision.selected_model_key,
+            request_hash=execution_request_hash(payload.model_dump(mode="json")),
+            context_hash=None,
+            status="failed",
+            estimated_cost=decision.estimated_cost_usd,
+            routing_decision_id=decision.id,
+            completed_at=datetime.now(timezone.utc),
+            error={"code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)},
+        )
+        db.add(ledger)
+        db.commit()
+        raise HTTPException(status_code=502, detail={"code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)})
+    output = validation.normalized_output
+    response_hash = provider_response.response_hash
+    status = "completed" if validation.status == "valid" else "failed"
     ledger = ArceusAIExecutionLedger(
         tenant_id=context.tenant_id,
         mission_id=payload.mission_id,
         task_id=payload.task_id,
         execution_kind="model",
         task_type=payload.task_type,
-        provider_key=decision.selected_provider_key,
-        model_key=decision.selected_model_key,
+        provider_key=provider_response.provider_key,
+        model_key=provider_response.model_key,
         request_hash=execution_request_hash(payload.model_dump(mode="json")),
+        context_hash=compiled_prompt.content_hash,
         response_hash=response_hash,
-        status="completed",
-        input_tokens=decision.estimated_input_tokens,
-        output_tokens=decision.estimated_output_tokens,
+        status=status,
+        input_tokens=provider_response.input_tokens,
+        output_tokens=provider_response.output_tokens,
+        cached_input_tokens=provider_response.cached_input_tokens,
         estimated_cost=decision.estimated_cost_usd,
-        actual_cost=decision.estimated_cost_usd,
-        latency_ms=decision.estimated_latency_ms,
+        actual_cost=provider_response.cost_usd,
+        latency_ms=provider_response.latency_ms,
         routing_decision_id=decision.id,
         completed_at=datetime.now(timezone.utc),
-        result={"normalized_output": output, "validation_status": "not_applicable", "finish_reason": "gateway_stub"},
+        result={
+            "normalized_output": output,
+            "validation_status": validation.status,
+            "finish_reason": provider_response.finish_reason,
+            "raw_response_reference": provider_response.raw_response_reference,
+            "prompt_hash": compiled_prompt.content_hash,
+            "context_items": len(compiled_prompt.context_items),
+        },
+        error={} if validation.status == "valid" else {"validation_errors": validation.errors},
     )
     db.add(ledger)
     db.commit()
     db.refresh(ledger)
+    if validation.status != "valid":
+        raise HTTPException(status_code=422, detail={"code": "MODEL_OUTPUT_VALIDATION_FAILED", "errors": validation.errors, "execution_id": str(ledger.id)})
     response = ModelExecutionResultResponse(
         execution_id=ledger.id,
         request_id=payload.request_id,
         provider_key=ledger.provider_key,
         model_key=ledger.model_key,
         normalized_output=output,
-        finish_reason="gateway_stub",
-        validation_status="not_applicable",
+        finish_reason=provider_response.finish_reason,
+        validation_status=validation.status,
         input_tokens=ledger.input_tokens,
         output_tokens=ledger.output_tokens,
         cached_input_tokens=ledger.cached_input_tokens,
