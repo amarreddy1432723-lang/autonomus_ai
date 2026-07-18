@@ -24,6 +24,7 @@ from .security.routes import router as security_router
 from .tasks.routes import router as tasks_router
 from .usage.routes import router as usage_router
 from .verification.routes import router as verification_governance_router
+from .workspaces.routes import router as workspaces_router
 
 
 def install_arceus_runtime(app: FastAPI) -> None:
@@ -48,3 +49,4 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.include_router(health_router)
     app.include_router(verification_governance_router)
     app.include_router(security_router)
+    app.include_router(workspaces_router)

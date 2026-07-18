@@ -21,6 +21,7 @@ from services.agent.arceus_runtime.missions.api_schemas import CreateMissionRequ
 from services.agent.arceus_runtime.missions.domain import transition_mission
 from services.agent.arceus_runtime.organizations.routes import _member_response
 from services.agent.arceus_runtime.router import install_arceus_runtime
+from services.agent.arceus_runtime.workspaces.service import repository_fingerprint, workspace_slug, workspace_settings
 from services.agent.arceus_runtime.workers.outbox import MAX_OUTBOX_ATTEMPTS, calculate_backoff_seconds
 from services.shared.arceus_core_models import ArceusAIExecutionLedger, ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusSpecialistProfile, ArceusTask
 
@@ -145,6 +146,13 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/security/audit", "GET") in routes
     assert ("/api/v1/security/incidents", "POST") in routes
     assert ("/api/v1/security/compliance", "GET") in routes
+    assert ("/api/v1/workspaces", "GET") in routes
+    assert ("/api/v1/workspaces", "POST") in routes
+    assert ("/api/v1/workspaces/{workspace_id}/missions", "GET") in routes
+    assert ("/api/v1/workspaces/{workspace_id}/repositories", "POST") in routes
+    assert ("/api/v1/workspaces/{workspace_id}/activity", "GET") in routes
+    assert ("/api/v1/workspaces/{workspace_id}/organization", "GET") in routes
+    assert ("/api/v1/workspaces/{workspace_id}/knowledge", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -153,6 +161,30 @@ def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
 
     assert calculate_request_hash("mission.create", payload_a) == calculate_request_hash("mission.create", payload_b)
     assert calculate_request_hash("mission.create", payload_a) != calculate_request_hash("mission.compile", payload_a)
+
+
+def test_workspace_slug_and_settings_are_desktop_mission_first() -> None:
+    assert workspace_slug("  Arceus Platform / MVP  ") == "arceus-platform-mvp"
+    settings = workspace_settings({"autonomy": "review_first"})
+
+    assert settings["shell"] == "arceus_code"
+    assert settings["primary_navigation"] == "missions"
+    assert "terminal" in settings["desktop_modules"]
+    assert settings["autonomy"] == "review_first"
+
+
+def test_repository_fingerprint_preserves_indexing_metadata() -> None:
+    fingerprint = repository_fingerprint(
+        provider="github",
+        repository_url="https://github.com/acme/platform",
+        local_workspace_path="C:/work/acme",
+        metadata={"languages": ["typescript"], "frameworks": ["nextjs"], "build_systems": ["npm"], "indexed": True},
+    )
+
+    assert fingerprint["provider"] == "github"
+    assert fingerprint["languages"] == ["typescript"]
+    assert fingerprint["frameworks"] == ["nextjs"]
+    assert fingerprint["indexed"] is True
 
 
 def test_create_mission_request_rejects_empty_constraint_items() -> None:

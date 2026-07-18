@@ -72,6 +72,9 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "security.audit.view",
         "security.incident.create",
         "security.compliance.view",
+        "workspace.view",
+        "workspace.create",
+        "workspace.repository.manage",
     }
 )
 
