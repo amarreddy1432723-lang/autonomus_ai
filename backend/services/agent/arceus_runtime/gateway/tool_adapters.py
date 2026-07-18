@@ -4,8 +4,11 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any, Protocol
+
+import httpx
 
 from services.shared.arceus_core_models import ArceusToolProfile
 
@@ -434,6 +437,151 @@ class GitToolAdapter:
         }
 
 
+class GitHubToolAdapter:
+    def __init__(self, client_factory: Any | None = None) -> None:
+        self._client_factory = client_factory or httpx.Client
+
+    def execute(self, *, profile: ArceusToolProfile, request: ToolExecutionRequest) -> ToolExecutionResult:
+        if profile.side_effect_class not in {"READ_ONLY", "EXTERNAL_REVERSIBLE"}:
+            raise ValueError("GitHubToolAdapter only supports read-only or external reversible tools.")
+        started = time.perf_counter()
+        if request.action_key == "open_pull_request":
+            if profile.side_effect_class != "EXTERNAL_REVERSIBLE":
+                raise ValueError("open_pull_request requires an EXTERNAL_REVERSIBLE GitHub profile.")
+            output = self._open_pull_request(request)
+        elif request.action_key == "check_runs":
+            output = self._check_runs(request)
+        else:
+            raise ValueError(f"Unsupported GitHub action: {request.action_key}")
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        evidence = {
+            "tool_key": request.tool_key,
+            "action_key": request.action_key,
+            "side_effect_class": profile.side_effect_class,
+            "dry_run": request.dry_run,
+            "rollback_required": False,
+            "idempotency_key": request.idempotency_key,
+            "approved_commit_sha": output.get("approved_commit_sha"),
+            "pull_request_url": output.get("pull_request_url"),
+        }
+        return ToolExecutionResult(
+            status="completed",
+            output=output,
+            evidence=evidence,
+            latency_ms=latency_ms,
+            output_hash=stable_hash(output),
+        )
+
+    def _token(self, request: ToolExecutionRequest) -> str:
+        if request.arguments.get("token"):
+            raise ValueError("Inline GitHub tokens are not allowed; use token_env or secret_reference_ids.")
+        token_env = str(request.arguments.get("token_env") or "GITHUB_TOKEN")
+        token = os.getenv(token_env, "")
+        if not token:
+            raise ValueError(f"GitHub token environment variable is not configured: {token_env}")
+        return token
+
+    def _repo(self, request: ToolExecutionRequest) -> tuple[str, str]:
+        owner = str(request.arguments.get("owner") or "").strip()
+        repo = str(request.arguments.get("repo") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
+            raise ValueError("GitHub owner and repo are required and must be simple repository identifiers.")
+        return owner, repo
+
+    def _api_request(self, request: ToolExecutionRequest, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if request.dry_run:
+            return {"would_request": method, "path": path, "payload": payload or {}}
+        token = self._token(request)
+        base_url = str(request.arguments.get("github_api_base_url") or "https://api.github.com").rstrip("/")
+        with self._client_factory(timeout=float(request.timeout_seconds)) as client:
+            response = client.request(
+                method,
+                f"{base_url}{path}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Arceus-Code-Gateway/1.0",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json() if response.content else {}
+
+    def _open_pull_request(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        if not request.task_id:
+            raise ValueError("task_id is required for open_pull_request.")
+        if not request.approval_id and not request.dry_run:
+            raise ValueError("approval_id is required for open_pull_request.")
+        owner, repo = self._repo(request)
+        approved_commit_sha = str(request.arguments.get("approved_commit_sha") or "").strip()
+        head = str(request.arguments.get("head") or "").strip()
+        base = str(request.arguments.get("base") or "").strip()
+        title = str(request.arguments.get("title") or "").strip()
+        body = str(request.arguments.get("body") or "").strip()
+        if not re.fullmatch(r"[a-fA-F0-9]{7,40}", approved_commit_sha):
+            raise ValueError("approved_commit_sha is required for open_pull_request.")
+        if not head or not base or not title:
+            raise ValueError("head, base, and title are required for open_pull_request.")
+        evidence_footer = (
+            "\n\n---\n"
+            "Arceus evidence\n"
+            f"- Task: {request.task_id}\n"
+            f"- Approval: {request.approval_id}\n"
+            f"- Approved commit: `{approved_commit_sha}`\n"
+        )
+        payload = {
+            "title": title,
+            "head": head,
+            "base": base,
+            "body": body + evidence_footer,
+            "maintainer_can_modify": True,
+        }
+        response = self._api_request(request, "POST", f"/repos/{owner}/{repo}/pulls", payload)
+        return {
+            "operation": "open_pull_request",
+            "owner": owner,
+            "repo": repo,
+            "head": head,
+            "base": base,
+            "approved_commit_sha": approved_commit_sha,
+            "pull_request_number": response.get("number"),
+            "pull_request_url": response.get("html_url"),
+            "api_url": response.get("url"),
+            "state": response.get("state"),
+        }
+
+    def _check_runs(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        owner, repo = self._repo(request)
+        ref = str(request.arguments.get("ref") or request.arguments.get("approved_commit_sha") or "").strip()
+        if not ref:
+            raise ValueError("ref or approved_commit_sha is required for check_runs.")
+        response = self._api_request(request, "GET", f"/repos/{owner}/{repo}/commits/{ref}/check-runs")
+        runs = []
+        for item in response.get("check_runs") or []:
+            runs.append(
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "status": item.get("status"),
+                    "conclusion": item.get("conclusion"),
+                    "html_url": item.get("html_url"),
+                }
+            )
+        return {
+            "operation": "check_runs",
+            "owner": owner,
+            "repo": repo,
+            "ref": ref,
+            "total": len(runs),
+            "passed": len([item for item in runs if item.get("conclusion") == "success"]),
+            "failed": len([item for item in runs if item.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required"}]),
+            "running": len([item for item in runs if item.get("status") in {"queued", "in_progress"}]),
+            "checks": runs,
+        }
+
+
 def adapter_for_tool(profile: ArceusToolProfile) -> ToolAdapter:
     adapter_type = (profile.adapter_type or "").lower()
     if adapter_type in {"shell", "read_only_shell", "search", "filesystem_read"}:
@@ -442,4 +590,6 @@ def adapter_for_tool(profile: ArceusToolProfile) -> ToolAdapter:
         return FilesystemMutationToolAdapter()
     if adapter_type in {"git", "git_adapter"}:
         return GitToolAdapter()
+    if adapter_type in {"github", "github_app", "github_pr"}:
+        return GitHubToolAdapter()
     raise ValueError(f"Unsupported tool adapter: {profile.adapter_type}")

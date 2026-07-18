@@ -1,4 +1,5 @@
 import uuid
+import json
 from decimal import Decimal
 from pathlib import Path
 import shutil
@@ -13,7 +14,7 @@ from services.agent.arceus_runtime.gateway.budgeting import budget_status, remai
 from services.agent.arceus_runtime.gateway.health import record_provider_failure, record_provider_success
 from services.agent.arceus_runtime.gateway.prompting import compile_prompt, select_context_items
 from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request, stable_hash
-from services.agent.arceus_runtime.gateway.tool_adapters import GitToolAdapter, FilesystemMutationToolAdapter, ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
+from services.agent.arceus_runtime.gateway.tool_adapters import GitHubToolAdapter, GitToolAdapter, FilesystemMutationToolAdapter, ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
 from services.agent.arceus_runtime.gateway.validation import scan_output_for_sensitive_material, validate_model_output
 from services.shared.arceus_core_models import ArceusBudget, ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
 
@@ -761,3 +762,124 @@ def test_git_adapter_rejects_unsafe_branch_names(tmp_path: Path) -> None:
 
 def test_git_adapter_factory_resolves_git_profiles() -> None:
     assert isinstance(adapter_for_tool(git_tool()), GitToolAdapter)
+
+
+def github_tool(*, side_effect_class: str = "EXTERNAL_REVERSIBLE") -> ArceusToolProfile:
+    return ArceusToolProfile(
+        tool_key="github",
+        display_name="GitHub",
+        adapter_type="github_pr",
+        version="1",
+        capabilities=["github_pull_request", "github_checks"],
+        supported_actions=["open_pull_request", "check_runs"],
+        risk_level="medium" if side_effect_class != "READ_ONLY" else "low",
+        side_effect_class=side_effect_class,
+        requires_sandbox=False,
+        supports_dry_run=True,
+        supports_idempotency=True,
+        supports_rollback=False,
+        allowed_environments=["local"],
+        maximum_runtime_seconds=30,
+        enabled=True,
+    )
+
+
+def github_request(action: str, **arguments) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        mission_id=MISSION_ID,
+        task_id=uuid.uuid4(),
+        tool_key="github",
+        action_key=action,
+        arguments={"owner": "acme", "repo": "platform", **arguments},
+        environment="local",
+        timeout_seconds=10,
+        dry_run=False,
+        approval_id=uuid.uuid4(),
+        idempotency_key=f"github-{action}",
+    )
+
+
+def test_github_pr_creation_requires_approval_before_authorization() -> None:
+    req = github_request("open_pull_request", approved_commit_sha="abcdef1234567", head="arceus/change", base="main", title="Update")
+    req.approval_id = None
+
+    authorized, reasons = authorize_tool(github_tool(), req)
+
+    assert authorized is False
+    assert "approval_required_for_side_effect" in reasons
+
+
+def test_github_adapter_opens_pr_with_approved_commit_evidence(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    seen: dict[str, Any] = {}
+
+    def handler(request_: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request_.url)
+        seen["authorization"] = request_.headers.get("authorization")
+        payload = json.loads(request_.content.decode("utf-8"))
+        seen["body"] = payload["body"]
+        return httpx.Response(201, json={"number": 42, "html_url": "https://github.com/acme/platform/pull/42", "url": "https://api.github.com/repos/acme/platform/pulls/42", "state": "open"})
+
+    def client_factory(**kwargs):
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    req = github_request(
+        "open_pull_request",
+        approved_commit_sha="abcdef1234567890",
+        head="arceus/change",
+        base="main",
+        title="Apply approved change",
+        body="Work receipt summary",
+    )
+
+    result = GitHubToolAdapter(client_factory=client_factory).execute(profile=github_tool(), request=req)
+
+    assert seen["url"] == "https://api.github.com/repos/acme/platform/pulls"
+    assert seen["authorization"] == "Bearer test-token"
+    assert "Approved commit: `abcdef1234567890`" in seen["body"]
+    assert result.output["pull_request_number"] == 42
+    assert result.output["pull_request_url"] == "https://github.com/acme/platform/pull/42"
+    assert result.evidence["approved_commit_sha"] == "abcdef1234567890"
+    assert result.evidence["pull_request_url"] == "https://github.com/acme/platform/pull/42"
+
+
+def test_github_adapter_summarizes_check_runs(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    def handler(request_: httpx.Request) -> httpx.Response:
+        assert str(request_.url) == "https://api.github.com/repos/acme/platform/commits/abcdef1234567890/check-runs"
+        return httpx.Response(
+            200,
+            json={
+                "check_runs": [
+                    {"id": 1, "name": "build", "status": "completed", "conclusion": "success", "html_url": "https://github.com/checks/1"},
+                    {"id": 2, "name": "test", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/checks/2"},
+                    {"id": 3, "name": "lint", "status": "in_progress", "conclusion": None, "html_url": "https://github.com/checks/3"},
+                ]
+            },
+        )
+
+    def client_factory(**kwargs):
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    req = github_request("check_runs", ref="abcdef1234567890")
+    req.approval_id = None
+
+    result = GitHubToolAdapter(client_factory=client_factory).execute(profile=github_tool(side_effect_class="READ_ONLY"), request=req)
+
+    assert result.output["total"] == 3
+    assert result.output["passed"] == 1
+    assert result.output["failed"] == 1
+    assert result.output["running"] == 1
+
+
+def test_github_adapter_rejects_inline_tokens() -> None:
+    req = github_request("check_runs", ref="abcdef1234567890", token="ghp_secret")
+    req.approval_id = None
+
+    with pytest.raises(ValueError, match="Inline GitHub tokens"):
+        GitHubToolAdapter().execute(profile=github_tool(side_effect_class="READ_ONLY"), request=req)
+
+
+def test_github_adapter_factory_resolves_github_profiles() -> None:
+    assert isinstance(adapter_for_tool(github_tool()), GitHubToolAdapter)
