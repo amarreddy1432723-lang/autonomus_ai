@@ -23,6 +23,7 @@ from services.agent.arceus_runtime.missions.api_schemas import CreateMissionRequ
 from services.agent.arceus_runtime.missions.domain import transition_mission
 from services.agent.arceus_runtime.operations.service import calculate_slo_posture, classify_queue_health, classify_worker_pool, operation_guard
 from services.agent.arceus_runtime.organizations.routes import _member_response
+from services.agent.arceus_runtime.product.service import build_roadmap, create_experiment, discover_opportunities, generate_requirement, product_dashboard
 from services.agent.arceus_runtime.router import install_arceus_runtime
 from services.agent.arceus_runtime.workspaces.service import repository_fingerprint, workspace_slug, workspace_settings
 from services.agent.arceus_runtime.workers.outbox import MAX_OUTBOX_ATTEMPTS, calculate_backoff_seconds
@@ -177,6 +178,14 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/knowledge/graph", "GET") in routes
     assert ("/api/v1/knowledge/index", "POST") in routes
     assert ("/api/v1/knowledge/impact", "GET") in routes
+    assert ("/api/v1/product/opportunities", "GET") in routes
+    assert ("/api/v1/product/roadmap", "GET") in routes
+    assert ("/api/v1/product/requirements", "POST") in routes
+    assert ("/api/v1/product/personas", "GET") in routes
+    assert ("/api/v1/product/experiments", "POST") in routes
+    assert ("/api/v1/product/releases", "GET") in routes
+    assert ("/api/v1/product/metrics", "GET") in routes
+    assert ("/api/v1/product/dashboard", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -458,6 +467,100 @@ def test_knowledge_impact_adds_api_and_database_verification_steps() -> None:
     assert "run_api_contract_tests" in result["verification_plan"]
     assert "verify_database_migration" in result["verification_plan"]
     assert "prepare_forward_and_rollback_database_migration" in result["migration_notes"]
+
+
+def test_product_opportunity_scoring_prioritizes_enterprise_sso() -> None:
+    opportunities = discover_opportunities(
+        [
+            {
+                "signal_type": "customer",
+                "source": "feedback",
+                "theme": "sso",
+                "summary": "Enterprise teams need Azure AD SSO.",
+                "count": 100,
+                "severity": 5,
+                "revenue_usd": 125000,
+                "customer_segment": "enterprise",
+            },
+            {
+                "signal_type": "customer",
+                "source": "feedback",
+                "theme": "themes",
+                "summary": "A few users asked for extra colors.",
+                "count": 3,
+                "severity": 1,
+                "revenue_usd": 0,
+            },
+        ]
+    )
+
+    assert opportunities[0]["theme"] == "sso"
+    assert opportunities[0]["recommended_action"] == "generate_prd"
+    assert opportunities[0]["horizon"] == "now"
+
+
+def test_product_requirement_generation_links_prd_to_engineering_mission_seed() -> None:
+    prd = generate_requirement(
+        {
+            "title": "Azure AD SSO",
+            "business_problem": "Enterprise deals are blocked without SSO.",
+            "user_problem": "Admins cannot enforce identity policy.",
+            "signals": [
+                {
+                    "signal_type": "customer",
+                    "source": "sales",
+                    "theme": "sso",
+                    "summary": "Requested by enterprise buyer.",
+                    "count": 50,
+                    "severity": 5,
+                    "revenue_usd": 80000,
+                    "customer_segment": "enterprise",
+                }
+            ],
+        }
+    )
+
+    assert prd["requirement_id"].startswith("prd_")
+    assert "feature adoption" in prd["success_metrics"]
+    assert prd["mission_seed"]["mission_type"] == "product_requirement_implementation"
+    assert "architecture_review" in prd["mission_seed"]["approval_gates"]
+
+
+def test_product_roadmap_links_opportunities_to_release_candidates() -> None:
+    opportunities = discover_opportunities()
+    roadmap = build_roadmap(opportunities)
+
+    assert roadmap
+    assert roadmap[0]["linked_opportunity_id"] == opportunities[0]["opportunity_id"]
+    assert roadmap[0]["engineering_mission"]["source"] == "product_roadmap"
+
+
+def test_product_experiment_requires_governance_for_large_rollout() -> None:
+    experiment = create_experiment(
+        {
+            "hypothesis": "Passkeys increase activation.",
+            "variants": ["control", "passkeys"],
+            "metrics": ["activation", "user sign in success"],
+            "success_threshold": 0.12,
+            "rollout": 0.75,
+            "duration_days": 21,
+            "owner": "growth",
+        }
+    )
+
+    assert experiment["status"] == "approval_required"
+    assert experiment["governance"]["requires_business_review"] is True
+    assert experiment["governance"]["requires_privacy_review"] is True
+
+
+def test_product_dashboard_combines_metrics_recommendations_and_roadmap() -> None:
+    dashboard = product_dashboard()
+
+    assert dashboard["product_health"] == "healthy"
+    assert dashboard["metrics"]["arr"] == dashboard["metrics"]["mrr"] * 12
+    assert dashboard["opportunities"]
+    assert dashboard["roadmap"]
+    assert "generate_prd_for_top_opportunity" in dashboard["recommendations"]
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:

@@ -89,6 +89,9 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "knowledge.search",
         "knowledge.index",
         "knowledge.impact",
+        "product.view",
+        "product.requirement.create",
+        "product.experiment.create",
     }
 )
 
