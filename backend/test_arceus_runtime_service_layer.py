@@ -19,6 +19,7 @@ from services.agent.arceus_runtime.execution_traces.routes import _model_executi
 from services.agent.arceus_runtime.health.routes import classify_runtime_health
 from services.agent.arceus_runtime.missions.api_schemas import CreateMissionRequest
 from services.agent.arceus_runtime.missions.domain import transition_mission
+from services.agent.arceus_runtime.operations.service import calculate_slo_posture, classify_queue_health, classify_worker_pool, operation_guard
 from services.agent.arceus_runtime.organizations.routes import _member_response
 from services.agent.arceus_runtime.router import install_arceus_runtime
 from services.agent.arceus_runtime.workspaces.service import repository_fingerprint, workspace_slug, workspace_settings
@@ -153,6 +154,13 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/workspaces/{workspace_id}/activity", "GET") in routes
     assert ("/api/v1/workspaces/{workspace_id}/organization", "GET") in routes
     assert ("/api/v1/workspaces/{workspace_id}/knowledge", "GET") in routes
+    assert ("/api/v1/operations/health", "GET") in routes
+    assert ("/api/v1/operations/regions", "GET") in routes
+    assert ("/api/v1/operations/workers", "GET") in routes
+    assert ("/api/v1/operations/queues", "GET") in routes
+    assert ("/api/v1/operations/slos", "GET") in routes
+    assert ("/api/v1/operations/failover", "POST") in routes
+    assert ("/api/v1/operations/dr-test", "POST") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -241,6 +249,45 @@ def test_outbox_backoff_is_bounded_and_attempt_policy_is_finite() -> None:
     assert calculate_backoff_seconds(2) == 10
     assert calculate_backoff_seconds(3) == 20
     assert calculate_backoff_seconds(20) == 60
+
+
+def test_operations_queue_health_blocks_on_dead_letters() -> None:
+    health, recommendations = classify_queue_health({"pending": 4, "dead_letter": 1})
+
+    assert health == "blocked"
+    assert "inspect_dead_letter_queue" in recommendations
+
+
+def test_operations_worker_pool_detects_starvation() -> None:
+    status, recommendations = classify_worker_pool(
+        {
+            "task_statuses": {"ready": 3, "running": 0, "blocked": 0, "failed": 0},
+            "active_worker_leases": 0,
+        }
+    )
+
+    assert status == "starved"
+    assert "start_or_scale_workers" in recommendations
+
+
+def test_operations_slo_posture_burns_error_budget_on_queue_blocker() -> None:
+    slos = {item["slo_key"]: item for item in calculate_slo_posture({"outbox_statuses": {"dead_letter": 1}, "task_statuses": {}})}
+
+    assert slos["queue_delivery"]["status"] == "breached"
+    assert "dead_letter_queue" in slos["queue_delivery"]["burn_reasons"]
+    assert slos["mission_state_durability"]["status"] == "met"
+
+
+def test_operations_failover_guard_is_dry_run_only_without_automation() -> None:
+    accepted, reason, approvals = operation_guard(action="failover", dry_run=True)
+    assert accepted is True
+    assert "dry run accepted" in reason
+    assert "sre_lead" in approvals
+
+    accepted, reason, approvals = operation_guard(action="failover", dry_run=False)
+    assert accepted is False
+    assert "requires external infrastructure automation" in reason
+    assert "security_reviewer" in approvals
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:

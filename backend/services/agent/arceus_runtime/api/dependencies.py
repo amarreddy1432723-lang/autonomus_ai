@@ -75,6 +75,8 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "workspace.view",
         "workspace.create",
         "workspace.repository.manage",
+        "operations.view",
+        "operations.manage",
     }
 )
 
