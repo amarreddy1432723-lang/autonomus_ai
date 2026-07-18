@@ -1,5 +1,6 @@
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ from services.agent.arceus_runtime.gateway.budgeting import budget_status, remai
 from services.agent.arceus_runtime.gateway.health import record_provider_failure, record_provider_success
 from services.agent.arceus_runtime.gateway.prompting import compile_prompt, select_context_items
 from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request
+from services.agent.arceus_runtime.gateway.tool_adapters import ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
 from services.agent.arceus_runtime.gateway.validation import scan_output_for_sensitive_material, validate_model_output
 from services.shared.arceus_core_models import ArceusBudget, ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
 
@@ -385,3 +387,90 @@ def test_provider_health_half_opens_for_transient_failure() -> None:
 
     assert item.health_status == "degraded"
     assert item.circuit_state == "half_open"
+
+
+def read_only_tool() -> ArceusToolProfile:
+    return ArceusToolProfile(
+        tool_key="filesystem",
+        display_name="Filesystem Read",
+        adapter_type="filesystem_read",
+        version="1",
+        capabilities=["repository_search", "file_read"],
+        supported_actions=["search", "list", "read"],
+        risk_level="low",
+        side_effect_class="READ_ONLY",
+        requires_sandbox=False,
+        supports_dry_run=True,
+        supports_idempotency=True,
+        supports_rollback=False,
+        allowed_environments=["local"],
+        maximum_runtime_seconds=30,
+        enabled=True,
+    )
+
+
+def tool_request(tmp_path: Path, action: str, **arguments) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        mission_id=MISSION_ID,
+        tool_key="filesystem",
+        action_key=action,
+        arguments={"workspace_root": str(tmp_path), **arguments},
+        environment="local",
+        timeout_seconds=10,
+        dry_run=False,
+        idempotency_key=f"tool-{action}",
+    )
+
+
+def test_read_only_tool_adapter_reads_files_with_secret_redaction(tmp_path: Path) -> None:
+    target = tmp_path / "config.txt"
+    target.write_text("token=supersecretvalue\nhello", encoding="utf-8")
+
+    result = ReadOnlyShellToolAdapter().execute(profile=read_only_tool(), request=tool_request(tmp_path, "read", path="config.txt"))
+
+    assert result.status == "completed"
+    assert "token=[REDACTED]" in result.output["content"]
+    assert "supersecretvalue" not in result.output["content"]
+    assert result.output_hash.startswith("sha256:")
+    assert result.evidence["side_effect_class"] == "READ_ONLY"
+
+
+def test_read_only_tool_adapter_lists_workspace_entries(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+
+    result = ReadOnlyShellToolAdapter().execute(profile=read_only_tool(), request=tool_request(tmp_path, "list", path="."))
+
+    names = [item["name"] for item in result.output["entries"]]
+    assert "src" in names
+    assert "README.md" in names
+
+
+def test_read_only_tool_adapter_dry_run_does_not_touch_files(tmp_path: Path) -> None:
+    req = tool_request(tmp_path, "read", path="missing.txt")
+    req.dry_run = True
+
+    result = ReadOnlyShellToolAdapter().execute(profile=read_only_tool(), request=req)
+
+    assert result.output["would_read"].endswith("missing.txt")
+    assert result.evidence["dry_run"] is True
+
+
+def test_read_only_tool_adapter_blocks_path_escape(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="escapes"):
+        resolve_workspace_path(str(tmp_path), "..")
+
+
+def test_read_only_tool_redacts_bearer_and_api_keys() -> None:
+    value = redact_output("Bearer abcdefghijklmnopqrstuvwxyz and sk-1234567890abcdef")
+
+    assert "abcdefghijklmnopqrstuvwxyz" not in value
+    assert "sk-1234567890abcdef" not in value
+
+
+def test_tool_adapter_factory_rejects_unknown_adapter() -> None:
+    profile = read_only_tool()
+    profile.adapter_type = "kubernetes"
+
+    with pytest.raises(ValueError, match="Unsupported tool adapter"):
+        adapter_for_tool(profile)

@@ -42,6 +42,7 @@ from .budgeting import BudgetExceededError, release_budget, reserve_budget, sett
 from .health import record_provider_failure, record_provider_success
 from .prompting import compile_prompt
 from .service import authorize_tool, execution_request_hash, route_model_request, stable_hash
+from .tool_adapters import adapter_for_tool
 from .validation import validate_model_output
 
 
@@ -529,6 +530,16 @@ def execute_tool_request(payload: ToolExecutionRequest, request: Request, contex
     SqlAlchemyUnitOfWork(db).missions.get(tenant_id=context.tenant_id, mission_id=payload.mission_id)
     profile = db.query(ArceusToolProfile).filter(ArceusToolProfile.tool_key == payload.tool_key).first()
     authorized, reasons = authorize_tool(profile, payload)
+    result = None
+    execution_error: dict[str, object] = {}
+    status = "denied"
+    if authorized and profile is not None:
+        try:
+            result = adapter_for_tool(profile).execute(profile=profile, request=payload)
+            status = result.status
+        except Exception as exc:
+            status = "failed"
+            execution_error = {"code": "TOOL_EXECUTION_FAILED", "message": str(exc)}
     ledger = ArceusAIExecutionLedger(
         tenant_id=context.tenant_id,
         mission_id=payload.mission_id,
@@ -538,16 +549,26 @@ def execute_tool_request(payload: ToolExecutionRequest, request: Request, contex
         tool_key=payload.tool_key,
         action_key=payload.action_key,
         request_hash=execution_request_hash(payload.model_dump(mode="json")),
-        status="completed" if authorized else "denied",
+        response_hash=result.output_hash if result is not None else None,
+        status=status,
+        latency_ms=result.latency_ms if result is not None else None,
         completed_at=datetime.now(timezone.utc) if authorized else None,
-        result={"dry_run": payload.dry_run, "authorized": authorized, "expected_outputs": payload.expected_outputs},
-        error={} if authorized else {"denial_reasons": reasons},
+        result={
+            "dry_run": payload.dry_run,
+            "authorized": authorized,
+            "expected_outputs": payload.expected_outputs,
+            "output": result.output if result is not None else None,
+            "evidence": result.evidence if result is not None else None,
+        },
+        error=execution_error if execution_error else ({} if authorized else {"denial_reasons": reasons}),
     )
     db.add(ledger)
     db.commit()
     db.refresh(ledger)
     if not authorized:
         raise HTTPException(status_code=403, detail={"code": "TOOL_AUTHORIZATION_DENIED", "reasons": reasons, "execution_id": str(ledger.id)})
+    if status == "failed":
+        raise HTTPException(status_code=502, detail={"code": "TOOL_EXECUTION_FAILED", "error": execution_error, "execution_id": str(ledger.id)})
     return api_response(_ledger_response(ledger).model_dump(mode="json"), request)
 
 
