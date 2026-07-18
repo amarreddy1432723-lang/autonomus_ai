@@ -13,6 +13,8 @@ from services.agent.arceus_runtime.approvals.service import quorum_satisfied, re
 from services.agent.arceus_runtime.audit.routes import _replay_event_response
 from services.agent.arceus_runtime.capabilities.routes import _capability_response
 from services.agent.arceus_runtime.events.routes import sse_event, sse_heartbeat
+from services.agent.arceus_runtime.gateway.api_schemas import ToolExecutionRequest
+from services.agent.arceus_runtime.gateway.routes import _tool_execution_evidence
 from services.agent.arceus_runtime.execution_traces.routes import _model_execution_response
 from services.agent.arceus_runtime.health.routes import classify_runtime_health
 from services.agent.arceus_runtime.missions.api_schemas import CreateMissionRequest
@@ -20,7 +22,7 @@ from services.agent.arceus_runtime.missions.domain import transition_mission
 from services.agent.arceus_runtime.organizations.routes import _member_response
 from services.agent.arceus_runtime.router import install_arceus_runtime
 from services.agent.arceus_runtime.workers.outbox import MAX_OUTBOX_ATTEMPTS, calculate_backoff_seconds
-from services.shared.arceus_core_models import ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusSpecialistProfile, ArceusTask
+from services.shared.arceus_core_models import ArceusAIExecutionLedger, ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusSpecialistProfile, ArceusTask
 
 
 def test_runtime_installs_spec_mission_routes() -> None:
@@ -233,6 +235,85 @@ def test_ai_vote_does_not_satisfy_human_required_quorum() -> None:
     )
 
     assert quorum_satisfied(approval, [ai_vote]) is False
+
+
+def test_tool_execution_evidence_records_gateway_provenance() -> None:
+    tenant_id = uuid.uuid4()
+    mission_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    approval_id = uuid.uuid4()
+    payload = ToolExecutionRequest(
+        mission_id=mission_id,
+        task_id=task_id,
+        tool_key="github",
+        action_key="open_pull_request",
+        arguments={},
+        environment="local",
+        timeout_seconds=30,
+        dry_run=False,
+        approval_id=approval_id,
+        idempotency_key="github-open-pr",
+    )
+    ledger = ArceusAIExecutionLedger(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        mission_id=mission_id,
+        task_id=task_id,
+        execution_kind="tool",
+        task_type="tool_execution",
+        tool_key="github",
+        action_key="open_pull_request",
+        status="completed",
+        response_hash="sha256:response",
+        result={
+            "output": {
+                "pull_request_url": "https://github.com/acme/platform/pull/42",
+                "approved_commit_sha": "abcdef1234567890",
+            },
+            "evidence": {
+                "approved_commit_sha": "abcdef1234567890",
+                "pull_request_url": "https://github.com/acme/platform/pull/42",
+            },
+        },
+    )
+
+    evidence = _tool_execution_evidence(tenant_id=tenant_id, payload=payload, ledger=ledger)
+
+    assert evidence is not None
+    assert evidence.evidence_type == "tool_github_open_pull_request"
+    assert evidence.status == "validated"
+    assert evidence.trust_level == "tool_verified"
+    assert evidence.verification_method == "gateway_tool:github.open_pull_request"
+    assert evidence.payload["execution_ledger_id"] == str(ledger.id)
+    assert evidence.payload["approval_id"] == str(approval_id)
+    assert evidence.payload["pull_request_url"] == "https://github.com/acme/platform/pull/42"
+    assert evidence.content_hash.startswith("sha256:")
+
+
+def test_tool_execution_evidence_skips_dry_run() -> None:
+    payload = ToolExecutionRequest(
+        mission_id=uuid.uuid4(),
+        tool_key="git",
+        action_key="status",
+        arguments={},
+        environment="local",
+        timeout_seconds=30,
+        dry_run=True,
+        idempotency_key="git-status",
+    )
+    ledger = ArceusAIExecutionLedger(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        mission_id=payload.mission_id,
+        execution_kind="tool",
+        task_type="tool_execution",
+        tool_key="git",
+        action_key="status",
+        status="completed",
+        result={"evidence": {"side_effect_class": "READ_ONLY"}},
+    )
+
+    assert _tool_execution_evidence(tenant_id=ledger.tenant_id, payload=payload, ledger=ledger) is None
 
 
 def test_human_plan_approval_moves_mission_to_ready() -> None:

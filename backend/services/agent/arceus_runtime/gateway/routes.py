@@ -11,6 +11,7 @@ from services.shared.arceus_core_models import (
     ArceusAIExecutionLedger,
     ArceusBudget,
     ArceusCostReservation,
+    ArceusEvidence,
     ArceusModelProfile,
     ArceusProviderProfile,
     ArceusRoutingDecision,
@@ -168,6 +169,50 @@ def _ledger_response(item: ArceusAIExecutionLedger) -> ExecutionLedgerResponse:
         result=item.result or {},
         error=item.error or {},
         created_at=item.created_at,
+    )
+
+
+def _tool_execution_evidence(*, tenant_id: UUID, payload: ToolExecutionRequest, ledger: ArceusAIExecutionLedger) -> ArceusEvidence | None:
+    if payload.dry_run or ledger.status != "completed":
+        return None
+    result = ledger.result or {}
+    adapter_evidence = result.get("evidence") or {}
+    if not adapter_evidence:
+        return None
+    evidence_payload = {
+        "execution_ledger_id": str(ledger.id),
+        "tool_key": payload.tool_key,
+        "action_key": payload.action_key,
+        "task_id": str(payload.task_id) if payload.task_id else None,
+        "approval_id": str(payload.approval_id) if payload.approval_id else None,
+        "idempotency_key": payload.idempotency_key,
+        "output_hash": ledger.response_hash,
+        "adapter_evidence": adapter_evidence,
+    }
+    output = result.get("output") or {}
+    if isinstance(output, dict):
+        for key in ("commit_sha", "pull_request_url", "pull_request_number", "approved_commit_sha", "total", "passed", "failed", "running"):
+            if key in output:
+                evidence_payload[key] = output.get(key)
+    evidence_type = f"tool_{payload.tool_key}_{payload.action_key}".replace("-", "_")
+    summary = f"Tool {payload.tool_key}.{payload.action_key} completed"
+    if evidence_payload.get("pull_request_url"):
+        summary += f": {evidence_payload['pull_request_url']}"
+    elif evidence_payload.get("commit_sha"):
+        summary += f": {evidence_payload['commit_sha']}"
+    content_hash = stable_hash(evidence_payload)
+    return ArceusEvidence(
+        tenant_id=tenant_id,
+        mission_id=payload.mission_id,
+        task_id=payload.task_id,
+        evidence_type=evidence_type,
+        status="validated",
+        summary=summary,
+        payload=evidence_payload,
+        verification_method=f"gateway_tool:{payload.tool_key}.{payload.action_key}",
+        content_hash=content_hash,
+        trust_level="tool_verified",
+        immutable=True,
     )
 
 
@@ -563,6 +608,10 @@ def execute_tool_request(payload: ToolExecutionRequest, request: Request, contex
         error=execution_error if execution_error else ({} if authorized else {"denial_reasons": reasons}),
     )
     db.add(ledger)
+    db.flush()
+    evidence = _tool_execution_evidence(tenant_id=context.tenant_id, payload=payload, ledger=ledger)
+    if evidence is not None:
+        db.add(evidence)
     db.commit()
     db.refresh(ledger)
     if not authorized:
