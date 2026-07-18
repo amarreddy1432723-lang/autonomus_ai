@@ -2,7 +2,7 @@
 LLM Router — Centralized provider-agnostic model selector.
 
 Configure in .env:
-  LLM_PROVIDER         = autonomus | openai | anthropic | google | groq | ollama | custom | mock
+  LLM_PROVIDER         = autonomus | openai | anthropic | google | groq | mistral | openrouter | ollama | custom | mock
   LLM_MODEL            = autonomus-ai-v1 | gpt-4o-mini | claude-3-5-haiku-20241022 | etc.
 
 Per-role overrides (optional — fallback to LLM_MODEL if unset):
@@ -173,6 +173,27 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
                 temperature=0.2,
             )
 
+        # ── Mistral (Devstral / Magistral / Mistral models) ─────
+        elif provider == "mistral":
+            from langchain_mistralai import ChatMistralAI
+            mistral_key = getattr(settings, "MISTRAL_API_KEY", "")
+            primary_llm = ChatMistralAI(
+                model=model or "devstral-2512",
+                mistral_api_key=mistral_key,
+                temperature=0.2,
+            )
+
+        # ── OpenRouter (unified marketplace, OpenAI-compatible) ──
+        elif provider == "openrouter":
+            from langchain_openai import ChatOpenAI
+            openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "")
+            primary_llm = ChatOpenAI(
+                model=model or "openai/gpt-5.6-terra",
+                base_url="https://openrouter.ai/api/v1",
+                api_key=openrouter_key,
+                temperature=0.2,
+            )
+
         # ── Ollama (local self-hosted) ────────────────────────────
         elif provider == "ollama":
             from langchain_ollama import ChatOllama
@@ -235,6 +256,18 @@ def get_chat_llm(role: str = "default", provider: str | None = None, model: str 
             fallbacks.append(ChatGroq(
                 model="llama-3.1-8b-instant",
                 groq_api_key=settings.GROQ_API_KEY,
+                temperature=0.2,
+            ))
+        except Exception:
+            pass
+
+    # 4. Local Ollama fallback for private desktop coding when available
+    if provider != "ollama":
+        try:
+            from langchain_ollama import ChatOllama
+            fallbacks.append(ChatOllama(
+                model="qwen2.5-coder:7b",
+                base_url=getattr(settings, "OLLAMA_BASE_URL", "http://localhost:11434"),
                 temperature=0.2,
             ))
         except Exception:

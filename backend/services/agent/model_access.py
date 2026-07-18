@@ -54,6 +54,18 @@ MODEL_PROVIDERS: dict[str, dict[str, Any]] = {
         "supports_byok": True,
         "supports_zero_retention_contract": False,
     },
+    "mistral": {
+        "label": "Mistral AI",
+        "env_key": "MISTRAL_API_KEY",
+        "supports_byok": True,
+        "supports_zero_retention_contract": True,
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "env_key": "OPENROUTER_API_KEY",
+        "supports_byok": True,
+        "supports_zero_retention_contract": False,
+    },
     "custom": {
         "label": "Custom OpenAI-compatible",
         "env_key": "LLM_API_KEY",
@@ -150,6 +162,8 @@ def _recommended_use(provider: str) -> list[str]:
         "anthropic": ["large codebase reasoning", "review", "complex edits"],
         "google": ["long context", "low-cost fast answers", "multimodal later"],
         "groq": ["low-latency chat", "quick interview answers", "cheap extraction"],
+        "mistral": ["Devstral coding", "Magistral reasoning", "European provider option"],
+        "openrouter": ["model marketplace routing", "provider experiments", "fallback access"],
         "custom": ["hosted Autonomus AI", "vLLM/LM Studio compatible deployments"],
         "autonomus": ["first-party NEXUS identity", "fine-tuned product behavior"],
         "arceus_local": ["private local coding", "offline development", "no API charges"],
@@ -164,6 +178,8 @@ def resolve_model_access_mode(db: Session, user_id: UUID, provider: str | None, 
         normalized = "google"
     if normalized == "nexus":
         normalized = "autonomus"
+    if normalized == "mistralai":
+        normalized = "mistral"
     if normalized == "arceus_local":
         normalized = "ollama"
     if normalized == "arceus_cloud":

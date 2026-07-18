@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     AGENT_PORT: int = int(os.getenv("AGENT_PORT", "8003"))
 
     # ── LLM Provider ──────────────────────────────────────────
-    # Supported: autonomus | openai | anthropic | google | groq | ollama | custom | mock
+    # Supported: autonomus | openai | anthropic | google | groq | mistral | openrouter | ollama | custom | mock
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
     # Model name for the selected provider (e.g. autonomus-ai-v1, gpt-4o-mini)
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")      # for Claude models
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")         # for Gemini chat + embeddings
     GROQ_API_KEY: Optional[str] = os.getenv("GROQ_API_KEY")           # for Groq hosted inference
+    MISTRAL_API_KEY: Optional[str] = os.getenv("MISTRAL_API_KEY")       # for Mistral / Devstral / Magistral
+    OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY") # optional unified model marketplace
     SERPER_API_KEY: str = os.getenv("SERPER_API_KEY", "mock-serper-key-for-local-dev-only")
     GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN")
     GITHUB_APP_ID: Optional[str] = os.getenv("GITHUB_APP_ID")

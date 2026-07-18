@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.runnables import RunnableConfig
 
 from .llm_router import get_chat_llm
+from .intelligence_core import arceus_system_prompt
 from .memory_agent import retrieve_context
 from .tools import live_news, web_search, read_file, memory_read, fetch_educational_media
 from services.shared.security import sanitize_tool_output, wrap_input_xml, sanitize_user_input
@@ -225,7 +226,8 @@ def reasoning_node(state: AgentState, config: RunnableConfig) -> dict:
 
 
     system_prompt = (
-        "You are Autonomus AI, the user's unified personal AI model and learning agent.\n"
+        f"{arceus_system_prompt('chat')}\n\n"
+        "You are the user's unified Arceus intelligence surface and learning agent.\n"
         f"Active User ID: {state.get('user_id')}\n"
         f"Classified Intent: {state.get('intent')}\n\n"
     )

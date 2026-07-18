@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from .intelligence_core import arceus_system_prompt
 from .llm_router import get_chat_llm
 
 
@@ -162,7 +163,8 @@ def blended_answer(prompt: str, context: str, task_type: str, config: NexusLLMCo
     selected = choose_model_for_task(task_type or classify_task_type(prompt))
     primary_config = config or NexusLLMConfig(selected["provider"], selected["model"])
     system = (
-        "You are Arceus AI. Answer with senior-level judgment, direct human language, and practical next steps. "
+        f"{arceus_system_prompt('chat')}\n\n"
+        "Answer with senior-level judgment, direct human language, and practical next steps. "
         "Use the provided context when relevant. Avoid hype, filler, and unsupported claims."
     )
     answer = _invoke_structured(system, f"Request:\n{prompt}\n\nContext:\n{context[:24000]}", primary_config)
@@ -216,7 +218,8 @@ def memory_transparency_summary(memories: list[Any]) -> dict[str, Any]:
 
 def generate_code_task(kind: str, instruction: str, context: str, config: NexusLLMConfig) -> dict[str, Any]:
     system = (
-        "You are Arceus Code Engine. Return practical, production-ready engineering output. "
+        f"{arceus_system_prompt('code')}\n\n"
+        "Return practical, production-ready engineering output. "
         "For generation and refactors, include a concise plan and unified diff-style patches. "
         "For debugging, identify root cause, fix, and tests. For code execution requests, do not claim execution unless logs are provided."
     )
@@ -233,7 +236,7 @@ def generate_code_task(kind: str, instruction: str, context: str, config: NexusL
 
 def explain_code(instruction: str, context: str, config: NexusLLMConfig) -> dict[str, Any]:
     content = _invoke_structured(
-        "You are Arceus Code Explainer. Explain code in clear human language with key risks and next steps.",
+        f"{arceus_system_prompt('code')}\n\nExplain code in clear human language with key risks and next steps.",
         f"Explain request:\n{instruction}\n\nCode context:\n{context[:30000]}",
         config,
     )

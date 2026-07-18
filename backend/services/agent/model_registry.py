@@ -19,62 +19,150 @@ from services.shared.models import ModelPerformanceLog
 
 
 MODEL_REGISTRY: dict[str, dict[str, Any]] = {
-    "nexus-reasoning": {
-        "primary": {"provider": "openai", "model": "gpt-4o"},
+    "arceus-codex": {
+        "primary": {"provider": "openai", "model": "gpt-5.6-sol"},
         "fallback": [
-            {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
-            {"provider": "google", "model": "gemini-2.5-flash"},
-            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+            {"provider": "anthropic", "model": "claude-opus-4-8"},
+            {"provider": "anthropic", "model": "claude-sonnet-5"},
+            {"provider": "google", "model": "gemini-3.5-flash"},
+            {"provider": "mistral", "model": "devstral-2512"},
+            {"provider": "ollama", "model": "qwen2.5-coder:7b"},
         ],
-        "capabilities": ["reasoning", "planning", "code", "analysis", "interview"],
+        "capabilities": ["code_generation", "code_review", "debugging", "refactor", "agentic_coding"],
+        "quality_tier": "frontier",
+        "cost_tier": "premium",
+        "privacy_tier": "provider_cloud",
         "auto_update": True,
     },
-    "nexus-fast": {
-        "primary": {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+    "arceus-reasoning": {
+        "primary": {"provider": "openai", "model": "gpt-5.6-terra"},
         "fallback": [
-            {"provider": "openai", "model": "gpt-4o-mini"},
-            {"provider": "google", "model": "gemini-2.5-flash"},
+            {"provider": "anthropic", "model": "claude-fable-5"},
+            {"provider": "anthropic", "model": "claude-sonnet-5"},
+            {"provider": "google", "model": "gemini-3.1-pro"},
+            {"provider": "mistral", "model": "magistral-medium-2509"},
         ],
-        "capabilities": ["chat", "quick_answer", "extraction", "scheduling"],
+        "capabilities": ["reasoning", "planning", "analysis", "architecture", "interview"],
+        "quality_tier": "frontier",
+        "cost_tier": "balanced",
+        "privacy_tier": "provider_cloud",
+        "auto_update": True,
+    },
+    "arceus-fast": {
+        "primary": {"provider": "openai", "model": "gpt-5.6-luna"},
+        "fallback": [
+            {"provider": "anthropic", "model": "claude-haiku-4-5"},
+            {"provider": "google", "model": "gemini-3.1-flash-lite"},
+            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+            {"provider": "ollama", "model": "llama3.1:8b"},
+        ],
+        "capabilities": ["chat", "quick_answer", "extraction", "scheduling", "summarization"],
+        "quality_tier": "standard",
+        "cost_tier": "efficient",
+        "privacy_tier": "hybrid",
+        "auto_update": True,
+    },
+    "arceus-local-code": {
+        "primary": {"provider": "ollama", "model": "qwen2.5-coder:7b"},
+        "fallback": [
+            {"provider": "ollama", "model": "deepseek-coder-v2:16b"},
+            {"provider": "ollama", "model": "codellama:13b"},
+        ],
+        "capabilities": ["private_code_generation", "offline_debugging", "local_refactor"],
+        "quality_tier": "local",
+        "cost_tier": "free_local",
+        "privacy_tier": "local",
+        "auto_update": False,
+    },
+    "arceus-creative": {
+        "primary": {"provider": "anthropic", "model": "claude-sonnet-5"},
+        "fallback": [
+            {"provider": "openai", "model": "gpt-5.6-terra"},
+            {"provider": "google", "model": "gemini-3.5-flash"},
+        ],
+        "capabilities": ["design", "writing", "ui_generation", "product_copy"],
+        "quality_tier": "frontier",
+        "cost_tier": "balanced",
+        "privacy_tier": "provider_cloud",
+        "auto_update": True,
+    },
+    "arceus-embedding": {
+        "primary": {"provider": "openai", "model": "text-embedding-3-small"},
+        "fallback": [
+            {"provider": "google", "model": "text-embedding-004"},
+            {"provider": "ollama", "model": "nomic-embed-text"},
+        ],
+        "capabilities": ["embedding", "semantic_search", "memory_retrieval"],
+        "quality_tier": "standard",
+        "cost_tier": "efficient",
+        "privacy_tier": "hybrid",
+        "auto_update": True,
+    },
+    # Backward-compatible aliases used by existing frontend and stored settings.
+    "nexus-code": {
+        "alias_of": "arceus-codex",
+        "primary": {"provider": "openai", "model": "gpt-5.6-sol"},
+        "fallback": [],
+        "capabilities": ["code_generation"],
         "auto_update": True,
     },
     "Arceus-Code": {
-        "primary": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
-        "fallback": [
-            {"provider": "openai", "model": "gpt-4o"},
-            {"provider": "google", "model": "gemini-2.5-pro"},
-        ],
-        "capabilities": ["code_generation", "code_review", "debugging"],
+        "alias_of": "arceus-codex",
+        "primary": {"provider": "openai", "model": "gpt-5.6-sol"},
+        "fallback": [],
+        "capabilities": ["code_generation"],
+        "auto_update": True,
+    },
+    "nexus-reasoning": {
+        "alias_of": "arceus-reasoning",
+        "primary": {"provider": "openai", "model": "gpt-5.6-terra"},
+        "fallback": [],
+        "capabilities": ["reasoning"],
+        "auto_update": True,
+    },
+    "nexus-fast": {
+        "alias_of": "arceus-fast",
+        "primary": {"provider": "openai", "model": "gpt-5.6-luna"},
+        "fallback": [],
+        "capabilities": ["chat"],
         "auto_update": True,
     },
     "nexus-creative": {
-        "primary": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
-        "fallback": [{"provider": "openai", "model": "gpt-4o"}],
-        "capabilities": ["design", "writing", "ui_generation"],
+        "alias_of": "arceus-creative",
+        "primary": {"provider": "anthropic", "model": "claude-sonnet-5"},
+        "fallback": [],
+        "capabilities": ["design"],
         "auto_update": True,
     },
     "nexus-embedding": {
+        "alias_of": "arceus-embedding",
         "primary": {"provider": "openai", "model": "text-embedding-3-small"},
-        "fallback": [{"provider": "google", "model": "text-embedding-004"}],
-        "capabilities": ["embedding", "semantic_search"],
+        "fallback": [],
+        "capabilities": ["embedding"],
         "auto_update": True,
     },
 }
 
 
 TASK_ROUTER: dict[str, str] = {
-    "chat": "nexus-fast",
-    "code_generation": "Arceus-Code",
-    "code_review": "Arceus-Code",
-    "debugging": "Arceus-Code",
-    "planning": "nexus-reasoning",
-    "design": "nexus-creative",
-    "interview": "nexus-reasoning",
-    "research": "nexus-reasoning",
-    "extraction": "nexus-fast",
-    "scheduling": "nexus-fast",
-    "reflection": "nexus-reasoning",
-    "meeting_prep": "nexus-fast",
+    "chat": "arceus-fast",
+    "code_generation": "arceus-codex",
+    "code_review": "arceus-codex",
+    "debugging": "arceus-codex",
+    "refactor": "arceus-codex",
+    "agentic_coding": "arceus-codex",
+    "planning": "arceus-reasoning",
+    "architecture": "arceus-reasoning",
+    "design": "arceus-creative",
+    "interview": "arceus-reasoning",
+    "research": "arceus-reasoning",
+    "extraction": "arceus-fast",
+    "scheduling": "arceus-fast",
+    "reflection": "arceus-reasoning",
+    "meeting_prep": "arceus-fast",
+    "embedding": "arceus-embedding",
+    "semantic_search": "arceus-embedding",
+    "local_code": "arceus-local-code",
 }
 
 
@@ -96,6 +184,9 @@ def model_key_for_task(task_type: str | None) -> str:
 def choose_model(task_type: str | None = None, model_key: str | None = None) -> ModelChoice:
     key = model_key or model_key_for_task(task_type)
     entry = MODEL_REGISTRY.get(key) or MODEL_REGISTRY["nexus-fast"]
+    if entry.get("alias_of"):
+        key = str(entry["alias_of"])
+        entry = MODEL_REGISTRY.get(key) or entry
     selected = entry["primary"]
 
     health = _HEALTH_CACHE.get(key)
@@ -113,9 +204,13 @@ def registry_snapshot() -> dict[str, Any]:
         "task_router": TASK_ROUTER,
         "models": {
             key: {
+                "alias_of": value.get("alias_of"),
                 "primary": value["primary"],
                 "fallback_count": len(value.get("fallback", [])),
                 "capabilities": value.get("capabilities", []),
+                "quality_tier": value.get("quality_tier"),
+                "cost_tier": value.get("cost_tier"),
+                "privacy_tier": value.get("privacy_tier"),
                 "auto_update": bool(value.get("auto_update")),
                 "health": _HEALTH_CACHE.get(key, {"status": "unknown"}),
             }
