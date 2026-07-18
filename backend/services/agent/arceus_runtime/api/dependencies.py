@@ -77,6 +77,14 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "workspace.repository.manage",
         "operations.view",
         "operations.manage",
+        "constitution.view",
+        "constitution.evaluate",
+        "organization.standards.view",
+        "organization.fitness.view",
+        "organization.lesson.propose",
+        "reasoning.view",
+        "evolution.simulate",
+        "evolution.propose",
     }
 )
 

@@ -10,6 +10,7 @@ from .application.errors import DomainError
 from .capabilities.routes import router as capabilities_router
 from .compiler.routes import router as compiler_router
 from .collaboration.routes import router as collaboration_router
+from .constitution.routes import router as constitution_router
 from .decisions.routes import router as decisions_router
 from .evidence.routes import router as evidence_router
 from .events.routes import router as events_router
@@ -52,3 +53,4 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.include_router(security_router)
     app.include_router(workspaces_router)
     app.include_router(operations_router)
+    app.include_router(constitution_router)

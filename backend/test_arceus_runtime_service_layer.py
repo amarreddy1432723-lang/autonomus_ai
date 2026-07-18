@@ -12,6 +12,7 @@ from services.agent.arceus_runtime.application.unit_of_work import DecisionRepos
 from services.agent.arceus_runtime.approvals.service import quorum_satisfied, resolve_approval_if_ready
 from services.agent.arceus_runtime.audit.routes import _replay_event_response
 from services.agent.arceus_runtime.capabilities.routes import _capability_response
+from services.agent.arceus_runtime.constitution.service import evaluate_constitution, evaluate_evolution_change, evaluate_fitness, evaluate_lesson_promotion, list_rules
 from services.agent.arceus_runtime.events.routes import sse_event, sse_heartbeat
 from services.agent.arceus_runtime.gateway.api_schemas import ToolExecutionRequest
 from services.agent.arceus_runtime.gateway.routes import _tool_execution_evidence
@@ -161,6 +162,15 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/operations/slos", "GET") in routes
     assert ("/api/v1/operations/failover", "POST") in routes
     assert ("/api/v1/operations/dr-test", "POST") in routes
+    assert ("/api/v1/constitution", "GET") in routes
+    assert ("/api/v1/constitution/rules", "GET") in routes
+    assert ("/api/v1/constitution/evaluate", "POST") in routes
+    assert ("/api/v1/organization/standards", "GET") in routes
+    assert ("/api/v1/organization/fitness", "GET") in routes
+    assert ("/api/v1/organization/lessons", "POST") in routes
+    assert ("/api/v1/reasoning/{reasoning_id}", "GET") in routes
+    assert ("/api/v1/evolution/simulate", "POST") in routes
+    assert ("/api/v1/evolution/propose", "POST") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -288,6 +298,73 @@ def test_operations_failover_guard_is_dry_run_only_without_automation() -> None:
     assert accepted is False
     assert "requires external infrastructure automation" in reason
     assert "security_reviewer" in approvals
+
+
+def test_constitution_catalog_contains_absolute_human_authority() -> None:
+    rules = {rule.rule_id: rule for rule in list_rules()}
+
+    assert rules["human_authority"].enforcement_level == "absolute"
+    assert rules["safety_before_speed"].priority == 100
+
+
+def test_constitution_blocks_high_confidence_without_evidence() -> None:
+    result = evaluate_constitution(
+        action_type="decision",
+        objective="Choose authentication architecture",
+        evidence_ids=[],
+        constraints=[],
+        alternatives=["OAuth", "Magic links"],
+        selected_alternative="OAuth",
+        risks=[],
+        confidence=0.9,
+    )
+
+    assert result["decision"] == "needs_revision"
+    assert result["blockers"][0]["rule_id"] == "evidence_before_confidence"
+
+
+def test_constitution_denies_irreversible_human_authority_action() -> None:
+    result = evaluate_constitution(
+        action_type="deployment",
+        objective="Deploy production auth service",
+        evidence_ids=[uuid.uuid4()],
+        constraints=[],
+        alternatives=["Canary"],
+        selected_alternative="Canary",
+        risks=[],
+        confidence=0.8,
+        irreversible=True,
+    )
+
+    assert result["decision"] == "deny"
+    assert any(blocker["rule_id"] == "human_authority" for blocker in result["blockers"])
+
+
+def test_lesson_promotion_requires_evidence() -> None:
+    result = evaluate_lesson_promotion(evidence_ids=[], proposed_scope="organization")
+
+    assert result["promotion_allowed"] is False
+    assert result["status"] == "provisional"
+
+
+def test_evolution_cannot_remove_human_approvals() -> None:
+    result = evaluate_evolution_change(changes={"remove_human_approvals": True}, dry_run=True)
+
+    assert result["accepted"] is False
+    assert "remove_human_approvals" in result["blocked_changes"]
+
+
+def test_organization_fitness_detects_delivery_bottlenecks() -> None:
+    result = evaluate_fitness(
+        {
+            "task_statuses": {"failed": 1, "blocked": 1},
+            "approval_statuses": {"pending": 2},
+            "outbox_statuses": {"dead_letter": 1},
+        }
+    )
+
+    assert result["status"] == "needs_attention"
+    assert "dead_letter_events" in result["bottlenecks"]
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:
