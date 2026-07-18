@@ -10,8 +10,8 @@ from services.agent.arceus_runtime.gateway.api_schemas import AIExecutionRequest
 from services.agent.arceus_runtime.gateway.budgeting import budget_status, remaining_budget
 from services.agent.arceus_runtime.gateway.health import record_provider_failure, record_provider_success
 from services.agent.arceus_runtime.gateway.prompting import compile_prompt, select_context_items
-from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request
-from services.agent.arceus_runtime.gateway.tool_adapters import ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
+from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request, stable_hash
+from services.agent.arceus_runtime.gateway.tool_adapters import FilesystemMutationToolAdapter, ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
 from services.agent.arceus_runtime.gateway.validation import scan_output_for_sensitive_material, validate_model_output
 from services.shared.arceus_core_models import ArceusBudget, ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
 
@@ -474,3 +474,95 @@ def test_tool_adapter_factory_rejects_unknown_adapter() -> None:
 
     with pytest.raises(ValueError, match="Unsupported tool adapter"):
         adapter_for_tool(profile)
+
+
+def mutation_tool() -> ArceusToolProfile:
+    return ArceusToolProfile(
+        tool_key="filesystem-write",
+        display_name="Filesystem Write",
+        adapter_type="filesystem_mutation",
+        version="1",
+        capabilities=["file_write"],
+        supported_actions=["create_file", "modify_file", "mkdir"],
+        risk_level="medium",
+        side_effect_class="LOCAL_MUTATION",
+        requires_sandbox=True,
+        supports_dry_run=True,
+        supports_idempotency=True,
+        supports_rollback=True,
+        allowed_environments=["local"],
+        maximum_runtime_seconds=30,
+        enabled=True,
+    )
+
+
+def mutation_request(tmp_path: Path, action: str, **arguments) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        mission_id=MISSION_ID,
+        tool_key="filesystem-write",
+        action_key=action,
+        arguments={"workspace_root": str(tmp_path), **arguments},
+        environment="local",
+        timeout_seconds=10,
+        dry_run=False,
+        approval_id=uuid.uuid4(),
+        idempotency_key=f"mutation-{action}",
+    )
+
+
+def test_mutation_tool_requires_approval_before_authorization(tmp_path: Path) -> None:
+    req = mutation_request(tmp_path, "create_file", path="hello.txt", content="hello")
+    req.approval_id = None
+
+    authorized, reasons = authorize_tool(mutation_tool(), req)
+
+    assert authorized is False
+    assert "approval_required_for_side_effect" in reasons
+
+
+def test_filesystem_mutation_creates_file_with_rollback_marker(tmp_path: Path) -> None:
+    req = mutation_request(tmp_path, "create_file", path="hello.txt", content="hello")
+
+    result = FilesystemMutationToolAdapter().execute(profile=mutation_tool(), request=req)
+
+    assert (tmp_path / "hello.txt").read_text(encoding="utf-8") == "hello"
+    assert result.output["operation"] == "create_file"
+    assert result.output["rollback"]["operation"] == "create"
+    assert result.output["rollback"]["existed"] is False
+    assert result.evidence["rollback_required"] is True
+
+
+def test_filesystem_mutation_modifies_file_with_original_content_snapshot(tmp_path: Path) -> None:
+    target = tmp_path / "hello.txt"
+    target.write_text("before", encoding="utf-8")
+    original_hash = stable_hash("before")
+    req = mutation_request(tmp_path, "modify_file", path="hello.txt", content="after", expected_hash=original_hash)
+
+    result = FilesystemMutationToolAdapter().execute(profile=mutation_tool(), request=req)
+
+    assert target.read_text(encoding="utf-8") == "after"
+    assert result.output["rollback"]["original_content"] == "before"
+    assert result.output["rollback"]["original_hash"] == original_hash
+
+
+def test_filesystem_mutation_blocks_stale_hash(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("changed", encoding="utf-8")
+    req = mutation_request(tmp_path, "modify_file", path="hello.txt", content="after", expected_hash="sha256:old")
+
+    with pytest.raises(ValueError, match="hash changed"):
+        FilesystemMutationToolAdapter().execute(profile=mutation_tool(), request=req)
+
+
+def test_filesystem_mutation_dry_run_does_not_write(tmp_path: Path) -> None:
+    req = mutation_request(tmp_path, "create_file", path="dry.txt", content="hello")
+    req.dry_run = True
+
+    result = FilesystemMutationToolAdapter().execute(profile=mutation_tool(), request=req)
+
+    assert not (tmp_path / "dry.txt").exists()
+    assert result.output["would_create"].endswith("dry.txt")
+    assert result.evidence["dry_run"] is True
+
+
+def test_mutation_adapter_factory_resolves_filesystem_write() -> None:
+    assert isinstance(adapter_for_tool(mutation_tool()), FilesystemMutationToolAdapter)

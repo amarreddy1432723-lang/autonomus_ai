@@ -127,8 +127,116 @@ class ReadOnlyShellToolAdapter:
         return {"path": str(path), "content": text, "truncated": path.stat().st_size > max_bytes}
 
 
+class FilesystemMutationToolAdapter:
+    def execute(self, *, profile: ArceusToolProfile, request: ToolExecutionRequest) -> ToolExecutionResult:
+        if profile.side_effect_class not in {"LOCAL_MUTATION", "REPOSITORY_MUTATION"}:
+            raise ValueError("FilesystemMutationToolAdapter only supports local or repository mutations.")
+        started = time.perf_counter()
+        if request.action_key == "create_file":
+            output = self._create_file(request)
+        elif request.action_key == "modify_file":
+            output = self._modify_file(request)
+        elif request.action_key == "mkdir":
+            output = self._mkdir(request)
+        else:
+            raise ValueError(f"Unsupported filesystem mutation action: {request.action_key}")
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        evidence = {
+            "tool_key": request.tool_key,
+            "action_key": request.action_key,
+            "side_effect_class": profile.side_effect_class,
+            "dry_run": request.dry_run,
+            "rollback_required": True,
+            "rollback": output.get("rollback"),
+            "idempotency_key": request.idempotency_key,
+        }
+        return ToolExecutionResult(
+            status="completed",
+            output=output,
+            evidence=evidence,
+            latency_ms=latency_ms,
+            output_hash=stable_hash(output),
+        )
+
+    def _workspace_and_path(self, request: ToolExecutionRequest) -> tuple[Path, Path]:
+        workspace_root = request.arguments.get("workspace_root")
+        if not workspace_root:
+            raise ValueError("workspace_root is required for filesystem mutation.")
+        relative_path = str(request.arguments.get("path") or "")
+        if not relative_path:
+            raise ValueError("path is required for filesystem mutation.")
+        root = Path(str(workspace_root)).expanduser().resolve()
+        return root, resolve_workspace_path(str(root), relative_path)
+
+    def _existing_file_snapshot(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {"operation": "create", "existed": False, "path": str(path)}
+        if not path.is_file():
+            raise ValueError("Path exists and is not a file.")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        return {
+            "operation": "modify",
+            "existed": True,
+            "path": str(path),
+            "original_content": content,
+            "original_hash": stable_hash(content),
+        }
+
+    def _create_file(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        _, path = self._workspace_and_path(request)
+        content = str(request.arguments.get("content") or "")
+        overwrite = bool(request.arguments.get("overwrite", False))
+        rollback = self._existing_file_snapshot(path)
+        if rollback["existed"] and not overwrite:
+            raise ValueError("File already exists; set overwrite=true to replace it.")
+        if request.dry_run:
+            return {"would_create": str(path), "bytes": len(content.encode("utf-8")), "rollback": rollback}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return {
+            "path": str(path),
+            "operation": "create_file",
+            "bytes": len(content.encode("utf-8")),
+            "content_hash": stable_hash(content),
+            "rollback": rollback,
+        }
+
+    def _modify_file(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        _, path = self._workspace_and_path(request)
+        content = str(request.arguments.get("content") or "")
+        rollback = self._existing_file_snapshot(path)
+        if not rollback["existed"]:
+            raise ValueError("File does not exist; use create_file for new files.")
+        expected_hash = request.arguments.get("expected_hash")
+        if expected_hash and rollback.get("original_hash") != expected_hash:
+            raise ValueError("File hash changed since the mutation was prepared.")
+        if request.dry_run:
+            return {"would_modify": str(path), "bytes": len(content.encode("utf-8")), "rollback": rollback}
+        path.write_text(content, encoding="utf-8")
+        return {
+            "path": str(path),
+            "operation": "modify_file",
+            "bytes": len(content.encode("utf-8")),
+            "content_hash": stable_hash(content),
+            "rollback": rollback,
+        }
+
+    def _mkdir(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        _, path = self._workspace_and_path(request)
+        existed = path.exists()
+        if existed and not path.is_dir():
+            raise ValueError("Path exists and is not a directory.")
+        rollback = {"operation": "mkdir", "existed": existed, "path": str(path)}
+        if request.dry_run:
+            return {"would_mkdir": str(path), "rollback": rollback}
+        path.mkdir(parents=True, exist_ok=True)
+        return {"path": str(path), "operation": "mkdir", "rollback": rollback}
+
+
 def adapter_for_tool(profile: ArceusToolProfile) -> ToolAdapter:
     adapter_type = (profile.adapter_type or "").lower()
     if adapter_type in {"shell", "read_only_shell", "search", "filesystem_read"}:
         return ReadOnlyShellToolAdapter()
+    if adapter_type in {"filesystem_mutation", "filesystem_write"}:
+        return FilesystemMutationToolAdapter()
     raise ValueError(f"Unsupported tool adapter: {profile.adapter_type}")
