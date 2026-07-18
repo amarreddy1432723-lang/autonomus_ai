@@ -1,0 +1,362 @@
+.kernel {
+  min-height: 100vh;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 14% 12%, rgba(123, 97, 255, 0.12), transparent 29%),
+    radial-gradient(circle at 86% 17%, rgba(91, 167, 255, 0.13), transparent 31%),
+    linear-gradient(180deg, #ffffff 0%, #f7f8fa 100%);
+  color: #1b1b1f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.window {
+  min-height: calc(100vh - 56px);
+  overflow: hidden;
+  border: 1px solid #ececec;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 28px 80px rgba(20, 24, 40, 0.10);
+  backdrop-filter: blur(22px);
+}
+
+.topbar,
+.backButton,
+.primaryMini,
+.hero p,
+.bus,
+.kernelCore,
+.pipeline header,
+.pipeline > div,
+.pipeline article,
+.lowerGrid,
+.meta span,
+.evolution span,
+.footer {
+  display: flex;
+  align-items: center;
+}
+
+.topbar {
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 72px;
+  padding: 0 28px;
+  border-bottom: 1px solid #ececec;
+}
+
+.backButton,
+.primaryMini,
+.footer button {
+  border: 1px solid #ececec;
+  background: rgba(255, 255, 255, 0.76);
+  color: #1b1b1f;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.backButton,
+.primaryMini {
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+}
+
+.primaryMini {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+  font-weight: 900;
+}
+
+.hero {
+  max-width: 1040px;
+  margin: 58px auto 34px;
+  text-align: center;
+}
+
+.hero p {
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  color: #7b61ff;
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(46px, 5vw, 78px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.hero span {
+  display: block;
+  max-width: 780px;
+  margin: 18px auto 0;
+  color: #626875;
+  font-size: 20px;
+}
+
+.bus {
+  align-items: stretch;
+  gap: 20px;
+  padding: 0 38px;
+}
+
+.kernelCore,
+.pipeline,
+.execution,
+.meta,
+.evolution {
+  border: 1px solid #ececec;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 18px 42px rgba(26, 31, 47, 0.07);
+  backdrop-filter: blur(18px);
+}
+
+.kernelCore {
+  flex-direction: column;
+  justify-content: center;
+  width: 300px;
+  padding: 24px;
+  text-align: center;
+}
+
+.kernelCore > span {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 22px;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+}
+
+.kernelCore h2,
+.pipeline h2,
+.execution h2,
+.meta h2,
+.evolution h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.kernelCore p,
+.pipeline small,
+.execution small,
+.meta small,
+.evolution small,
+.engineGrid small {
+  color: #737986;
+  font-size: 12px;
+}
+
+.engineGrid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.engineGrid article,
+.pipeline article,
+.execution span,
+.meta span,
+.evolution span {
+  border: 1px solid #ececec;
+  border-radius: 16px;
+  background: rgba(247, 248, 250, 0.76);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.engineGrid article {
+  min-height: 112px;
+  padding: 13px;
+  animation: engineIn 420ms ease both;
+}
+
+.engineGrid strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 14px;
+}
+
+.pipeline {
+  margin: 20px 38px 0;
+  padding: 20px;
+}
+
+.pipeline header {
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.pipeline > div {
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.pipeline article {
+  flex: 0 0 176px;
+  justify-content: center;
+  gap: 8px;
+  min-height: 76px;
+  padding: 10px;
+}
+
+.pipeline article > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.pipeline strong {
+  font-size: 12px;
+}
+
+.pipeline svg {
+  color: #a0a6b2;
+}
+
+.lowerGrid {
+  align-items: stretch;
+  gap: 18px;
+  padding: 20px 38px 0;
+}
+
+.execution,
+.meta,
+.evolution {
+  flex: 1;
+  padding: 20px;
+}
+
+.execution header,
+.meta header,
+.evolution header {
+  margin-bottom: 14px;
+}
+
+.execution > div,
+.meta > div,
+.evolution > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.execution span,
+.meta span,
+.evolution span {
+  gap: 7px;
+  padding: 9px 10px;
+  color: #343943;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.meta svg,
+.evolution svg {
+  color: #2f9f72;
+}
+
+.footer {
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 38px 34px;
+}
+
+.footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-weight: 900;
+}
+
+.footer button:nth-child(2) {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+  box-shadow: 0 18px 44px rgba(123, 97, 255, 0.24);
+}
+
+.backButton:hover,
+.primaryMini:hover,
+.footer button:hover,
+.engineGrid article:hover,
+.pipeline article:hover,
+.execution span:hover,
+.meta span:hover,
+.evolution span:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 44px rgba(26, 31, 47, 0.10);
+}
+
+@keyframes engineIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1400px) {
+  .bus,
+  .lowerGrid {
+    flex-direction: column;
+  }
+
+  .kernelCore {
+    width: auto;
+  }
+
+  .engineGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .kernel {
+    padding: 12px;
+  }
+
+  .window {
+    border-radius: 20px;
+  }
+
+  .bus,
+  .pipeline,
+  .lowerGrid {
+    padding-left: 18px;
+    padding-right: 18px;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .engineGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .footer {
+    flex-direction: column;
+  }
+}

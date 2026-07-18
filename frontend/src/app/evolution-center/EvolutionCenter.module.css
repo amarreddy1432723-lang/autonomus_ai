@@ -1,0 +1,550 @@
+.evolution {
+  min-height: 100vh;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(123, 97, 255, 0.11), transparent 30%),
+    radial-gradient(circle at 90% 14%, rgba(91, 167, 255, 0.12), transparent 31%),
+    linear-gradient(180deg, #ffffff 0%, #f7f8fa 100%);
+  color: #1b1b1f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.window {
+  min-height: calc(100vh - 56px);
+  overflow: hidden;
+  border: 1px solid #ececec;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 28px 80px rgba(20, 24, 40, 0.10);
+  backdrop-filter: blur(22px);
+}
+
+.topbar,
+.brand,
+.search,
+.actions,
+.hero p,
+.mainGrid,
+.health header,
+.business header,
+.recommendations header,
+.releases header,
+.organization header,
+.recommendationCard footer,
+.releaseCard p,
+.organization button,
+.vision header,
+.vision > div,
+.vision article,
+.footer {
+  display: flex;
+  align-items: center;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: 360px minmax(260px, 1fr) 110px;
+  gap: 18px;
+  min-height: 76px;
+  padding: 0 28px;
+  border-bottom: 1px solid #ececec;
+}
+
+.brand {
+  gap: 12px;
+}
+
+.brand > span,
+.organization button > span,
+.healthCard > span,
+.recommendationCard span,
+.vision article > span {
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: #ffffff;
+  font-weight: 950;
+}
+
+.brand > span {
+  width: 42px;
+  height: 42px;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+}
+
+.brand strong {
+  display: block;
+  font-size: 16px;
+}
+
+.brand small,
+.health small,
+.business small,
+.recommendations small,
+.releases small,
+.organization small,
+.vision small,
+.healthCard em,
+.recommendationCard p,
+.releaseCard p,
+.business article span {
+  color: #737986;
+  font-size: 12px;
+}
+
+.search {
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid #ececec;
+  border-radius: 999px;
+  background: rgba(247, 248, 250, 0.76);
+  color: #8a8f9b;
+}
+
+.search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #1b1b1f;
+  font: inherit;
+}
+
+.actions {
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.actions button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #ececec;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #1b1b1f;
+}
+
+.hero {
+  max-width: 980px;
+  margin: 50px auto 28px;
+  text-align: center;
+}
+
+.hero p {
+  justify-content: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  color: #24885e;
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero p span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #4cc38a;
+  box-shadow: 0 0 0 8px rgba(76, 195, 138, 0.14);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(44px, 5vw, 76px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.hero strong {
+  display: block;
+  margin-top: 16px;
+  color: #626875;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.mainGrid {
+  align-items: stretch;
+  gap: 18px;
+  padding: 0 30px;
+}
+
+.health {
+  flex: 1;
+}
+
+.business {
+  width: 360px;
+}
+
+.health,
+.business,
+.recommendations,
+.releases,
+.organization,
+.vision {
+  border: 1px solid #ececec;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 18px 42px rgba(26, 31, 47, 0.07);
+  backdrop-filter: blur(18px);
+}
+
+.health,
+.business,
+.recommendations,
+.releases,
+.organization,
+.vision {
+  padding: 20px;
+}
+
+.health header,
+.business header,
+.recommendations header,
+.releases header,
+.organization header,
+.vision header {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.health h2,
+.business h2,
+.recommendations h2,
+.releases h2,
+.organization h2,
+.vision h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.healthGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.healthCard,
+.business article,
+.recommendationCard,
+.releaseCard,
+.organization button,
+.vision article {
+  border: 1px solid #ececec;
+  border-radius: 18px;
+  background: rgba(247, 248, 250, 0.75);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.healthCard {
+  min-height: 132px;
+  padding: 14px;
+}
+
+.healthCard > span,
+.recommendationCard span,
+.vision article > span {
+  width: 32px;
+  height: 32px;
+  background: #4cc38a;
+}
+
+.healthCard strong {
+  display: block;
+  margin-top: 14px;
+  font-size: 21px;
+}
+
+.healthCard em {
+  display: block;
+  margin-top: 5px;
+  font-style: normal;
+}
+
+.business > div,
+.releaseList,
+.organization > div {
+  display: grid;
+  gap: 10px;
+}
+
+.business article {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 14px;
+  padding: 13px;
+}
+
+.business article strong {
+  font-size: 18px;
+}
+
+.business article small {
+  grid-column: 1 / -1;
+}
+
+.middleGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) 0.82fr 0.9fr;
+  gap: 18px;
+  padding: 18px 30px 0;
+}
+
+.recommendationList {
+  display: grid;
+  gap: 12px;
+}
+
+.recommendationCard {
+  padding: 15px;
+  animation: cardIn 480ms ease both;
+}
+
+.recommendationCard > div {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  gap: 0 12px;
+}
+
+.recommendationCard span {
+  grid-row: span 2;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+}
+
+.recommendationCard h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.recommendationCard p {
+  margin: 5px 0 0;
+}
+
+.recommendationCard footer {
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.recommendationCard b {
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #737986;
+  font-size: 11px;
+}
+
+.recommendationCard em {
+  color: #1b1b1f;
+  font-style: normal;
+}
+
+.releaseCard {
+  padding: 15px;
+}
+
+.releaseCard div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 11px;
+}
+
+.releaseCard h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.releaseCard span {
+  color: #7b61ff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.releaseCard p {
+  gap: 7px;
+  margin: 7px 0 0;
+}
+
+.releaseCard svg {
+  color: #2f9f72;
+}
+
+.organization button {
+  display: grid;
+  grid-template-columns: 40px 1fr auto auto;
+  width: 100%;
+  gap: 11px;
+  padding: 12px;
+  text-align: left;
+}
+
+.organization button > span {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  font-size: 11px;
+}
+
+.organization strong {
+  display: block;
+  font-size: 13px;
+}
+
+.organization b,
+.organization em {
+  align-self: center;
+  font-size: 12px;
+}
+
+.organization b {
+  color: #24885e;
+}
+
+.organization em {
+  color: #737986;
+  font-style: normal;
+}
+
+.vision {
+  margin: 18px 30px 0;
+}
+
+.vision > div {
+  gap: 12px;
+}
+
+.vision article {
+  flex: 1;
+  justify-content: center;
+  gap: 10px;
+  min-height: 82px;
+  padding: 14px;
+}
+
+.vision article > span {
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+}
+
+.vision strong {
+  font-size: 14px;
+}
+
+.vision svg {
+  color: #a0a6b2;
+}
+
+.footer {
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 30px 34px;
+}
+
+.footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid #ececec;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #1b1b1f;
+  font: inherit;
+  font-weight: 900;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.footer button:first-child {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+  box-shadow: 0 18px 44px rgba(123, 97, 255, 0.24);
+}
+
+.healthCard:hover,
+.business article:hover,
+.recommendationCard:hover,
+.releaseCard:hover,
+.organization button:hover,
+.vision article:hover,
+.footer button:hover,
+.actions button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 38px rgba(26, 31, 47, 0.10);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.82;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1500px) {
+  .healthGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .middleGrid,
+  .mainGrid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .business {
+    width: auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .evolution {
+    padding: 12px;
+  }
+
+  .window {
+    border-radius: 20px;
+  }
+
+  .topbar,
+  .healthGrid,
+  .middleGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .mainGrid,
+  .middleGrid,
+  .vision {
+    padding-left: 18px;
+    padding-right: 18px;
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .vision > div,
+  .footer {
+    flex-direction: column;
+  }
+}
