@@ -6,7 +6,8 @@ export function getServiceUrl(path: string): string {
   
   const AUTH_URL = process.env.NEXT_PUBLIC_AUTH_URL || 'http://localhost:8001';
   const GOALS_URL = process.env.NEXT_PUBLIC_GOALS_URL || 'http://localhost:8002';
-  const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8003';
+  const HOSTED_AGENT_URL = 'https://agent-production-8568.up.railway.app';
+  const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL || process.env.ARCEUS_AGENT_URL || (process.env.NODE_ENV === 'production' ? HOSTED_AGENT_URL : 'http://localhost:8003');
 
   if (
     path.startsWith('/api/v1/auth') ||
@@ -46,6 +47,7 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/memories') ||
     path.startsWith('/api/v1/news') ||
     path.startsWith('/api/v1/jobs') ||
+    path.startsWith('/api/v1/os') ||
     path.startsWith('/api/v1/sessions')
   ) {
     return AGENT_URL + path;

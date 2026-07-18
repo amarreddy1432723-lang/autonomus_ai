@@ -4,6 +4,37 @@ const fs = require("fs");
 const net = require("net");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
+
+function installSafeConsole() {
+    const wrap = (method) => {
+        const original = console[method]?.bind(console);
+        if (!original) return;
+        console[method] = (...args) => {
+            try {
+                original(...args);
+            } catch (error) {
+                if (error?.code !== "EPIPE") {
+                    try {
+                        process.stderr.write(`[console-${method}-failed] ${error?.message || error}\n`);
+                    } catch {
+                        // Ignore secondary logging failures. Logging should never crash the desktop app.
+                    }
+                }
+            }
+        };
+    };
+
+    ["log", "warn", "error", "info"].forEach(wrap);
+    process.stdout?.on?.("error", (error) => {
+        if (error?.code !== "EPIPE") throw error;
+    });
+    process.stderr?.on?.("error", (error) => {
+        if (error?.code !== "EPIPE") throw error;
+    });
+}
+
+installSafeConsole();
+
 let autoUpdater = null;
 try {
     autoUpdater = require("electron-updater").autoUpdater;
@@ -29,14 +60,12 @@ let dirWatcherRoot = "";
 let dirWatcherBatch = [];
 let dirWatcherTimer = null;
 let managedPostgres = null;
-const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/workspace";
+const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/launch";
 const DESKTOP_CODE_ALLOWED_ROUTE_PREFIXES = [
+    "/launch",
     "/workspace",
     "/settings",
     "/auth/desktop",
-    "/sign-in",
-    "/sign-up",
-    "/signup",
     "/download",
     "/ui-preview"
 ];
@@ -65,7 +94,7 @@ function sanitizeDesktopCodeRoute(route) {
         pathOnly === prefix || pathOnly.startsWith(`${prefix}/`)
     ));
 
-    return allowed ? candidate : "/workspace";
+    return allowed ? candidate : DEFAULT_ROUTE;
 }
 
 function configureAutoUpdater() {
@@ -671,6 +700,31 @@ function logDesktopEvent(message, detail = "") {
     console.log(message, detail);
 }
 
+function attachServiceLogging(childProcess, label) {
+    const logChunk = (streamName, data) => {
+        const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data || "");
+        if (!text.trim()) return;
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        for (const line of lines.slice(-40)) {
+            const output = line.length > 4000 ? `${line.slice(0, 4000)}...` : line;
+            if (streamName === "stderr") {
+                console.error(`[${label}] stderr: ${output}`);
+            } else {
+                console.log(`[${label}] stdout: ${output}`);
+            }
+        }
+    };
+
+    childProcess.stdout?.on?.("data", (data) => logChunk("stdout", data));
+    childProcess.stderr?.on?.("data", (data) => logChunk("stderr", data));
+    childProcess.stdout?.on?.("error", (error) => {
+        if (error?.code !== "EPIPE") console.error(`[${label}] stdout stream error: ${error.message}`);
+    });
+    childProcess.stderr?.on?.("error", (error) => {
+        if (error?.code !== "EPIPE") console.error(`[${label}] stderr stream error: ${error.message}`);
+    });
+}
+
 function getBackendEnv(port) {
     return {
         ...process.env,
@@ -714,13 +768,7 @@ async function startBackendService(serviceName, entryPoint, port) {
         console.error(`[${serviceName}] failed to start: ${error.message}`);
     });
 
-    p.stdout.on("data", (data) => {
-        console.log(`[${serviceName}] stdout: ${data}`);
-    });
-
-    p.stderr.on("data", (data) => {
-        console.error(`[${serviceName}] stderr: ${data}`);
-    });
+    attachServiceLogging(p, serviceName);
 
     backendProcesses.push(p);
     console.log(`Started backend service: ${serviceName} on port ${port}`);
@@ -763,13 +811,7 @@ async function startFrontendService() {
         console.error(`[Frontend] failed to start: ${error.message}`);
     });
 
-    frontendProcess.stdout.on("data", (data) => {
-        console.log(`[Frontend] stdout: ${data}`);
-    });
-
-    frontendProcess.stderr.on("data", (data) => {
-        console.error(`[Frontend] stderr: ${data}`);
-    });
+    attachServiceLogging(frontendProcess, "Frontend");
 
     console.log(`Started Next.js frontend developer server at ${resolved.origin}.`);
     const startupResult = await Promise.race([

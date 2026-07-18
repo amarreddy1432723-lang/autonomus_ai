@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 
-const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || 'http://localhost:8003';
+const HOSTED_AGENT_URL = 'https://agent-production-8568.up.railway.app';
+const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || process.env.ARCEUS_AGENT_URL || (process.env.NODE_ENV === 'production' ? HOSTED_AGENT_URL : 'http://localhost:8003');
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;

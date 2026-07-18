@@ -23,16 +23,10 @@
 }
 
 .logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 16px;
   height: 16px;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-  color: white;
-  font-weight: bold;
-  border-radius: 3px;
-  font-size: 10px;
+  display: block;
+  border-radius: 4px;
   margin-right: 8px;
 }
 

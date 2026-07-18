@@ -13,8 +13,17 @@ import { useAppStore } from '../store';
 import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../utils/serviceHealth';
 import styles from './AppShell.module.css';
 
+function useOptionalClerkAuth() {
+  try {
+    const auth = useAuth();
+    return { isSignedIn: auth.isSignedIn === true, clerkReady: true };
+  } catch {
+    return { isSignedIn: false, clerkReady: false };
+  }
+}
+
 function ClerkUserSection() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, clerkReady } = useOptionalClerkAuth();
   if (isSignedIn) {
     return (
       <div className={styles.avatar}>
@@ -37,7 +46,7 @@ function ClerkUserSection() {
 }
 
 function DesktopAccountSection() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, clerkReady } = useOptionalClerkAuth();
   const [hasStoredToken, setHasStoredToken] = useState(false);
 
   useEffect(() => {
@@ -46,7 +55,7 @@ function DesktopAccountSection() {
 
   if (isSignedIn || hasStoredToken) {
     return (
-      isSignedIn ? (
+      isSignedIn && clerkReady ? (
         <div className={styles.avatar}>
           <UserButton />
         </div>
@@ -67,10 +76,14 @@ function DesktopAccountSection() {
 }
 
 function initialElectronState() {
-  return typeof window !== 'undefined' && isElectronRuntime();
+  if (typeof window !== 'undefined') {
+    return isElectronRuntime();
+  }
+  return false;
 }
 
 const DESKTOP_ALLOWED_PREFIXES = [
+  '/launch',
   '/workspace',
   '/settings',
   '/auth/desktop',
@@ -92,6 +105,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [productMenuOpen, setProductMenuOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isDemoSignedIn, setIsDemoSignedIn] = useState(false);
+  const [clientReady, setClientReady] = useState(false);
   const [isElectron, setIsElectron] = useState(initialElectronState);
   const [serviceHealth, setServiceHealth] = useState<ServiceHealthSnapshot>(() => {
     const state = initialElectronState() ? 'auth_required' : 'partially_online';
@@ -106,6 +120,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    setClientReady(true);
     const hasDemoCookie = typeof document !== 'undefined' && document.cookie.includes('my-ai.mock_token');
     setIsDemoSignedIn(hasDemoCookie);
     setIsElectron(isElectronRuntime());
@@ -118,11 +133,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!isElectron) return;
+    if (!clientReady || !isElectron) return;
     setProductMenuOpen(false);
     const allowed = DESKTOP_ALLOWED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
     if (!allowed) router.replace('/workspace');
-  }, [isElectron, pathname, router]);
+  }, [clientReady, isElectron, pathname, router]);
 
   const handleDemoSignOut = () => {
     document.cookie = 'my-ai.mock_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
@@ -158,11 +173,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (activeProduct.label === 'Admin') {
       return [{ label: 'Admin', icon: ShieldCheck, href: '/admin' }];
     }
+    if (isElectron) {
+      return [
+        { label: 'Workspace', icon: Code2, href: '/workspace' },
+      ];
+    }
     return [
       { label: 'Workspace', icon: Code2, href: '/workspace' },
       { label: 'Approvals', icon: ShieldAlert, href: '/approvals', badge: pendingApprovalCount },
     ];
-  }, [activeProduct.label, pendingApprovalCount]);
+  }, [activeProduct.label, isElectron, pendingApprovalCount]);
 
   const currentItem = allNavItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) || allNavItems[0];
 

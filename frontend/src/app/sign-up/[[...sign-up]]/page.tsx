@@ -1,10 +1,11 @@
 'use client';
 
+import { Suspense } from 'react';
 import { SignUp } from '@clerk/nextjs';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 
-export default function SignUpPage() {
+function SignUpPageContent() {
   const searchParams = useSearchParams();
   const redirectUrl = searchParams.get('redirect_url') || '/workspace';
 
@@ -27,5 +28,13 @@ export default function SignUpPage() {
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--color-bg-primary)' }}>
       <SignUp routing="path" path="/sign-up" signInUrl={`/sign-in?redirect_url=${encodeURIComponent(redirectUrl)}`} fallbackRedirectUrl={redirectUrl} />
     </main>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignUpPageContent />
+    </Suspense>
   );
 }

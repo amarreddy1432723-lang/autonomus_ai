@@ -1,9 +1,10 @@
 'use client';
 
+import { Suspense } from 'react';
 import { SignIn } from '@clerk/nextjs';
 import { useRouter, useSearchParams } from 'next/navigation';
 
-export default function SignInPage() {
+function SignInPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectUrl = searchParams.get('redirect_url') || '/workspace';
@@ -46,5 +47,13 @@ export default function SignInPage() {
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--color-bg-primary)' }}>
       <SignIn routing="path" path="/sign-in" signUpUrl={`/sign-up?redirect_url=${encodeURIComponent(redirectUrl)}`} fallbackRedirectUrl={redirectUrl} />
     </main>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignInPageContent />
+    </Suspense>
   );
 }

@@ -9,13 +9,16 @@ import { Send, Cpu, ChevronRight, ChevronDown, Check, BrainCircuit, X, ImageIcon
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 
 const MODEL_OPTIONS = [
+  { id: 'arceus-fast', label: 'Arceus Fast', provider: 'registry', model: 'arceus-fast' },
+  { id: 'arceus-reasoning', label: 'Arceus Reasoning', provider: 'registry', model: 'arceus-reasoning' },
+  { id: 'arceus-codex', label: 'Arceus Codex', provider: 'registry', model: 'arceus-codex' },
+  { id: 'arceus-local-code', label: 'Arceus Local Code', provider: 'registry', model: 'arceus-local-code' },
   { id: 'autonomus-ai-v1', label: 'Autonomus AI', provider: 'autonomus', model: 'autonomus-ai-v1' },
-  { id: 'nexus-fast', label: 'Arceus Fast', provider: 'nexus', model: 'nexus-fast' },
-  { id: 'nexus-reasoning', label: 'Arceus Reasoning', provider: 'nexus', model: 'nexus-reasoning' },
-  { id: 'nexus-code', label: 'Arceus Code', provider: 'nexus', model: 'nexus-code' },
+  { id: 'openai-gpt-5.6-sol', label: 'OpenAI GPT-5.6 Sol', provider: 'openai', model: 'gpt-5.6-sol' },
+  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'anthropic', model: 'claude-sonnet-5' },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'google', model: 'gemini-3.5-flash' },
   { id: 'groq-llama-3.3', label: 'Groq Llama 3.3', provider: 'groq', model: 'llama-3.3-70b-versatile' },
-  { id: 'openai-gpt-4o-mini', label: 'OpenAI GPT-4o mini', provider: 'openai', model: 'gpt-4o-mini' },
-  { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', provider: 'google', model: 'gemini-1.5-flash' }
+  { id: 'mistral-devstral', label: 'Mistral Devstral', provider: 'mistral', model: 'devstral-2512' }
 ] as const;
 
 type ModelOption = typeof MODEL_OPTIONS[number];
@@ -49,7 +52,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [showThoughts, setShowThoughts] = useState<Record<string, boolean>>({});
   const [goals, setGoals] = useState<any[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState<ModelOption['id']>('autonomus-ai-v1');
+  const [selectedModelId, setSelectedModelId] = useState<ModelOption['id']>('arceus-fast');
   const [trainingCaptureStatus, setTrainingCaptureStatus] = useState<Record<string, 'saved' | 'error' | 'saving'>>({});
   const [selectedFiles, setSelectedFiles] = useState<UploadedFile[]>([]);
   const [isUploadingFile, setIsUploadingFile] = useState(false);

@@ -23,12 +23,12 @@ export default function DesktopOnlyGuard({ product, reason, children }: DesktopO
           <h1>{product}</h1>
           <p>{reason}</p>
           <div className={styles.actions}>
-            <Link className={styles.primary} href="/hub">
+            <Link className={styles.primary} href="/workspace">
               <ArrowLeft size={15} />
-              Product Hub
+              Arceus Code
             </Link>
-            <Link className={styles.secondary} href="/pa">
-              Open Arceus PA
+            <Link className={styles.secondary} href="/download">
+              Download desktop app
             </Link>
           </div>
         </section>

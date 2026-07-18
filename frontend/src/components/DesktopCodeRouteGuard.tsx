@@ -6,12 +6,10 @@ import { Code2 } from 'lucide-react';
 import { isElectronRuntime } from '../utils/serviceHealth';
 
 const DESKTOP_CODE_ALLOWED_PREFIXES = [
+  '/launch',
   '/workspace',
   '/settings',
   '/auth/desktop',
-  '/sign-in',
-  '/sign-up',
-  '/signup',
   '/download',
   '/ui-preview',
 ];

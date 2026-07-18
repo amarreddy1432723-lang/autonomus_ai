@@ -70,7 +70,7 @@ export default function WorkspaceSidebar({
   return (
     <aside className={styles.workspaceSidebar}>
       <div className={styles.sidebarBrand}>
-        <span className={styles.sidebarLogo}>A</span>
+        <img className={styles.sidebarLogo} src="/arceus-logo.svg" alt="" aria-hidden="true" />
         <div>
           <strong>Arceus Code</strong>
           <span>Workspace</span>

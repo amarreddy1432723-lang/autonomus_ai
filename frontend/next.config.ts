@@ -86,6 +86,10 @@ const nextConfig: NextConfig = {
         destination: `${agentUrl}/api/v1/jobs/:path*`,
       },
       {
+        source: '/api/v1/os/:path*',
+        destination: `${agentUrl}/api/v1/os/:path*`,
+      },
+      {
         source: '/api/v1/sessions/:path*',
         destination: `${agentUrl}/api/v1/sessions/:path*`,
       },

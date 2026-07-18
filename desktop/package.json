@@ -34,6 +34,7 @@
     },
     "win": {
       "target": "nsis",
+      "icon": "build/icon.ico",
       "publisherName": "Arceus",
       "signAndEditExecutable": true,
       "certificateFile": "${env.WIN_CSC_LINK}",

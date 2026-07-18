@@ -4,6 +4,7 @@ directories:
   output: dist
 win:
   target: nsis
+  icon: build/icon.ico
   signAndEditExecutable: false
 nsis:
   oneClick: false
