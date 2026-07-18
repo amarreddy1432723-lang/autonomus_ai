@@ -17,6 +17,7 @@ from .evidence.routes import router as evidence_router
 from .events.routes import router as events_router
 from .execution.routes import router as execution_router
 from .execution_traces.routes import router as execution_traces_router
+from .experience.routes import router as experience_router
 from .gateway.routes import router as gateway_router
 from .health.routes import router as health_router
 from .knowledge.routes import router as knowledge_router
@@ -36,6 +37,7 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, handle_domain_error)
     app.include_router(missions_router)
     app.include_router(automation_router)
+    app.include_router(experience_router)
     app.include_router(events_router)
     app.include_router(execution_router)
     app.include_router(approvals_router)

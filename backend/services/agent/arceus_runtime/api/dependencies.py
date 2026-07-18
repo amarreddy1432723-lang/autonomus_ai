@@ -96,6 +96,13 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "automation.trigger.create",
         "automation.template.create",
         "automation.execute",
+        "experience.workspace.view",
+        "experience.intent.view",
+        "experience.intent.execute",
+        "experience.timeline.view",
+        "experience.dashboard.view",
+        "experience.voice",
+        "experience.search",
     }
 )
 

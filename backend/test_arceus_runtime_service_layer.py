@@ -15,6 +15,7 @@ from services.agent.arceus_runtime.automation.service import automation_dashboar
 from services.agent.arceus_runtime.capabilities.routes import _capability_response
 from services.agent.arceus_runtime.constitution.service import evaluate_constitution, evaluate_evolution_change, evaluate_fitness, evaluate_lesson_promotion, list_rules
 from services.agent.arceus_runtime.events.routes import sse_event, sse_heartbeat
+from services.agent.arceus_runtime.experience.service import build_personal_workspace, classify_intent, dashboard, execute_intent, smart_search, timeline, voice_response
 from services.agent.arceus_runtime.gateway.api_schemas import ToolExecutionRequest
 from services.agent.arceus_runtime.gateway.routes import _tool_execution_evidence
 from services.agent.arceus_runtime.execution_traces.routes import _model_execution_response
@@ -194,6 +195,13 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/automation/organizations", "GET") in routes
     assert ("/api/v1/automation/execute", "POST") in routes
     assert ("/api/v1/automation/dashboard", "GET") in routes
+    assert ("/api/v1/workspace", "GET") in routes
+    assert ("/api/v1/intents", "GET") in routes
+    assert ("/api/v1/intents/execute", "POST") in routes
+    assert ("/api/v1/timeline", "GET") in routes
+    assert ("/api/v1/dashboard", "GET") in routes
+    assert ("/api/v1/voice", "POST") in routes
+    assert ("/api/v1/search", "POST") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -643,6 +651,79 @@ def test_automation_dashboard_surfaces_policy_visibility() -> None:
     assert dashboard["active_missions"] >= 1
     assert dashboard["policy_violations"] >= 1
     assert "review_high_risk_automation_approval_queue" in dashboard["recommendations"]
+
+
+def test_experience_classifies_natural_language_intents() -> None:
+    category, confidence = classify_intent("How is the authentication modernization project progressing?")
+
+    assert category == "analysis"
+    assert confidence >= 0.7
+
+
+def test_experience_personal_workspace_contains_unified_context() -> None:
+    workspace = build_personal_workspace("user-1")
+
+    assert workspace["workspace_id"].startswith("pws_")
+    assert workspace["context"]["current_mission"]["mission_id"] == "mission_auth_modernization"
+    assert "human_authority" in workspace["context"]["policies"]
+    assert workspace["preferences"]["primary_mode"] == "natural_language"
+
+
+def test_experience_execution_requires_confirmation_for_risky_intent() -> None:
+    result = execute_intent(
+        {
+            "objective": "Approve deployment to production",
+            "mode": "chat",
+            "context_scope": "mission",
+            "entities": {},
+            "constraints": [],
+        },
+        user_id="user-1",
+    )
+
+    assert result["accepted"] is False
+    assert result["status"] == "requires_confirmation"
+    assert "HUMAN_APPROVAL_REQUESTED" in result["events"]
+    assert result["verification"]["policy_checked"] is True
+
+
+def test_experience_voice_uses_same_intent_pipeline() -> None:
+    result = voice_response(
+        {
+            "transcript": "Deploy staging",
+            "locale": "en-US",
+            "device": "desktop",
+            "context_scope": "mission",
+        },
+        user_id="user-1",
+    )
+
+    assert result["intent"]["category"] == "execution"
+    assert result["requires_confirmation"] is True
+    assert result["command_safe_to_execute"] is False
+
+
+def test_experience_timeline_prioritizes_required_actions() -> None:
+    rows = timeline()
+
+    assert any(row["required_action"] == "review_security_findings" for row in rows)
+    assert rows[1]["priority"] == "high"
+
+
+def test_experience_dashboard_adapts_by_role_and_accessibility() -> None:
+    data = dashboard(role="sre")
+
+    assert any(widget["widget_key"] == "incidents" for widget in data["widgets"])
+    assert data["accessibility"]["keyboard_navigation"] is True
+    assert data["notifications"][0]["required_action"] == "Review"
+
+
+def test_experience_smart_search_spans_requested_scopes() -> None:
+    result = smart_search({"query": "authentication deployment", "scopes": ["missions", "knowledge", "incidents"], "limit": 2})
+
+    assert result["strategy"] == ["intent_detection", "unified_context", "keyword", "knowledge_graph"]
+    assert len(result["results"]) == 2
+    assert result["results"][0]["related_intent"] in {"analysis", "execution", "information"}
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:
