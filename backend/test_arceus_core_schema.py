@@ -42,6 +42,14 @@ EXPECTED_ARCEUS_TABLES = {
     "arceus_completion_certificates",
     "arceus_context_packages",
     "arceus_model_executions",
+    "arceus_provider_profiles",
+    "arceus_model_profiles",
+    "arceus_tool_profiles",
+    "arceus_routing_decisions",
+    "arceus_budgets",
+    "arceus_cost_reservations",
+    "arceus_ai_execution_ledger",
+    "arceus_execution_evaluations",
     "arceus_participants",
     "arceus_collaboration_messages",
     "arceus_collaboration_message_recipients",
@@ -73,6 +81,9 @@ GLOBAL_TABLES = {
     "arceus_specialist_profiles",
     "arceus_specialist_capabilities",
     "arceus_tool_definitions",
+    "arceus_provider_profiles",
+    "arceus_model_profiles",
+    "arceus_tool_profiles",
 }
 
 
@@ -189,3 +200,21 @@ def test_verification_governance_schema_tracks_evidence_gates_and_certificates()
         table = Base.metadata.tables[table_name]
         assert "tenant_id" in table.columns
         assert "mission_id" in table.columns
+
+
+def test_gateway_schema_tracks_registries_routing_costs_and_ledger() -> None:
+    model_profiles = Base.metadata.tables["arceus_model_profiles"]
+    for column in ["model_key", "provider_key", "capabilities", "context_window_tokens", "quality_scores"]:
+        assert column in model_profiles.columns
+
+    routing = Base.metadata.tables["arceus_routing_decisions"]
+    for column in ["request_id", "selected_model_key", "candidate_scores", "hard_exclusions", "decision_hash"]:
+        assert column in routing.columns
+
+    ledger = Base.metadata.tables["arceus_ai_execution_ledger"]
+    for column in ["execution_kind", "provider_key", "model_key", "tool_key", "estimated_cost", "actual_cost", "routing_decision_id"]:
+        assert column in ledger.columns
+
+    budget = Base.metadata.tables["arceus_budgets"]
+    for column in ["scope_type", "scope_id", "limit_amount", "reserved_amount", "actual_amount"]:
+        assert column in budget.columns

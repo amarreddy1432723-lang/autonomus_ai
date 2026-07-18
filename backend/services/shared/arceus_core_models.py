@@ -816,6 +816,230 @@ class ArceusModelExecution(KernelTenantMixin, Base):
     )
 
 
+class ArceusProviderProfile(KernelMutableMixin, Base):
+    __tablename__ = "arceus_provider_profiles"
+
+    provider_key = Column(String(120), nullable=False)
+    display_name = Column(Text, nullable=False)
+    adapter_type = Column(String(120), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    supported_regions = Column(JSON, default=list, nullable=False)
+    authentication_reference = Column(Text, nullable=False)
+    requests_per_minute = Column(Integer)
+    tokens_per_minute = Column(Integer)
+    concurrent_request_limit = Column(Integer)
+    health_status = Column(String(60), default="healthy", nullable=False)
+    circuit_state = Column(String(60), default="closed", nullable=False)
+    retention_policy = Column(String(120), default="standard", nullable=False)
+    supports_zero_retention = Column(Boolean, default=False, nullable=False)
+    enterprise_agreement_required = Column(Boolean, default=False, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider_key", name="uq_arceus_provider_profiles_key"),
+        CheckConstraint("health_status IN ('healthy', 'degraded', 'rate_limited', 'unavailable', 'misconfigured', 'disabled')", name="ck_arceus_provider_profiles_health"),
+        CheckConstraint("circuit_state IN ('closed', 'open', 'half_open')", name="ck_arceus_provider_profiles_circuit"),
+    )
+
+
+class ArceusModelProfile(KernelMutableMixin, Base):
+    __tablename__ = "arceus_model_profiles"
+
+    model_key = Column(String(160), nullable=False)
+    provider_key = Column(String(120), ForeignKey("arceus_provider_profiles.provider_key"), nullable=False)
+    provider_model_name = Column(Text, nullable=False)
+    display_name = Column(Text, nullable=False)
+    status = Column(String(60), default="available", nullable=False)
+    capabilities = Column(JSON, default=list, nullable=False)
+    supported_modalities = Column(JSON, default=list, nullable=False)
+    supported_output_modes = Column(JSON, default=list, nullable=False)
+    context_window_tokens = Column(BigInteger, nullable=False)
+    maximum_output_tokens = Column(Integer, nullable=False)
+    supports_tool_calling = Column(Boolean, default=False, nullable=False)
+    supports_structured_output = Column(Boolean, default=False, nullable=False)
+    supports_streaming = Column(Boolean, default=False, nullable=False)
+    supports_seed = Column(Boolean, default=False, nullable=False)
+    supports_prompt_caching = Column(Boolean, default=False, nullable=False)
+    data_residency_regions = Column(JSON, default=list, nullable=False)
+    data_retention_policy = Column(String(120), default="standard", nullable=False)
+    input_cost_per_million_tokens = Column(Numeric(18, 8), default=0, nullable=False)
+    output_cost_per_million_tokens = Column(Numeric(18, 8), default=0, nullable=False)
+    cached_input_cost_per_million_tokens = Column(Numeric(18, 8))
+    expected_latency_class = Column(String(60), default="medium", nullable=False)
+    reliability_score = Column(Float, default=0.9, nullable=False)
+    quality_scores = Column(JSON, default=dict, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("model_key", name="uq_arceus_model_profiles_key"),
+        CheckConstraint("status IN ('available', 'degraded', 'disabled', 'retired')", name="ck_arceus_model_profiles_status"),
+        Index("ix_arceus_model_profiles_provider", "provider_key", "status"),
+    )
+
+
+class ArceusToolProfile(KernelMutableMixin, Base):
+    __tablename__ = "arceus_tool_profiles"
+
+    tool_key = Column(String(160), nullable=False)
+    display_name = Column(Text, nullable=False)
+    adapter_type = Column(String(120), nullable=False)
+    version = Column(String(80), nullable=False)
+    capabilities = Column(JSON, default=list, nullable=False)
+    supported_actions = Column(JSON, default=list, nullable=False)
+    risk_level = Column(String(60), default="low", nullable=False)
+    side_effect_class = Column(String(80), default="READ_ONLY", nullable=False)
+    requires_sandbox = Column(Boolean, default=True, nullable=False)
+    supports_dry_run = Column(Boolean, default=False, nullable=False)
+    supports_idempotency = Column(Boolean, default=True, nullable=False)
+    supports_rollback = Column(Boolean, default=False, nullable=False)
+    required_authorities = Column(JSON, default=list, nullable=False)
+    allowed_environments = Column(JSON, default=list, nullable=False)
+    maximum_runtime_seconds = Column(Integer, default=120, nullable=False)
+    output_schema_key = Column(String(160))
+    enabled = Column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tool_key", name="uq_arceus_tool_profiles_key"),
+        CheckConstraint(
+            "side_effect_class IN ('READ_ONLY', 'LOCAL_MUTATION', 'REPOSITORY_MUTATION', 'EXTERNAL_REVERSIBLE', 'EXTERNAL_IRREVERSIBLE', 'PRODUCTION_CHANGE', 'FINANCIAL_ACTION', 'SECRET_ACCESS')",
+            name="ck_arceus_tool_profiles_side_effect",
+        ),
+        Index("ix_arceus_tool_profiles_enabled", "enabled", "risk_level"),
+    )
+
+
+class ArceusRoutingDecision(KernelTenantMixin, Base):
+    __tablename__ = "arceus_routing_decisions"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    request_id = Column(UUID(as_uuid=True), nullable=False)
+    execution_kind = Column(String(40), nullable=False)
+    task_type = Column(String(120), nullable=False)
+    routing_mode = Column(String(60), default="balanced", nullable=False)
+    selected_model_key = Column(String(160))
+    selected_provider_key = Column(String(120))
+    selected_tool_key = Column(String(160))
+    selected_action_key = Column(String(160))
+    fallback_model_keys = Column(JSON, default=list, nullable=False)
+    candidate_scores = Column(JSON, default=dict, nullable=False)
+    hard_exclusions = Column(JSON, default=dict, nullable=False)
+    applied_policy_ids = Column(JSON, default=list, nullable=False)
+    estimated_input_tokens = Column(Integer, default=0, nullable=False)
+    estimated_output_tokens = Column(Integer, default=0, nullable=False)
+    estimated_cost_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    estimated_latency_ms = Column(Integer, default=0, nullable=False)
+    reasoning_summary = Column(Text, nullable=False)
+    decision_hash = Column(String(128), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "request_id", name="uq_arceus_routing_decisions_request"),
+        UniqueConstraint("tenant_id", "decision_hash", name="uq_arceus_routing_decisions_hash"),
+        Index("ix_arceus_routing_decisions_mission", "tenant_id", "mission_id", "created_at"),
+    )
+
+
+class ArceusBudget(KernelTenantMixin, Base):
+    __tablename__ = "arceus_budgets"
+
+    scope_type = Column(String(80), nullable=False)
+    scope_id = Column(UUID(as_uuid=True), nullable=False)
+    currency = Column(String(12), default="USD", nullable=False)
+    limit_amount = Column(Numeric(18, 8), nullable=False)
+    reserved_amount = Column(Numeric(18, 8), default=0, nullable=False)
+    actual_amount = Column(Numeric(18, 8), default=0, nullable=False)
+    warning_threshold_percent = Column(Integer, default=80, nullable=False)
+    status = Column(String(60), default="active", nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "scope_type", "scope_id", name="uq_arceus_budgets_scope"),
+        CheckConstraint("status IN ('active', 'warning', 'exhausted', 'disabled')", name="ck_arceus_budgets_status"),
+        Index("ix_arceus_budgets_scope", "tenant_id", "scope_type", "scope_id"),
+    )
+
+
+class ArceusCostReservation(KernelTenantMixin, Base):
+    __tablename__ = "arceus_cost_reservations"
+
+    budget_id = Column(UUID(as_uuid=True), ForeignKey("arceus_budgets.id"), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    amount = Column(Numeric(18, 8), nullable=False)
+    currency = Column(String(12), default="USD", nullable=False)
+    status = Column(String(60), default="reserved", nullable=False)
+    idempotency_key = Column(String(180), nullable=False)
+    released_at = Column(DateTime(timezone=True))
+    settled_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_arceus_cost_reservations_idempotency"),
+        CheckConstraint("status IN ('reserved', 'released', 'settled', 'failed')", name="ck_arceus_cost_reservations_status"),
+        Index("ix_arceus_cost_reservations_budget", "tenant_id", "budget_id", "status"),
+    )
+
+
+class ArceusAIExecutionLedger(KernelTenantMixin, Base):
+    __tablename__ = "arceus_ai_execution_ledger"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    execution_kind = Column(String(40), nullable=False)
+    task_type = Column(String(120), nullable=False)
+    provider_key = Column(String(120))
+    model_key = Column(String(160))
+    tool_key = Column(String(160))
+    action_key = Column(String(160))
+    request_hash = Column(String(128), nullable=False)
+    context_hash = Column(String(128))
+    response_hash = Column(String(128))
+    status = Column(String(60), default="pending", nullable=False)
+    retry_count = Column(Integer, default=0, nullable=False)
+    fallback_used = Column(Boolean, default=False, nullable=False)
+    input_tokens = Column(BigInteger, default=0, nullable=False)
+    output_tokens = Column(BigInteger, default=0, nullable=False)
+    cached_input_tokens = Column(BigInteger, default=0, nullable=False)
+    estimated_cost = Column(Numeric(18, 8), default=0, nullable=False)
+    actual_cost = Column(Numeric(18, 8), default=0, nullable=False)
+    latency_ms = Column(BigInteger)
+    routing_decision_id = Column(UUID(as_uuid=True), ForeignKey("arceus_routing_decisions.id"))
+    cost_reservation_id = Column(UUID(as_uuid=True), ForeignKey("arceus_cost_reservations.id"))
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True))
+    result = Column(JSON, default=dict, nullable=False)
+    error = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("execution_kind IN ('model', 'tool', 'retrieval')", name="ck_arceus_ai_execution_ledger_kind"),
+        CheckConstraint("status IN ('pending', 'authorized', 'running', 'completed', 'failed', 'denied', 'cancelled')", name="ck_arceus_ai_execution_ledger_status"),
+        Index("ix_arceus_ai_execution_ledger_mission", "tenant_id", "mission_id", "created_at"),
+        Index("ix_arceus_ai_execution_ledger_routing", "tenant_id", "routing_decision_id"),
+    )
+
+
+class ArceusExecutionEvaluation(KernelTenantMixin, Base):
+    __tablename__ = "arceus_execution_evaluations"
+
+    execution_id = Column(UUID(as_uuid=True), ForeignKey("arceus_ai_execution_ledger.id"), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    task_type = Column(String(120), nullable=False)
+    schema_valid = Column(Boolean, default=False, nullable=False)
+    verification_passed = Column(Boolean)
+    reviewer_score = Column(Float)
+    human_score = Column(Float)
+    defects_found = Column(Integer, default=0, nullable=False)
+    rework_required = Column(Boolean, default=False, nullable=False)
+    production_issue = Column(Boolean, default=False, nullable=False)
+    quality_score = Column(Float, default=0.0, nullable=False)
+    evaluation_version = Column(Integer, default=1, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "execution_id", "evaluation_version", name="uq_arceus_execution_evaluations_version"),
+        Index("ix_arceus_execution_evaluations_execution", "tenant_id", "execution_id"),
+        Index("ix_arceus_execution_evaluations_task_type", "tenant_id", "task_type", "quality_score"),
+    )
+
+
 class ArceusParticipant(KernelTenantMixin, Base):
     __tablename__ = "arceus_participants"
 

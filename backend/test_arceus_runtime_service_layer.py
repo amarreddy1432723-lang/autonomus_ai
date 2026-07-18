@@ -98,6 +98,32 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/missions/{mission_id}/context-packages", "GET") in routes
     assert ("/api/v1/context-packages/{context_package_id}", "GET") in routes
     assert ("/api/v1/model-executions", "GET") in routes
+    assert ("/api/v1/models", "GET") in routes
+    assert ("/api/v1/models/{model_key}", "GET") in routes
+    assert ("/api/v1/admin/models", "POST") in routes
+    assert ("/api/v1/admin/models/{model_key}", "PATCH") in routes
+    assert ("/api/v1/admin/models/{model_key}/enable", "POST") in routes
+    assert ("/api/v1/admin/models/{model_key}/disable", "POST") in routes
+    assert ("/api/v1/providers", "GET") in routes
+    assert ("/api/v1/providers/{provider_key}/health", "GET") in routes
+    assert ("/api/v1/admin/providers", "POST") in routes
+    assert ("/api/v1/admin/providers/{provider_key}", "PATCH") in routes
+    assert ("/api/v1/admin/providers/{provider_key}/test", "POST") in routes
+    assert ("/api/v1/ai/route", "POST") in routes
+    assert ("/api/v1/ai/execute", "POST") in routes
+    assert ("/api/v1/ai/executions/{execution_id}", "GET") in routes
+    assert ("/api/v1/ai/executions/{execution_id}/evaluation", "GET") in routes
+    assert ("/api/v1/tools", "GET") in routes
+    assert ("/api/v1/admin/tools", "POST") in routes
+    assert ("/api/v1/tools/authorize", "POST") in routes
+    assert ("/api/v1/tools/execute", "POST") in routes
+    assert ("/api/v1/tools/executions/{execution_id}", "GET") in routes
+    assert ("/api/v1/tools/executions/{execution_id}/rollback", "POST") in routes
+    assert ("/api/v1/budgets/{scope_type}/{scope_id}", "GET") in routes
+    assert ("/api/v1/budgets", "POST") in routes
+    assert ("/api/v1/budgets/{budget_id}", "PATCH") in routes
+    assert ("/api/v1/budgets/{budget_id}/request-increase", "POST") in routes
+    assert ("/api/v1/costs/missions/{mission_id}", "GET") in routes
     assert ("/api/v1/model-executions/{model_execution_id}", "GET") in routes
     assert ("/api/v1/tool-definitions", "GET") in routes
     assert ("/api/v1/tool-executions", "GET") in routes
