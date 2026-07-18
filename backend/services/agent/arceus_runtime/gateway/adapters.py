@@ -72,6 +72,9 @@ class DeterministicLocalAdapter:
 
 
 class OpenAICompatibleAdapter:
+    def __init__(self, client_factory: Any | None = None) -> None:
+        self._client_factory = client_factory or httpx.Client
+
     def _api_key(self, provider: ArceusProviderProfile) -> str:
         reference = (provider.authentication_reference or "").strip()
         if reference.startswith("env:"):
@@ -99,7 +102,7 @@ class OpenAICompatibleAdapter:
         }
         if request.required_output_schema and model.supports_structured_output:
             payload["response_format"] = {"type": "json_object"}
-        with httpx.Client(timeout=60.0) as client:
+        with self._client_factory(timeout=60.0) as client:
             response = client.post(
                 f"{base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

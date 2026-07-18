@@ -1,6 +1,7 @@
 import uuid
 from decimal import Decimal
 
+import httpx
 import pytest
 
 from services.agent.arceus_runtime.gateway.adapters import DeterministicLocalAdapter, OpenAICompatibleAdapter
@@ -283,6 +284,75 @@ def test_openai_compatible_adapter_rejects_inline_secret_profiles() -> None:
 
     assert result["status"] == "misconfigured"
     assert "inline secret" in result["reason"]
+
+
+def test_openai_compatible_adapter_normalizes_chat_completion(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    seen: dict[str, object] = {}
+
+    def handler(request_: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request_.url)
+        seen["authorization"] = request_.headers.get("authorization")
+        payload = request_.read().decode("utf-8")
+        seen["payload"] = payload
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "choices": [{"finish_reason": "stop", "message": {"content": "{\"status\":\"completed\",\"summary\":\"done\"}"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(**kwargs):
+        return httpx.Client(transport=transport, **kwargs)
+
+    req = request(required_output_schema={"type": "object", "required": ["status", "summary"]}, maximum_output_tokens=100)
+    selected_model = model("gpt-test", "openai", capabilities=["security_analysis", "code_review"], quality=0.9)
+    openai_provider = provider("openai")
+    openai_provider.adapter_type = "openai_compatible"
+    routing = route_model_request(tenant_id=TENANT_ID, request=req, providers=[openai_provider], models=[selected_model])
+    compiled = compile_prompt(request=req, model=selected_model, routing=routing)
+
+    response = OpenAICompatibleAdapter(client_factory=client_factory).generate(provider=openai_provider, model=selected_model, prompt=compiled, request=req)
+    validation = validate_model_output(response.output, req.required_output_schema)
+
+    assert seen["url"] == "https://api.openai.com/v1/chat/completions"
+    assert seen["authorization"] == "Bearer test-key"
+    assert '"response_format": {"type": "json_object"}' in str(seen["payload"])
+    assert response.input_tokens == 100
+    assert response.output_tokens == 20
+    assert response.raw_response_reference is not None
+    assert validation.status == "valid"
+
+
+def test_openai_compatible_adapter_uses_provider_specific_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://gateway.local/v1")
+    seen: dict[str, str] = {}
+
+    def handler(request_: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request_.url)
+        return httpx.Response(200, json={"id": "ok", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {}})
+
+    def client_factory(**kwargs):
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    req = request(required_output_schema=None)
+    selected_model = model("gpt-test", "openai", capabilities=["security_analysis", "code_review"], quality=0.9)
+    openai_provider = provider("openai")
+    routing = route_model_request(tenant_id=TENANT_ID, request=req, providers=[openai_provider], models=[selected_model])
+
+    OpenAICompatibleAdapter(client_factory=client_factory).generate(
+        provider=openai_provider,
+        model=selected_model,
+        prompt=compile_prompt(request=req, model=selected_model, routing=routing),
+        request=req,
+    )
+
+    assert seen["url"] == "http://gateway.local/v1/chat/completions"
 
 
 def test_budget_status_tracks_remaining_warning_and_exhaustion() -> None:

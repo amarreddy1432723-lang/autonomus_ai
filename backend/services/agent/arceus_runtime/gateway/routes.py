@@ -293,8 +293,15 @@ def test_provider(provider_key: str, request: Request, context: RequestContext =
     item = db.query(ArceusProviderProfile).filter(ArceusProviderProfile.provider_key == provider_key).first()
     if item is None:
         raise HTTPException(status_code=404, detail="Provider profile not found.")
-    status = "misconfigured" if item.authentication_reference.strip().lower().startswith("sk-") else item.health_status
-    return api_response({"provider_key": provider_key, "health_status": status, "secret_inline": status == "misconfigured"}, request)
+    try:
+        result = adapter_for(item).health_check(provider=item)
+    except Exception as exc:
+        result = {"status": "misconfigured", "reason": str(exc), "provider_key": provider_key}
+    item.health_status = result.get("status", item.health_status)
+    item.circuit_state = "open" if item.health_status == "misconfigured" else item.circuit_state
+    item.version = int(item.version or 1) + 1
+    db.commit()
+    return api_response(result, request)
 
 
 @router.post("/api/v1/ai/route")
@@ -337,10 +344,7 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
         db.add(ledger)
         db.commit()
         raise HTTPException(status_code=409, detail={"code": "NO_POLICY_COMPATIBLE_MODEL", "hard_exclusions": decision.hard_exclusions})
-    provider = db.query(ArceusProviderProfile).filter(ArceusProviderProfile.provider_key == decision.selected_provider_key).first()
-    selected_model = db.query(ArceusModelProfile).filter(ArceusModelProfile.model_key == decision.selected_model_key).first()
-    if provider is None or selected_model is None:
-        raise HTTPException(status_code=409, detail={"code": "ROUTED_PROFILE_MISSING", "provider_key": decision.selected_provider_key, "model_key": decision.selected_model_key})
+    attempt_model_keys = [decision.selected_model_key, *(decision.fallback_model_keys or [])]
     try:
         reservation = reserve_budget(
             db=db,
@@ -361,13 +365,34 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
                 "remaining": str(exc.remaining),
             },
         )
-    try:
-        compiled_prompt = compile_prompt(request=payload, model=selected_model, routing=decision)
-        provider_response = adapter_for(provider).generate(provider=provider, model=selected_model, prompt=compiled_prompt, request=payload)
-        validation = validate_model_output(provider_response.output, payload.required_output_schema)
-    except Exception as exc:
+    attempt_errors: list[dict[str, str]] = []
+    provider = None
+    selected_model = None
+    compiled_prompt = None
+    provider_response = None
+    validation = None
+    fallback_used = False
+    for attempt_index, model_key in enumerate(attempt_model_keys):
+        selected_model = db.query(ArceusModelProfile).filter(ArceusModelProfile.model_key == model_key).first()
+        provider = db.query(ArceusProviderProfile).filter(ArceusProviderProfile.provider_key == selected_model.provider_key).first() if selected_model is not None else None
+        if provider is None or selected_model is None:
+            attempt_errors.append({"model_key": str(model_key), "code": "ROUTED_PROFILE_MISSING"})
+            continue
+        try:
+            compiled_prompt = compile_prompt(request=payload, model=selected_model, routing=decision)
+            provider_response = adapter_for(provider).generate(provider=provider, model=selected_model, prompt=compiled_prompt, request=payload)
+            validation = validate_model_output(provider_response.output, payload.required_output_schema)
+            if validation.status == "valid":
+                fallback_used = attempt_index > 0
+                break
+            record_provider_failure(provider, ";".join(validation.errors))
+            attempt_errors.append({"model_key": model_key, "code": "MODEL_OUTPUT_VALIDATION_FAILED", "message": ",".join(validation.errors)})
+        except Exception as exc:
+            record_provider_failure(provider, str(exc))
+            attempt_errors.append({"model_key": str(model_key), "code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)})
+            continue
+    if provider_response is None or compiled_prompt is None or validation is None:
         release_budget(db=db, reservation=reservation)
-        record_provider_failure(provider, str(exc))
         ledger = ArceusAIExecutionLedger(
             tenant_id=context.tenant_id,
             mission_id=payload.mission_id,
@@ -383,11 +408,11 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
             routing_decision_id=decision.id,
             cost_reservation_id=reservation.id if reservation is not None else None,
             completed_at=datetime.now(timezone.utc),
-            error={"code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)},
+            error={"code": "PROVIDER_EXECUTION_FAILED", "attempts": attempt_errors},
         )
         db.add(ledger)
         db.commit()
-        raise HTTPException(status_code=502, detail={"code": "PROVIDER_EXECUTION_FAILED", "message": str(exc)})
+        raise HTTPException(status_code=502, detail={"code": "PROVIDER_EXECUTION_FAILED", "attempts": attempt_errors})
     output = validation.normalized_output
     response_hash = provider_response.response_hash
     status = "completed" if validation.status == "valid" else "failed"
@@ -412,6 +437,7 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
         estimated_cost=decision.estimated_cost_usd,
         actual_cost=provider_response.cost_usd,
         latency_ms=provider_response.latency_ms,
+        fallback_used=fallback_used,
         routing_decision_id=decision.id,
         cost_reservation_id=reservation.id if reservation is not None else None,
         completed_at=datetime.now(timezone.utc),
@@ -422,6 +448,7 @@ def execute_ai_request(payload: AIExecutionRequest, request: Request, context: R
             "raw_response_reference": provider_response.raw_response_reference,
             "prompt_hash": compiled_prompt.content_hash,
             "context_items": len(compiled_prompt.context_items),
+            "attempts": attempt_errors,
         },
         error={} if validation.status == "valid" else {"validation_errors": validation.errors},
     )
