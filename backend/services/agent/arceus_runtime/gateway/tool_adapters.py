@@ -233,10 +233,128 @@ class FilesystemMutationToolAdapter:
         return {"path": str(path), "operation": "mkdir", "rollback": rollback}
 
 
+class GitToolAdapter:
+    def execute(self, *, profile: ArceusToolProfile, request: ToolExecutionRequest) -> ToolExecutionResult:
+        if profile.side_effect_class not in {"READ_ONLY", "REPOSITORY_MUTATION"}:
+            raise ValueError("GitToolAdapter only supports read-only or repository mutation tools.")
+        started = time.perf_counter()
+        if request.action_key == "status":
+            output = self._status(request)
+        elif request.action_key == "diff":
+            output = self._diff(request)
+        elif request.action_key == "create_branch":
+            if profile.side_effect_class != "REPOSITORY_MUTATION":
+                raise ValueError("create_branch requires a REPOSITORY_MUTATION git profile.")
+            output = self._create_branch(request)
+        else:
+            raise ValueError(f"Unsupported git action: {request.action_key}")
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        rollback_required = request.action_key == "create_branch" and bool(output.get("created"))
+        evidence = {
+            "tool_key": request.tool_key,
+            "action_key": request.action_key,
+            "side_effect_class": profile.side_effect_class,
+            "dry_run": request.dry_run,
+            "rollback_required": rollback_required,
+            "rollback": output.get("rollback"),
+            "idempotency_key": request.idempotency_key,
+        }
+        return ToolExecutionResult(
+            status="completed",
+            output=output,
+            evidence=evidence,
+            latency_ms=latency_ms,
+            output_hash=stable_hash(output),
+        )
+
+    def _workspace_root(self, request: ToolExecutionRequest) -> Path:
+        workspace_root = request.arguments.get("workspace_root")
+        if not workspace_root:
+            raise ValueError("workspace_root is required for git tool execution.")
+        return Path(str(workspace_root)).expanduser().resolve()
+
+    def _workspace_relative_path(self, request: ToolExecutionRequest) -> str | None:
+        relative_path = request.arguments.get("path")
+        if relative_path is None:
+            return None
+        root = self._workspace_root(request)
+        path = resolve_workspace_path(str(root), str(relative_path))
+        return "." if path == root else path.relative_to(root).as_posix()
+
+    def _run_git(self, request: ToolExecutionRequest, args: list[str]) -> dict[str, Any]:
+        root = self._workspace_root(request)
+        command = ["git", *args]
+        if request.dry_run:
+            return {"would_run": command, "cwd": str(root)}
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=request.timeout_seconds,
+            check=False,
+        )
+        combined = redact_output("\n".join(filter(None, [completed.stdout, completed.stderr])))
+        return {
+            "command": command,
+            "cwd": str(root),
+            "return_code": completed.returncode,
+            "lines": combined.splitlines(),
+        }
+
+    def _status(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        return self._run_git(request, ["status", "--porcelain=v1", "--branch"])
+
+    def _diff(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        args = ["diff"]
+        if bool(request.arguments.get("staged", False)):
+            args.append("--cached")
+        relative_path = self._workspace_relative_path(request)
+        if relative_path:
+            args.extend(["--", relative_path])
+        return self._run_git(request, args)
+
+    def _validate_branch_name(self, branch: str) -> None:
+        if not branch:
+            raise ValueError("branch is required for create_branch.")
+        if not re.fullmatch(r"[A-Za-z0-9._/\-]+", branch):
+            raise ValueError("branch contains unsupported characters.")
+        invalid = branch.startswith("/") or branch.endswith("/") or ".." in branch or branch.endswith(".lock")
+        invalid = invalid or "//" in branch or branch.startswith("-")
+        if invalid:
+            raise ValueError("branch name is not allowed.")
+
+    def _create_branch(self, request: ToolExecutionRequest) -> dict[str, Any]:
+        branch = str(request.arguments.get("branch") or "").strip()
+        self._validate_branch_name(branch)
+        start_point = request.arguments.get("start_point")
+        verify = self._run_git(request, ["rev-parse", "--verify", branch])
+        if request.dry_run:
+            return {"would_create_branch": branch, "verify": verify}
+        if verify["return_code"] == 0:
+            return {"branch": branch, "operation": "create_branch", "created": False, "existed": True}
+        args = ["branch", branch]
+        if start_point:
+            args.append(str(start_point))
+        result = self._run_git(request, args)
+        if result["return_code"] != 0:
+            raise ValueError("Git branch creation failed: " + "\n".join(result["lines"]))
+        return {
+            "branch": branch,
+            "operation": "create_branch",
+            "created": True,
+            "existed": False,
+            "result": result,
+            "rollback": {"operation": "delete_branch", "branch": branch},
+        }
+
+
 def adapter_for_tool(profile: ArceusToolProfile) -> ToolAdapter:
     adapter_type = (profile.adapter_type or "").lower()
     if adapter_type in {"shell", "read_only_shell", "search", "filesystem_read"}:
         return ReadOnlyShellToolAdapter()
     if adapter_type in {"filesystem_mutation", "filesystem_write"}:
         return FilesystemMutationToolAdapter()
+    if adapter_type in {"git", "git_adapter"}:
+        return GitToolAdapter()
     raise ValueError(f"Unsupported tool adapter: {profile.adapter_type}")

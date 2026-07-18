@@ -1,6 +1,8 @@
 import uuid
 from decimal import Decimal
 from pathlib import Path
+import shutil
+import subprocess
 
 import httpx
 import pytest
@@ -11,7 +13,7 @@ from services.agent.arceus_runtime.gateway.budgeting import budget_status, remai
 from services.agent.arceus_runtime.gateway.health import record_provider_failure, record_provider_success
 from services.agent.arceus_runtime.gateway.prompting import compile_prompt, select_context_items
 from services.agent.arceus_runtime.gateway.service import authorize_tool, hard_exclusions, route_model_request, stable_hash
-from services.agent.arceus_runtime.gateway.tool_adapters import FilesystemMutationToolAdapter, ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
+from services.agent.arceus_runtime.gateway.tool_adapters import GitToolAdapter, FilesystemMutationToolAdapter, ReadOnlyShellToolAdapter, adapter_for_tool, redact_output, resolve_workspace_path
 from services.agent.arceus_runtime.gateway.validation import scan_output_for_sensitive_material, validate_model_output
 from services.shared.arceus_core_models import ArceusBudget, ArceusModelProfile, ArceusProviderProfile, ArceusToolProfile
 
@@ -566,3 +568,119 @@ def test_filesystem_mutation_dry_run_does_not_write(tmp_path: Path) -> None:
 
 def test_mutation_adapter_factory_resolves_filesystem_write() -> None:
     assert isinstance(adapter_for_tool(mutation_tool()), FilesystemMutationToolAdapter)
+
+
+def git_tool(*, side_effect_class: str = "READ_ONLY") -> ArceusToolProfile:
+    return ArceusToolProfile(
+        tool_key="git",
+        display_name="Git",
+        adapter_type="git",
+        version="1",
+        capabilities=["git_status", "git_diff", "git_branch"],
+        supported_actions=["status", "diff", "create_branch"],
+        risk_level="low" if side_effect_class == "READ_ONLY" else "medium",
+        side_effect_class=side_effect_class,
+        requires_sandbox=True,
+        supports_dry_run=True,
+        supports_idempotency=True,
+        supports_rollback=side_effect_class != "READ_ONLY",
+        allowed_environments=["local"],
+        maximum_runtime_seconds=30,
+        enabled=True,
+    )
+
+
+def git_request(tmp_path: Path, action: str, **arguments) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        mission_id=MISSION_ID,
+        tool_key="git",
+        action_key=action,
+        arguments={"workspace_root": str(tmp_path), **arguments},
+        environment="local",
+        timeout_seconds=10,
+        dry_run=False,
+        idempotency_key=f"git-{action}",
+    )
+
+
+def init_git_repo(tmp_path: Path) -> None:
+    if not shutil.which("git"):
+        pytest.skip("git executable is not available")
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Arceus Test"], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+
+def commit_initial_file(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+
+def test_git_adapter_status_reads_repository_state(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+
+    result = GitToolAdapter().execute(profile=git_tool(), request=git_request(tmp_path, "status"))
+
+    assert result.status == "completed"
+    assert result.output["return_code"] == 0
+    assert any("README.md" in line for line in result.output["lines"])
+    assert result.evidence["rollback_required"] is False
+
+
+def test_git_adapter_diff_supports_staged_file_scope(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    result = GitToolAdapter().execute(profile=git_tool(), request=git_request(tmp_path, "diff", staged=True, path="README.md"))
+
+    assert result.output["return_code"] == 0
+    assert any("+hello" in line for line in result.output["lines"])
+    assert result.evidence["side_effect_class"] == "READ_ONLY"
+
+
+def test_git_branch_creation_requires_approval_before_authorization(tmp_path: Path) -> None:
+    req = git_request(tmp_path, "create_branch", branch="feature/test")
+
+    authorized, reasons = authorize_tool(git_tool(side_effect_class="REPOSITORY_MUTATION"), req)
+
+    assert authorized is False
+    assert "approval_required_for_side_effect" in reasons
+
+
+def test_git_adapter_blocks_branch_creation_from_read_only_profile(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    req = git_request(tmp_path, "create_branch", branch="feature/test")
+
+    with pytest.raises(ValueError, match="REPOSITORY_MUTATION"):
+        GitToolAdapter().execute(profile=git_tool(), request=req)
+
+
+def test_git_adapter_creates_branch_with_rollback_metadata(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    commit_initial_file(tmp_path)
+    req = git_request(tmp_path, "create_branch", branch="feature/test")
+    req.approval_id = uuid.uuid4()
+
+    result = GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
+
+    verify = subprocess.run(["git", "rev-parse", "--verify", "feature/test"], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert result.output["created"] is True
+    assert result.output["rollback"] == {"operation": "delete_branch", "branch": "feature/test"}
+    assert result.evidence["rollback_required"] is True
+    assert verify.returncode == 0
+
+
+def test_git_adapter_rejects_unsafe_branch_names(tmp_path: Path) -> None:
+    init_git_repo(tmp_path)
+    req = git_request(tmp_path, "create_branch", branch="../bad")
+    req.approval_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="not allowed"):
+        GitToolAdapter().execute(profile=git_tool(side_effect_class="REPOSITORY_MUTATION"), request=req)
+
+
+def test_git_adapter_factory_resolves_git_profiles() -> None:
+    assert isinstance(adapter_for_tool(git_tool()), GitToolAdapter)
