@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -27,6 +27,7 @@ from services.agent.arceus_runtime.operations.service import calculate_slo_postu
 from services.agent.arceus_runtime.organizations.routes import _member_response
 from services.agent.arceus_runtime.product.service import build_roadmap, create_experiment, discover_opportunities, generate_requirement, product_dashboard
 from services.agent.arceus_runtime.router import install_arceus_runtime
+from services.agent.arceus_runtime.runtime_kernel.service import compile_mission_graph, create_checkpoint, create_runtime_mission, grant_lease, recover_expired_leases, replay_mission, runtime_metrics, schedule_ready_tasks
 from services.agent.arceus_runtime.workspaces.service import repository_fingerprint, workspace_slug, workspace_settings
 from services.agent.arceus_runtime.workers.outbox import MAX_OUTBOX_ATTEMPTS, calculate_backoff_seconds
 from services.shared.arceus_core_models import ArceusAIExecutionLedger, ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusSpecialistProfile, ArceusTask
@@ -202,6 +203,16 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/dashboard", "GET") in routes
     assert ("/api/v1/voice", "POST") in routes
     assert ("/api/v1/search", "POST") in routes
+    assert ("/api/v1/runtime/missions", "POST") in routes
+    assert ("/api/v1/runtime/missions/{mission_id}", "GET") in routes
+    assert ("/api/v1/runtime/tasks/{task_id}/lease", "POST") in routes
+    assert ("/api/v1/runtime/tasks/{task_id}/checkpoint", "POST") in routes
+    assert ("/api/v1/runtime/tasks/{task_id}/cancel", "POST") in routes
+    assert ("/api/v1/runtime/missions/{mission_id}/pause", "POST") in routes
+    assert ("/api/v1/runtime/missions/{mission_id}/resume", "POST") in routes
+    assert ("/api/v1/runtime/events", "GET") in routes
+    assert ("/api/v1/runtime/missions/{mission_id}/replay", "POST") in routes
+    assert ("/api/v1/runtime/metrics", "GET") in routes
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:
@@ -724,6 +735,133 @@ def test_experience_smart_search_spans_requested_scopes() -> None:
     assert result["strategy"] == ["intent_detection", "unified_context", "keyword", "knowledge_graph"]
     assert len(result["results"]) == 2
     assert result["results"][0]["related_intent"] in {"analysis", "execution", "information"}
+
+
+def test_runtime_kernel_compiles_deterministic_parallel_groups() -> None:
+    graph = compile_mission_graph(
+        {
+            "tasks": [
+                {"task_key": "backend", "title": "Backend", "dependencies": [], "priority": 70},
+                {"task_key": "frontend", "title": "Frontend", "dependencies": [], "priority": 60},
+                {"task_key": "tests", "title": "Tests", "dependencies": ["backend", "frontend"], "priority": 90},
+            ]
+        }
+    )
+
+    assert graph["parallel_groups"] == [["backend", "frontend"], ["tests"]]
+    assert {"from": "backend", "to": "tests"} in graph["edges"]
+    assert graph["graph_hash"].startswith("sha256:")
+
+
+def test_runtime_kernel_scheduler_respects_dependencies_and_priority() -> None:
+    tasks = [
+        {"task_key": "low", "dependencies": [], "priority": 10},
+        {"task_key": "high", "dependencies": [], "priority": 90},
+        {"task_key": "blocked", "dependencies": ["high"], "priority": 100},
+    ]
+
+    ready = schedule_ready_tasks(tasks, completed_task_keys=set(), strategy="priority")
+
+    assert [task["task_key"] for task in ready] == ["high", "low"]
+
+
+def test_runtime_kernel_creates_mission_with_ready_and_pending_tasks() -> None:
+    mission = create_runtime_mission(
+        {
+            "title": "Modernize Authentication Service",
+            "objective": "Implement OAuth with tests.",
+            "priority": 80,
+            "scheduling_strategy": "priority",
+            "tasks": [
+                {"task_key": "backend", "title": "Backend OAuth", "dependencies": [], "required_capabilities": ["backend"], "priority": 90},
+                {"task_key": "tests", "title": "Auth tests", "dependencies": ["backend"], "required_capabilities": ["qa"], "priority": 70},
+            ],
+            "resource_budget": {"tokens": 10000},
+        }
+    )
+
+    statuses = {task["task_key"]: task["status"] for task in mission["tasks"]}
+
+    assert mission["runtime_state"] == "ready"
+    assert statuses == {"backend": "queued", "tests": "pending"}
+    assert any(event["event_type"] == "TASK_READY" for event in mission["events"])
+
+
+def test_runtime_kernel_lease_denies_missing_capabilities_and_grants_matching_worker() -> None:
+    task = {"task_id": "task-1", "task_key": "backend", "title": "Backend OAuth", "required_capabilities": ["backend"]}
+
+    denied = grant_lease(task, {"worker_id": "qa-1", "worker_capabilities": ["qa"], "ttl_seconds": 300})
+    granted = grant_lease(task, {"worker_id": "backend-1", "worker_capabilities": ["backend"], "ttl_seconds": 300})
+
+    assert denied["status"] == "denied_missing_capability"
+    assert denied["cognitive_state"]["missing_capabilities"] == ["backend"]
+    assert granted["status"] == "granted"
+    assert granted["lease_id"].startswith("lease_")
+    assert "current_plan" in granted["cognitive_state"]
+
+
+def test_runtime_kernel_checkpoint_sanitizes_cognitive_state_and_hashes_state() -> None:
+    checkpoint = create_checkpoint(
+        "task-1",
+        {
+            "worker_id": "worker-1",
+            "progress": 0.5,
+            "outputs": {"artifacts": ["patch.diff"], "secret_reasoning": "not allowed"},
+            "evidence": ["ev-build"],
+            "cognitive_state": {
+                "objective": "Build auth",
+                "current_plan": ["implement", "test"],
+                "hidden_reasoning": "must not persist",
+            },
+            "resource_usage": {"tokens": 1200},
+        },
+    )
+
+    assert checkpoint["checkpoint_id"].startswith("chk_")
+    assert checkpoint["state_hash"].startswith("sha256:")
+    assert "hidden_reasoning" not in checkpoint["metadata"]["cognitive_state"]
+    assert checkpoint["artifacts"] == ["patch.diff"]
+
+
+def test_runtime_kernel_recovery_requeues_expired_leases() -> None:
+    expired_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    result = recover_expired_leases(
+        [{"task_id": "task-1", "task_key": "backend", "status": "running", "lease_id": "lease-1", "assigned_worker": "worker-1"}],
+        [{"task_id": "task-1", "lease_id": "lease-1", "status": "granted", "expires_at": expired_at}],
+    )
+
+    assert result["expired_leases"] == 1
+    assert result["recovered_tasks"][0]["status"] == "queued"
+    assert result["events"][0]["event_type"] == "LEASE_EXPIRED_TASK_RECOVERED"
+
+
+def test_runtime_kernel_replay_is_deterministic_and_simulates_side_effects() -> None:
+    mission = create_runtime_mission(
+        {
+            "title": "Replay Mission",
+            "objective": "Replay mission for audit.",
+            "priority": 50,
+            "scheduling_strategy": "priority",
+            "tasks": [{"task_key": "inspect", "title": "Inspect", "dependencies": [], "required_capabilities": [], "priority": 50}],
+            "resource_budget": {},
+        }
+    )
+
+    replay = replay_mission(mission)
+
+    assert replay["deterministic"] is True
+    assert replay["simulated_side_effects"] is True
+    assert replay["event_count"] == len(mission["events"])
+    assert replay["reconstructed_state"]["graph_hash"] == mission["graph"]["graph_hash"]
+
+
+def test_runtime_kernel_metrics_track_retry_checkpoint_and_parallelism() -> None:
+    metrics = runtime_metrics({"task_statuses": {"running": 2, "succeeded": 6, "failed": 0}, "retries": 1, "checkpoints": 8})
+
+    assert metrics["worker_utilization"] == 0.25
+    assert metrics["checkpoint_frequency"] == 1.0
+    assert metrics["retry_rate"] == 0.125
+    assert metrics["recovery_success"] == 1.0
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:

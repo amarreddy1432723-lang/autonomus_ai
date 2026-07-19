@@ -26,6 +26,7 @@ from .organizations.routes import router as organizations_router
 from .operations.routes import router as operations_router
 from .planning.routes import router as planning_router
 from .product.routes import router as product_router
+from .runtime_kernel.routes import router as runtime_kernel_router
 from .security.routes import router as security_router
 from .tasks.routes import router as tasks_router
 from .usage.routes import router as usage_router
@@ -38,6 +39,7 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.include_router(missions_router)
     app.include_router(automation_router)
     app.include_router(experience_router)
+    app.include_router(runtime_kernel_router)
     app.include_router(events_router)
     app.include_router(execution_router)
     app.include_router(approvals_router)

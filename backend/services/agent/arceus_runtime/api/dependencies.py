@@ -103,6 +103,10 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "experience.dashboard.view",
         "experience.voice",
         "experience.search",
+        "runtime.kernel.view",
+        "runtime.kernel.manage",
+        "runtime.kernel.lease",
+        "runtime.kernel.checkpoint",
     }
 )
 
