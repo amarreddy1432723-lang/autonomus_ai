@@ -27,10 +27,11 @@ from services.agent.arceus_runtime.operations.service import calculate_slo_postu
 from services.agent.arceus_runtime.organizations.routes import _member_response
 from services.agent.arceus_runtime.product.service import build_roadmap, create_experiment, discover_opportunities, generate_requirement, product_dashboard
 from services.agent.arceus_runtime.router import install_arceus_runtime
+from services.agent.arceus_runtime.runtime_kernel.routes import _checkpoint_response, _event_response, _runtime_status_from_mission, _runtime_status_from_task
 from services.agent.arceus_runtime.runtime_kernel.service import compile_mission_graph, create_checkpoint, create_runtime_mission, grant_lease, recover_expired_leases, replay_mission, runtime_metrics, schedule_ready_tasks
 from services.agent.arceus_runtime.workspaces.service import repository_fingerprint, workspace_slug, workspace_settings
 from services.agent.arceus_runtime.workers.outbox import MAX_OUTBOX_ATTEMPTS, calculate_backoff_seconds
-from services.shared.arceus_core_models import ArceusAIExecutionLedger, ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusSpecialistProfile, ArceusTask
+from services.shared.arceus_core_models import ArceusAIExecutionLedger, ArceusApproval, ArceusApprovalVote, ArceusCapability, ArceusDecision, ArceusEvent, ArceusMission, ArceusModelExecution, ArceusOrganizationMember, ArceusRuntimeCheckpoint, ArceusSpecialistProfile, ArceusTask, ArceusWorkerLease
 
 
 def test_runtime_installs_spec_mission_routes() -> None:
@@ -862,6 +863,72 @@ def test_runtime_kernel_metrics_track_retry_checkpoint_and_parallelism() -> None
     assert metrics["checkpoint_frequency"] == 1.0
     assert metrics["retry_rate"] == 0.125
     assert metrics["recovery_success"] == 1.0
+
+
+def test_runtime_kernel_persisted_statuses_map_to_api_contract() -> None:
+    lease = ArceusWorkerLease(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        task_id=uuid.uuid4(),
+        worker_id="worker-a",
+        lease_token="lease-token",
+        status="active",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+
+    assert _runtime_status_from_mission("ready") == "ready"
+    assert _runtime_status_from_mission("failed") == "blocked"
+    assert _runtime_status_from_task("ready", None) == "queued"
+    assert _runtime_status_from_task("running", lease) == "leased"
+    assert _runtime_status_from_task("completed", None) == "succeeded"
+
+
+def test_runtime_kernel_serializes_persisted_events_and_checkpoints() -> None:
+    mission_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    event = ArceusEvent(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        aggregate_type="runtime_mission",
+        aggregate_id=mission_id,
+        aggregate_version=3,
+        event_type="runtime.checkpoint.created",
+        actor_type="worker",
+        actor_id="worker-a",
+        payload={"task_id": str(task_id), "state_hash": "sha256:state"},
+        occurred_at=now,
+    )
+    checkpoint = ArceusRuntimeCheckpoint(
+        id=uuid.uuid4(),
+        tenant_id=event.tenant_id,
+        mission_id=mission_id,
+        task_id=task_id,
+        checkpoint_key="progress-050",
+        workflow_version=2,
+        execution_state={
+            "state_hash": "sha256:state",
+            "evidence": ["tests passed"],
+            "resource_usage": {"tokens": 120},
+            "cognitive_state": {"objective": "Implement task"},
+        },
+        artifacts=["artifact://receipt"],
+        outputs={"summary": "Halfway done"},
+        progress_percent=50,
+        created_by_worker_id="worker-a",
+        created_at=now,
+    )
+
+    event_payload = _event_response(event)
+    checkpoint_payload = _checkpoint_response(checkpoint)
+
+    assert event_payload["sequence"] == 3
+    assert event_payload["aggregate_id"] == str(mission_id)
+    assert event_payload["payload"]["state_hash"] == "sha256:state"
+    assert checkpoint_payload["checkpoint_id"] == str(checkpoint.id)
+    assert checkpoint_payload["state_hash"] == "sha256:state"
+    assert checkpoint_payload["metadata"]["progress"] == 0.5
+    assert checkpoint_payload["metadata"]["resource_usage"]["tokens"] == 120
 
 
 def test_sse_frame_format_uses_cursor_id_and_stable_event_name() -> None:
