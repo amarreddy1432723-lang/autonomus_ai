@@ -167,6 +167,18 @@
   font-weight: 850;
 }
 
+.actions span[data-state="loading"] {
+  border-color: rgba(91, 167, 255, 0.28);
+  background: rgba(91, 167, 255, 0.12);
+  color: #2f6dba;
+}
+
+.actions span[data-state="offline"] {
+  border-color: rgba(255, 176, 83, 0.36);
+  background: rgba(255, 176, 83, 0.16);
+  color: #a86408;
+}
+
 .hero {
   max-width: 980px;
   margin: 50px auto 28px;
@@ -206,6 +218,27 @@
   color: #626875;
   font-size: 20px;
   font-weight: 650;
+}
+
+.errorBanner,
+.successBanner {
+  margin: 16px 28px 0;
+  padding: 13px 16px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.errorBanner {
+  border: 1px solid rgba(255, 107, 107, 0.36);
+  background: rgba(255, 107, 107, 0.10);
+  color: #9d2222;
+}
+
+.successBanner {
+  border: 1px solid rgba(47, 159, 114, 0.32);
+  background: rgba(47, 159, 114, 0.10);
+  color: #247a58;
 }
 
 .grid {
@@ -374,6 +407,12 @@
   border-color: transparent;
   background: linear-gradient(135deg, #7b61ff, #5ba7ff);
   color: #ffffff;
+}
+
+.primaryActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
 }
 
 .feed {

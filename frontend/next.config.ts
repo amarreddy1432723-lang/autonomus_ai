@@ -90,6 +90,42 @@ const nextConfig: NextConfig = {
         destination: `${agentUrl}/api/v1/os/:path*`,
       },
       {
+        source: '/api/v1/runtime/:path*',
+        destination: `${agentUrl}/api/v1/runtime/:path*`,
+      },
+      {
+        source: '/api/v1/product/:path*',
+        destination: `${agentUrl}/api/v1/product/:path*`,
+      },
+      {
+        source: '/api/v1/automation/:path*',
+        destination: `${agentUrl}/api/v1/automation/:path*`,
+      },
+      {
+        source: '/api/v1/intents/:path*',
+        destination: `${agentUrl}/api/v1/intents/:path*`,
+      },
+      {
+        source: '/api/v1/workspace',
+        destination: `${agentUrl}/api/v1/workspace`,
+      },
+      {
+        source: '/api/v1/timeline',
+        destination: `${agentUrl}/api/v1/timeline`,
+      },
+      {
+        source: '/api/v1/dashboard',
+        destination: `${agentUrl}/api/v1/dashboard`,
+      },
+      {
+        source: '/api/v1/search',
+        destination: `${agentUrl}/api/v1/search`,
+      },
+      {
+        source: '/api/v1/voice',
+        destination: `${agentUrl}/api/v1/voice`,
+      },
+      {
         source: '/api/v1/sessions/:path*',
         destination: `${agentUrl}/api/v1/sessions/:path*`,
       },

@@ -48,6 +48,15 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/news') ||
     path.startsWith('/api/v1/jobs') ||
     path.startsWith('/api/v1/os') ||
+    path.startsWith('/api/v1/runtime') ||
+    path.startsWith('/api/v1/product') ||
+    path.startsWith('/api/v1/automation') ||
+    path.startsWith('/api/v1/intents') ||
+    path.startsWith('/api/v1/workspace') ||
+    path.startsWith('/api/v1/timeline') ||
+    path.startsWith('/api/v1/dashboard') ||
+    path.startsWith('/api/v1/voice') ||
+    path.startsWith('/api/v1/search') ||
     path.startsWith('/api/v1/sessions')
   ) {
     return AGENT_URL + path;
