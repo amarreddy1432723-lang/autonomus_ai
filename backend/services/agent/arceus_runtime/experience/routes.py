@@ -7,6 +7,7 @@ from services.shared.database import get_db
 
 from ..api.dependencies import RequestContext, require_permission
 from ..api.responses import api_response, collection_response
+from ..application.mission_factory import create_surface_mission
 from ..application.unit_of_work import SqlAlchemyUnitOfWork
 from .api_schemas import (
     DashboardResponse,
@@ -54,6 +55,26 @@ def execute_user_intent(
     db: Session = Depends(get_db),
 ):
     result = execute_intent(payload.model_dump(mode="json"), user_id=str(context.user_id))
+    mission = create_surface_mission(
+        db,
+        context,
+        surface="experience",
+        title=f"{result['intent']['category'].title()}: {payload.objective[:180]}",
+        objective=payload.objective,
+        status="awaiting_plan_approval" if result["status"] == "requires_confirmation" else "plan_pending",
+        priority=4 if result["status"] == "requires_confirmation" else 3,
+        risk_level="high" if result["status"] == "requires_confirmation" else "medium",
+        source={"intent": result["intent"], "mode": payload.mode, "entities": payload.entities},
+        desired_outcomes=result["response"].get("next_actions") or [],
+        constraints=payload.constraints,
+    )
+    result["mission_thread"] = {
+        **result["mission_thread"],
+        "linked_mission_id": str(mission.id),
+        "project_id": str(mission.project_id),
+        "durable": True,
+    }
+    result["intent"]["context"] = {**result["intent"]["context"], "current_mission": str(mission.id)}
     SqlAlchemyUnitOfWork(db).audit.record(
         tenant_id=context.tenant_id,
         actor_id=context.user_id,
