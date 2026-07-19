@@ -168,6 +168,22 @@ ipcMain.handle("desktop-install-update", async () => {
     return { ok: true };
 });
 
+ipcMain.handle("desktop-open-external", async (event, targetUrl) => {
+    try {
+        const parsed = new URL(String(targetUrl || ""));
+        const frontend = new URL(frontendOrigin);
+        const packaged = new URL(PACKAGED_FRONTEND_URL);
+        const allowedHosts = new Set([frontend.host, packaged.host, "localhost:3000", "127.0.0.1:3000"]);
+        if (!["http:", "https:"].includes(parsed.protocol) || !allowedHosts.has(parsed.host)) {
+            return { ok: false, message: "External URL is not allowed." };
+        }
+        await shell.openExternal(parsed.toString());
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: error?.message || "Could not open external URL." };
+    }
+});
+
 function checkForAppUpdates() {
     if (!autoUpdater || isDev || process.env.ARCEUS_DISABLE_AUTO_UPDATE === "true") {
         return;

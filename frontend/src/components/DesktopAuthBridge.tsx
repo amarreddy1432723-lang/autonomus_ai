@@ -3,15 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiRequest } from '../utils/api';
-
-declare global {
-  interface Window {
-    electron?: {
-      isDesktop?: boolean;
-      onAuthCode?: (callback: (data: { code?: string }) => void) => () => void;
-    };
-  }
-}
+import { writeDesktopAuthState } from '../utils/desktopAuth';
 
 export default function DesktopAuthBridge() {
   const router = useRouter();
@@ -25,11 +17,10 @@ export default function DesktopAuthBridge() {
           method: 'POST',
           body: JSON.stringify({ code }),
         });
-        window.localStorage.setItem('my-ai.access_token', token.access_token);
-        window.localStorage.setItem('my-ai.refresh_token', token.refresh_token);
+        writeDesktopAuthState(token);
         const me = await apiRequest('/api/v1/auth/me');
         if (me?.id) {
-          window.localStorage.setItem('my-ai.user_id', me.id);
+          writeDesktopAuthState({ id: me.id });
         }
         router.push('/workspace');
       } catch (error) {

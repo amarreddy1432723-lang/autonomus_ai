@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
+import { onDesktopAuthChanged, readDesktopAuthState } from '../utils/desktopAuth';
 import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../utils/serviceHealth';
 import styles from './AppShell.module.css';
 
@@ -47,13 +48,14 @@ function ClerkUserSection() {
 
 function DesktopAccountSection() {
   const { isSignedIn, clerkReady } = useOptionalClerkAuth();
-  const [hasStoredToken, setHasStoredToken] = useState(false);
+  const [desktopAuth, setDesktopAuth] = useState(() => readDesktopAuthState());
 
   useEffect(() => {
-    setHasStoredToken(typeof window !== 'undefined' && Boolean(window.localStorage.getItem('my-ai.access_token')));
+    setDesktopAuth(readDesktopAuthState());
+    return onDesktopAuthChanged(setDesktopAuth);
   }, []);
 
-  if (isSignedIn || hasStoredToken) {
+  if (isSignedIn || desktopAuth.connected) {
     return (
       isSignedIn && clerkReady ? (
         <div className={styles.avatar}>
@@ -62,7 +64,7 @@ function DesktopAccountSection() {
       ) : (
         <Link href="/auth/desktop" className={styles.authLink} title="Refresh desktop account session">
           <MonitorCheck size={15} />
-          <span>Connected</span>
+          <span>{desktopAuth.userId ? 'Connected' : 'Re-authenticate'}</span>
         </Link>
       )
     );
@@ -128,8 +130,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void refreshServiceHealth();
+    const unsubscribe = onDesktopAuthChanged(() => void refreshServiceHealth());
     const id = window.setInterval(() => void refreshServiceHealth(), 30000);
-    return () => window.clearInterval(id);
+    return () => {
+      unsubscribe();
+      window.clearInterval(id);
+    };
   }, []);
 
   useEffect(() => {

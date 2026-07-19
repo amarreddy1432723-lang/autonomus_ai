@@ -1,6 +1,52 @@
 
+import { clearDesktopAuthState, readDesktopAuthState } from './desktopAuth';
+
 export function getServiceUrl(path: string): string {
   if (typeof window !== 'undefined') {
+    const electronBridge = (window as any).electron;
+    if (electronBridge?.isDesktop) {
+      const localAgentUrl = 'http://127.0.0.1:8003';
+      const localGoalsUrl = 'http://127.0.0.1:8002';
+      if (
+        path.startsWith('/api/v1/goals') ||
+        path.startsWith('/api/v1/tasks') ||
+        path.startsWith('/api/v1/schedules') ||
+        path.startsWith('/api/v1/analytics') ||
+        path.startsWith('/api/v1/approvals')
+      ) {
+        return localGoalsUrl + path;
+      }
+      if (
+        path.startsWith('/api/v1/ready') ||
+        path.startsWith('/api/v1/agents') ||
+        path.startsWith('/api/v1/models') ||
+        path.startsWith('/api/v1/files') ||
+        path.startsWith('/api/v1/github') ||
+        path.startsWith('/api/v1/usage') ||
+        path.startsWith('/api/v1/billing') ||
+        path.startsWith('/api/v1/admin') ||
+        path.startsWith('/api/v1/plugins') ||
+        path.startsWith('/api/v1/code') ||
+        path.startsWith('/api/v1/deploy') ||
+        path.startsWith('/api/v1/downloads') ||
+        path.startsWith('/api/v1/intelligence') ||
+        path.startsWith('/api/v1/safety') ||
+        path.startsWith('/api/v1/jobs') ||
+        path.startsWith('/api/v1/os') ||
+        path.startsWith('/api/v1/runtime') ||
+        path.startsWith('/api/v1/product') ||
+        path.startsWith('/api/v1/automation') ||
+        path.startsWith('/api/v1/intents') ||
+        path.startsWith('/api/v1/workspace') ||
+        path.startsWith('/api/v1/timeline') ||
+        path.startsWith('/api/v1/dashboard') ||
+        path.startsWith('/api/v1/voice') ||
+        path.startsWith('/api/v1/search') ||
+        path.startsWith('/api/v1/sessions')
+      ) {
+        return localAgentUrl + path;
+      }
+    }
     return path;
   }
   
@@ -88,8 +134,9 @@ export function createApiHeaders(options: RequestInit = {}): Headers {
   const headers = new Headers(options.headers || {});
 
   if (typeof window !== 'undefined') {
-    const storedToken = window.localStorage.getItem('my-ai.access_token');
-    const storedUserId = window.localStorage.getItem('my-ai.user_id') || (ALLOW_DEMO_HEADER ? DEMO_USER_ID : '');
+    const authState = readDesktopAuthState();
+    const storedToken = authState.accessToken;
+    const storedUserId = authState.userId || (ALLOW_DEMO_HEADER ? DEMO_USER_ID : '');
 
     if (storedToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${storedToken}`);
@@ -138,6 +185,12 @@ export async function createApiHeadersAsync(options: RequestInit = {}): Promise<
 export async function apiRequest(path: string, options: RequestInit = {}): Promise<any> {
   const url = getServiceUrl(path);
   const headers = await createApiHeadersAsync(options);
+  const isLocalDesktopService = typeof window !== 'undefined'
+    && /^http:\/\/127\.0\.0\.1:800[23]\//.test(url)
+    && !path.startsWith('/api/v1/auth');
+  if (isLocalDesktopService) {
+    headers.delete('Authorization');
+  }
 
   const response = await fetch(url, { ...options, headers });
   
@@ -153,6 +206,9 @@ export async function apiRequest(path: string, options: RequestInit = {}): Promi
       typeof detail === 'string'
         ? detail
         : detail?.message || err?.message || err?.error || 'API request failed';
+    if (!isLocalDesktopService && typeof window !== 'undefined' && (response.status === 401 || response.status === 403) && readDesktopAuthState().connected) {
+      clearDesktopAuthState();
+    }
     throw new ApiError(message, response.status, detail, err);
   }
   

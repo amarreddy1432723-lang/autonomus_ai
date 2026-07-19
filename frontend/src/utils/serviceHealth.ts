@@ -1,5 +1,7 @@
 'use client';
 
+import { readDesktopAuthState } from './desktopAuth';
+
 export type ServiceHealthState =
   | 'online'
   | 'agent_offline'
@@ -25,7 +27,7 @@ export function isElectronRuntime() {
 
 export function hasDesktopAuthToken() {
   if (typeof window === 'undefined') return false;
-  return Boolean(window.localStorage.getItem('my-ai.access_token'));
+  return readDesktopAuthState().connected;
 }
 
 export function serviceHealthCopy(state: ServiceHealthState) {
@@ -51,9 +53,10 @@ export async function probeServiceHealth(options: { isSignedIn?: boolean; timeou
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 4500);
   let online = false;
   let dependenciesOk = true;
+  const readyUrl = isElectronRuntime() ? 'http://127.0.0.1:8003/api/v1/ready' : '/api/v1/ready';
 
   try {
-    const response = await fetch('/api/v1/ready', {
+    const response = await fetch(readyUrl, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
       signal: controller.signal,

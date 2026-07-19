@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("electron", {
     close: () => ipcRenderer.send("window-close"),
     hideLauncher: () => ipcRenderer.send("launcher-hide"),
     openRoute: (route) => ipcRenderer.send("open-route", route),
+    openExternal: (url) => ipcRenderer.invoke("desktop-open-external", url),
     selectDirectory: () => ipcRenderer.invoke("dialog-select-directory"),
     readDirectoryTree: (rootPath) => ipcRenderer.invoke("workspace-read-directory-tree", rootPath),
     readFile: (rootPath, relativePath) => ipcRenderer.invoke("workspace-read-file", rootPath, relativePath),
