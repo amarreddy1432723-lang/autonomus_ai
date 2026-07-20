@@ -1,6 +1,22 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("electron", {
+function request(payload = {}, metadata = {}) {
+    return {
+        requestId: metadata.requestId || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(16).slice(2)}`),
+        initiatedBy: metadata.initiatedBy || "user",
+        missionId: metadata.missionId,
+        agentId: metadata.agentId,
+        payload
+    };
+}
+
+function on(channel, callback) {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+}
+
+const legacyElectronApi = {
     isDesktop: true,
     minimize: () => ipcRenderer.send("window-minimize"),
     maximize: () => ipcRenderer.send("window-maximize"),
@@ -24,43 +40,68 @@ contextBridge.exposeInMainWorld("electron", {
     terminalKill: (terminalId) => ipcRenderer.invoke("terminal-kill", terminalId),
     installUpdate: () => ipcRenderer.invoke("desktop-install-update"),
     onUpdateAvailable: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("update-available", listener);
-        return () => ipcRenderer.removeListener("update-available", listener);
+        return on("update-available", callback);
     },
     onUpdateReady: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("update-ready", listener);
-        return () => ipcRenderer.removeListener("update-ready", listener);
+        return on("update-ready", callback);
     },
     onUpdateStatus: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("desktop-update-status", listener);
-        return () => ipcRenderer.removeListener("desktop-update-status", listener);
+        return on("desktop-update-status", callback);
     },
     onTerminalData: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("terminal-data", listener);
-        return () => ipcRenderer.removeListener("terminal-data", listener);
+        return on("terminal-data", callback);
     },
     onTerminalExit: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("terminal-exit", listener);
-        return () => ipcRenderer.removeListener("terminal-exit", listener);
+        return on("terminal-exit", callback);
     },
     onDirectoryChanged: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("directory-changed", listener);
-        return () => ipcRenderer.removeListener("directory-changed", listener);
+        return on("directory-changed", callback);
     },
     onFolderWatchError: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("folder-watch-error", listener);
-        return () => ipcRenderer.removeListener("folder-watch-error", listener);
+        return on("folder-watch-error", callback);
     },
     onAuthCode: (callback) => {
-        const listener = (event, data) => callback(data);
-        ipcRenderer.on("desktop-auth-code", listener);
-        return () => ipcRenderer.removeListener("desktop-auth-code", listener);
+        return on("desktop-auth-code", callback);
     }
-});
+};
+
+const arceusDesktopApi = {
+    isDesktop: true,
+    capabilities: () => ipcRenderer.invoke("desktop.capabilities", request()),
+    diagnostics: () => ipcRenderer.invoke("desktop.diagnostics", request()),
+    workspace: {
+        openDirectory: (options = {}) => ipcRenderer.invoke("workspace.open", request(options)),
+        setTrust: (rootPath, trusted) => ipcRenderer.invoke("workspace.trust", request({ rootPath, trusted })),
+        readDirectoryTree: (rootPath) => ipcRenderer.invoke("workspace-read-directory-tree", rootPath),
+        discoverTasks: (rootPath) => ipcRenderer.invoke("workspace.discoverTasks", request({ rootPath })),
+    },
+    filesystem: {
+        readFile: (rootPath, relativePath) => ipcRenderer.invoke("filesystem.readFile", request({ rootPath, relativePath })),
+        writeFile: (rootPath, relativePath, content) => ipcRenderer.invoke("filesystem.writeFile", request({ rootPath, relativePath, content })),
+    },
+    terminal: {
+        create: (rootPath, options = {}) => ipcRenderer.invoke("terminal.create", request({ rootPath, ...options }, { initiatedBy: options.createdBy, missionId: options.missionId, agentId: options.agentId })),
+        sendInput: (terminalId, input, options = {}) => ipcRenderer.invoke("terminal.sendInput", request({ terminalId, input, ...options })),
+        resize: (terminalId, cols, rows) => ipcRenderer.invoke("terminal-resize", terminalId, cols, rows),
+        kill: (terminalId) => ipcRenderer.invoke("terminal.kill", request({ terminalId })),
+        onData: (callback) => on("terminal-data", callback),
+        onExit: (callback) => on("terminal-exit", callback),
+    },
+    updater: {
+        install: () => ipcRenderer.invoke("desktop-install-update"),
+        onAvailable: (callback) => on("update-available", callback),
+        onReady: (callback) => on("update-ready", callback),
+        onStatus: (callback) => on("desktop-update-status", callback),
+    },
+    system: {
+        minimize: legacyElectronApi.minimize,
+        maximize: legacyElectronApi.maximize,
+        close: legacyElectronApi.close,
+        openExternal: legacyElectronApi.openExternal,
+        openRoute: legacyElectronApi.openRoute,
+        onAuthCode: legacyElectronApi.onAuthCode,
+    },
+};
+
+contextBridge.exposeInMainWorld("electron", legacyElectronApi);
+contextBridge.exposeInMainWorld("arceusDesktop", arceusDesktopApi);

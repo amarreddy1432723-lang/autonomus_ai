@@ -8,6 +8,20 @@ import { isElectronRuntime } from '../utils/serviceHealth';
 const DESKTOP_CODE_ALLOWED_PREFIXES = [
   '/launch',
   '/workspace',
+  '/idea-discovery',
+  '/product-intelligence',
+  '/domain-intelligence',
+  '/product-blueprint',
+  '/architecture-strategy',
+  '/technology-stack',
+  '/engineering-roadmap',
+  '/ai-workforce',
+  '/executive-review',
+  '/mission-control',
+  '/evolution-center',
+  '/knowledge-graph',
+  '/organization-network',
+  '/intelligence-kernel',
   '/settings',
   '/auth/desktop',
   '/download',
@@ -28,7 +42,7 @@ export default function DesktopCodeRouteGuard({ children }: { children: React.Re
 
   useEffect(() => {
     if (isElectron && !allowed) {
-      router.replace('/workspace');
+      router.replace('/launch');
     }
   }, [allowed, isElectron, router]);
 

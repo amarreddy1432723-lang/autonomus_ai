@@ -2,6 +2,7 @@
 
 import { Circle, MoreHorizontal, Settings, UserCircle } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ArceusMissionWorkspace from './ArceusMissionWorkspace';
 import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import ServiceRecoveryBanner from '../../components/ServiceRecoveryBanner';
 import { ApiError, apiRequest, createApiHeadersAsync } from '../../utils/api';
@@ -57,6 +58,8 @@ type SafeApplyResult = {
 };
 
 export default function WorkspacePage() {
+  return <ArceusMissionWorkspace />;
+
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [messages, setMessages] = useState<WorkspaceMessage[]>([]);
@@ -4076,7 +4079,7 @@ export default function WorkspacePage() {
         <div className={styles.watchErrorToast} role="status">
           <div>
             <strong>Folder watcher paused</strong>
-            <span>{folderWatchError.message}</span>
+            <span>{folderWatchError?.message || 'Folder watcher stopped unexpectedly.'}</span>
           </div>
           <button type="button" onClick={retryFolderWatch}>Retry watching</button>
           <button type="button" aria-label="Dismiss folder watcher warning" onClick={() => setFolderWatchError(null)}>×</button>

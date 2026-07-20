@@ -7,6 +7,14 @@
   color: var(--color-text-primary);
 }
 
+.desktopFullscreen {
+  min-height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: #f7f8fa;
+  color: #1b1b1f;
+}
+
 .topbar {
   height: 40px;
   display: grid;

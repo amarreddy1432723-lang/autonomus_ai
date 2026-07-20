@@ -66,6 +66,29 @@ type DashboardSnapshot = {
   notifications?: Array<{ priority: string; required_action: string; impact: string }>;
 };
 
+type ObservabilitySnapshot = {
+  traces?: Array<{ trace_id: string; service: string; name: string; status: string; duration_ms?: number | null }>;
+  logs?: Array<{ log_id: string; trace_id: string; level: string; service: string; message: string; occurred_at?: string | null }>;
+  alerts?: Array<{ alert_id: string; severity: string; status: string; title: string; fired_at?: string | null }>;
+  incidents?: Array<{ incident_id: string; severity: string; status: string; title: string; summary: string }>;
+  exporters?: Array<{ exporter_key: string; exporter_type: string; status: string; active: boolean }>;
+  delivery_channels?: Array<{ channel_key: string; channel_type: string; status: string; active: boolean }>;
+  recovery_actions?: Array<{ action_key: string; title: string; policy_status: string; execution_status: string; risk_level: string }>;
+  aiops_recommendations?: string[];
+};
+
+type ReleaseGateSnapshot = {
+  allowed: boolean;
+  subject_type: string;
+  subject_id: string;
+  readiness_status: string;
+  score: number;
+  blockers: string[];
+  warnings: string[];
+  required_actions: string[];
+  checked_at?: string | null;
+};
+
 type MissionControlData = {
   metrics: RuntimeMetrics;
   events: RuntimeEvent[];
@@ -73,6 +96,7 @@ type MissionControlData = {
   product: ProductDashboard;
   workspace: WorkspaceSnapshot;
   dashboard: DashboardSnapshot;
+  observability: ObservabilitySnapshot;
 };
 
 const FALLBACK_ENGINEERS = [
@@ -138,6 +162,7 @@ function MissionControlPageContent() {
   const [error, setError] = useState<string>('');
   const [busyAction, setBusyAction] = useState<string>('');
   const [createdMission, setCreatedMission] = useState<string>('');
+  const [releaseGate, setReleaseGate] = useState<ReleaseGateSnapshot | null>(null);
   const [data, setData] = useState<MissionControlData>({
     metrics: {},
     events: [],
@@ -145,19 +170,21 @@ function MissionControlPageContent() {
     product: {},
     workspace: {},
     dashboard: {},
+    observability: {},
   });
 
   const loadMissionControl = useCallback(async () => {
     setApiState('loading');
     setError('');
     try {
-      const [metrics, events, automationMissions, product, workspace, dashboard] = await Promise.all([
+      const [metrics, events, automationMissions, product, workspace, dashboard, observability] = await Promise.all([
         apiRequest('/api/v1/runtime/metrics').catch(() => ({})),
         apiRequest('/api/v1/runtime/events').catch(() => []),
         apiRequest('/api/v1/automation/missions').catch(() => []),
         apiRequest('/api/v1/product/dashboard').catch(() => ({})),
         apiRequest('/api/v1/workspace').catch(() => ({})),
         apiRequest('/api/v1/dashboard?role=developer').catch(() => ({})),
+        apiRequest('/api/v1/telemetry/mission-control').catch(() => ({})),
       ]);
       setData({
         metrics: unwrap<RuntimeMetrics>(metrics, {}),
@@ -166,14 +193,25 @@ function MissionControlPageContent() {
         product: unwrap<ProductDashboard>(product, {}),
         workspace: unwrap<WorkspaceSnapshot>(workspace, {}),
         dashboard: unwrap<DashboardSnapshot>(dashboard, {}),
+        observability: unwrap<ObservabilitySnapshot>(observability, {}),
       });
+      const missionId = createdMission || searchParams.get('mission_id') || '';
+      if (missionId) {
+        const gateResult = await apiRequest('/api/v1/verification-engine/mission-control/release-gate', {
+          method: 'POST',
+          body: JSON.stringify({ mission_id: missionId, subject_type: 'release', subject_id: missionId }),
+        }).catch(() => null);
+        setReleaseGate(gateResult ? unwrap<ReleaseGateSnapshot>(gateResult, gateResult as ReleaseGateSnapshot) : null);
+      } else {
+        setReleaseGate(null);
+      }
       setApiState('live');
     } catch (err) {
       const message = err instanceof ApiError ? `${err.message} (${err.status})` : err instanceof Error ? err.message : 'Mission APIs are offline.';
       setError(message);
       setApiState('offline');
     }
-  }, []);
+  }, [createdMission, searchParams]);
 
   useEffect(() => {
     void loadMissionControl();
@@ -243,6 +281,18 @@ function MissionControlPageContent() {
         ['09:24', 'Automation, product, and experience APIs are connected.'],
         ['09:27', 'Create a mission to start the live feed.'],
       ];
+
+  const observabilityCards = [
+    ['Traces', String(data.observability.traces?.length || 0), data.observability.traces?.[0]?.status || 'waiting'],
+    ['Logs', String(data.observability.logs?.length || 0), data.observability.logs?.[0]?.level || 'quiet'],
+    ['Alerts', String(data.observability.alerts?.length || 0), data.observability.alerts?.[0]?.severity || 'none'],
+    ['Incidents', String(data.observability.incidents?.length || 0), data.observability.incidents?.[0]?.status || 'none'],
+    ['Exporters', String(data.observability.exporters?.length || 0), data.observability.exporters?.[0]?.exporter_type || 'configure'],
+    ['Channels', String(data.observability.delivery_channels?.length || 0), data.observability.delivery_channels?.[0]?.channel_type || 'configure'],
+    ['Recovery', String(data.observability.recovery_actions?.length || 0), data.observability.recovery_actions?.[0]?.execution_status || 'policy gated'],
+  ];
+  const releaseGateReady = releaseGate?.allowed === true;
+  const releaseGateBlocked = !!releaseGate && !releaseGate.allowed;
 
   const openWorkspace = () => {
     const params = new URLSearchParams();
@@ -444,9 +494,46 @@ function MissionControlPageContent() {
               <button type="button" onClick={createIntentMission} disabled={!!busyAction}><Pause size={16} /> {busyAction === 'intent' ? 'Creating...' : 'Create Intent Mission'}</button>
               <button type="button" onClick={createProductMission} disabled={!!busyAction}><ShieldCheck size={16} /> {busyAction === 'product' ? 'Creating...' : 'Create Product Mission'}</button>
               <button type="button" onClick={openWorkspace}>Open Workspace</button>
-              <button type="button" onClick={createAutomationMission} disabled={!!busyAction}><Rocket size={16} /> {busyAction === 'automation' ? 'Creating...' : 'Launch Automation'}</button>
+              <button
+                type="button"
+                onClick={createAutomationMission}
+                disabled={!!busyAction || releaseGateBlocked}
+                title={releaseGateBlocked ? releaseGate?.blockers[0] || 'Release gate is not ready.' : undefined}
+              >
+                <Rocket size={16} /> {busyAction === 'automation' ? 'Creating...' : 'Launch Automation'}
+              </button>
+              <button type="button" disabled={!releaseGateReady} title={releaseGateReady ? 'Release gate passed.' : 'Release gate must pass before creating a PR.'}>
+                <GitBranch size={16} /> Create PR
+              </button>
+              <button type="button" disabled={!releaseGateReady} title={releaseGateReady ? 'Release gate passed.' : 'Release gate must pass before deployment.'}>
+                <Rocket size={16} /> Deploy
+              </button>
             </div>
           </header>
+          <div className={styles.observabilityStrip}>
+            {observabilityCards.map(([label, value, detail]) => (
+              <button type="button" key={label}>
+                <strong>{value}</strong>
+                <span>{label}</span>
+                <small>{detail}</small>
+              </button>
+            ))}
+          </div>
+          {releaseGate && (
+            <div className={releaseGateReady ? styles.releaseGateReady : styles.releaseGateBlocked}>
+              <strong>Release Gate: {releaseGate.readiness_status}</strong>
+              <span>
+                {releaseGateReady
+                  ? 'PR and deploy actions are allowed.'
+                  : releaseGate.blockers[0] || releaseGate.required_actions[0] || 'Run release readiness before PR or deploy.'}
+              </span>
+            </div>
+          )}
+          {!!data.observability.aiops_recommendations?.length && (
+            <div className={styles.aiopsNote}>
+              {data.observability.aiops_recommendations[0]}
+            </div>
+          )}
           <div className={styles.feed}>
             {activity.map(([time, text]) => (
               <article key={`${time}-${text}`}>

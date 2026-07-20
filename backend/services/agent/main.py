@@ -180,6 +180,10 @@ class PluginStatusRequest(BaseModel):
     status: str
 
 
+class PluginUpdateRequest(BaseModel):
+    manifest: Optional[dict[str, Any]] = None
+
+
 class CodeBackgroundRunRequest(BaseModel):
     instruction: str
     mode: str = "code"
@@ -2319,6 +2323,13 @@ def list_user_plugins(user_id: UUID = Depends(get_current_user_id), db: Session 
     return {"plugins": list_installed_plugins(db, user_id)}
 
 
+@app.get("/api/v1/plugins/{plugin_id}")
+def get_user_plugin(plugin_id: UUID, user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .plugins import get_plugin
+
+    return get_plugin(db, user_id, plugin_id)
+
+
 @app.post("/api/v1/plugins/install", status_code=201)
 def install_user_plugin(
     request: PluginInstallRequest,
@@ -2328,6 +2339,18 @@ def install_user_plugin(
     from .plugins import install_plugin
 
     return install_plugin(db, user_id, request.manifest)
+
+
+@app.post("/api/v1/plugins/{plugin_id}/update")
+def update_user_plugin(
+    plugin_id: UUID,
+    request: PluginUpdateRequest,
+    user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    from .plugins import update_plugin
+
+    return update_plugin(db, user_id, plugin_id, request.manifest)
 
 
 @app.patch("/api/v1/plugins/{plugin_id}")
@@ -2347,6 +2370,20 @@ def uninstall_user_plugin(plugin_id: UUID, user_id: UUID = Depends(get_current_u
     from .plugins import set_plugin_status
 
     return set_plugin_status(db, user_id, plugin_id, "deleted")
+
+
+@app.get("/api/v1/extensions")
+def list_user_extensions(user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    from .plugins import list_extensions
+
+    return list_extensions(db, user_id)
+
+
+@app.get("/api/v1/sdk")
+def get_sdk_contract(user_id: UUID = Depends(get_current_user_id)):
+    from .plugins import sdk_manifest
+
+    return {**sdk_manifest(), "requested_by": str(user_id)}
 
 
 @app.get("/api/v1/code/sessions/{session_id}")

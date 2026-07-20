@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
+import { isDesktopRouteAllowed } from '../lib/frontendBoundaries';
 import { onDesktopAuthChanged, readDesktopAuthState } from '../utils/desktopAuth';
 import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../utils/serviceHealth';
 import styles from './AppShell.module.css';
@@ -84,13 +85,23 @@ function initialElectronState() {
   return false;
 }
 
-const DESKTOP_ALLOWED_PREFIXES = [
+const DESKTOP_FULLSCREEN_PREFIXES = [
   '/launch',
   '/workspace',
-  '/settings',
-  '/auth/desktop',
-  '/download',
-  '/ui-preview',
+  '/idea-discovery',
+  '/product-intelligence',
+  '/domain-intelligence',
+  '/product-blueprint',
+  '/architecture-strategy',
+  '/technology-stack',
+  '/engineering-roadmap',
+  '/ai-workforce',
+  '/executive-review',
+  '/mission-control',
+  '/evolution-center',
+  '/knowledge-graph',
+  '/organization-network',
+  '/intelligence-kernel',
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -141,8 +152,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!clientReady || !isElectron) return;
     setProductMenuOpen(false);
-    const allowed = DESKTOP_ALLOWED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
-    if (!allowed) router.replace('/workspace');
+    if (!isDesktopRouteAllowed(pathname)) router.replace('/launch');
   }, [clientReady, isElectron, pathname, router]);
 
   const handleDemoSignOut = () => {
@@ -255,6 +265,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     action();
     setPaletteOpen(false);
   };
+
+  const desktopFullscreen = isElectron && DESKTOP_FULLSCREEN_PREFIXES.some((prefix) => (
+    pathname === prefix || pathname.startsWith(`${prefix}/`)
+  ));
+
+  if (desktopFullscreen) {
+    return (
+      <div className={styles.desktopFullscreen}>
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div className={styles.shell}>

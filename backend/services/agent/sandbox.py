@@ -6,6 +6,7 @@ import logging
 import re
 import atexit
 import uuid
+import shutil
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -20,6 +21,17 @@ SECRET_OUTPUT_PATTERNS = (
     re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,})"),
 )
 ACTIVE_DOCKER_CONTAINERS: set[str] = set()
+
+
+def _resolve_local_command_parts(parts: List[str]) -> List[str]:
+    if not parts:
+        return parts
+    executable = parts[0]
+    if os.name == "nt" and not Path(executable).suffix:
+        resolved = shutil.which(executable)
+        if resolved:
+            return [resolved, *parts[1:]]
+    return parts
 
 
 def _redact(output: str) -> str:
@@ -108,7 +120,7 @@ class LocalSandbox(CodeSandbox):
     def run_command(self, command: str, timeout: int = 60, allow_network: bool = False) -> Dict[str, Any]:
         logger.info(f"Running local command: {command} in {self.workspace_root}")
         # Parse command safely
-        parts = shlex.split(command)
+        parts = _resolve_local_command_parts(shlex.split(command))
         started = time.monotonic()
         try:
             completed = subprocess.run(
@@ -129,7 +141,7 @@ class LocalSandbox(CodeSandbox):
 
     def start_preview_server(self, command: str, port: int) -> Dict[str, Any]:
         self.stop_preview_server()
-        parts = shlex.split(command)
+        parts = _resolve_local_command_parts(shlex.split(command))
         try:
             # Run in background
             proc = subprocess.Popen(

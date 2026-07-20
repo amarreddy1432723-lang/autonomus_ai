@@ -4,6 +4,17 @@ const fs = require("fs");
 const net = require("net");
 const { spawn, exec } = require("child_process");
 const isDev = require("electron-is-dev");
+const {
+    DESKTOP_CAPABILITIES,
+    desktopError,
+    ipcFail,
+    ipcOk,
+    isAllowedExternalUrl,
+    safeJoinUrl,
+    unwrapIpcPayload,
+    workspaceIdFor
+} = require("./architecture");
+const { discoverWorkspaceTasks } = require("./task-discovery");
 
 function installSafeConsole() {
     const wrap = (method) => {
@@ -55,6 +66,7 @@ let frontendProcess = null;
 const PACKAGED_FRONTEND_URL = process.env.ARCEUS_WEB_URL || "https://frontend-production-fbde.up.railway.app";
 let frontendOrigin = process.env.NEXUS_FRONTEND_URL || (isDev ? "http://localhost:3000" : PACKAGED_FRONTEND_URL);
 let terminalSessions = new Map();
+let trustedWorkspaces = new Map();
 let dirWatcher;
 let dirWatcherRoot = "";
 let dirWatcherBatch = [];
@@ -64,6 +76,20 @@ const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/launch";
 const DESKTOP_CODE_ALLOWED_ROUTE_PREFIXES = [
     "/launch",
     "/workspace",
+    "/idea-discovery",
+    "/product-intelligence",
+    "/domain-intelligence",
+    "/product-blueprint",
+    "/architecture-strategy",
+    "/technology-stack",
+    "/engineering-roadmap",
+    "/ai-workforce",
+    "/executive-review",
+    "/mission-control",
+    "/evolution-center",
+    "/knowledge-graph",
+    "/organization-network",
+    "/intelligence-kernel",
     "/settings",
     "/auth/desktop",
     "/download",
@@ -170,18 +196,59 @@ ipcMain.handle("desktop-install-update", async () => {
 
 ipcMain.handle("desktop-open-external", async (event, targetUrl) => {
     try {
-        const parsed = new URL(String(targetUrl || ""));
         const frontend = new URL(frontendOrigin);
         const packaged = new URL(PACKAGED_FRONTEND_URL);
         const allowedHosts = new Set([frontend.host, packaged.host, "localhost:3000", "127.0.0.1:3000"]);
-        if (!["http:", "https:"].includes(parsed.protocol) || !allowedHosts.has(parsed.host)) {
+        if (!isAllowedExternalUrl(targetUrl, allowedHosts)) {
             return { ok: false, message: "External URL is not allowed." };
         }
+        const parsed = new URL(String(targetUrl || ""));
         await shell.openExternal(parsed.toString());
         return { ok: true };
     } catch (error) {
         return { ok: false, message: error?.message || "Could not open external URL." };
     }
+});
+
+ipcMain.handle("desktop.capabilities", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    return ipcOk(requestId, {
+        ...DESKTOP_CAPABILITIES,
+        autoUpdate: Boolean(autoUpdater) && !isDev && process.env.ARCEUS_DISABLE_AUTO_UPDATE !== "true",
+        terminalBackend: nodePty ? "node-pty" : "child-process",
+        hostedControlPlane: shouldUseHostedControlPlane(),
+        frontendOrigin
+    });
+});
+
+ipcMain.handle("desktop.diagnostics", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    const userData = app.getPath("userData");
+    const repoRoot = tryFindRepoRoot();
+    return ipcOk(requestId, {
+        appVersion: app.getVersion(),
+        isDev,
+        platform: process.platform,
+        arch: process.arch,
+        frontendOrigin,
+        repoRoot,
+        userData,
+        backendProcesses: backendProcesses.map((processRef) => ({ pid: processRef.pid, killed: processRef.killed })),
+        frontendProcess: frontendProcess ? { pid: frontendProcess.pid, killed: frontendProcess.killed } : null,
+        terminalSessions: Array.from(terminalSessions.values()).map((session) => ({
+            id: session.id,
+            cwd: session.cwd,
+            shell: session.shell,
+            status: session.status,
+            backend: session.backend,
+            createdBy: session.createdBy,
+            missionId: session.missionId,
+            agentId: session.agentId,
+            updatedAt: session.updated_at
+        })),
+        trustedWorkspaces: Array.from(trustedWorkspaces.values()),
+        logFile: path.join(userData, "arceus-desktop.log")
+    });
 });
 
 function checkForAppUpdates() {
@@ -492,12 +559,68 @@ async function startLocalDependencies() {
 function resolveWorkspacePath(rootPath, relativePath = "") {
     if (!rootPath) throw new Error("Workspace root is required.");
     const root = path.resolve(rootPath);
+    const requestedRelative = String(relativePath || ".");
+    if (requestedRelative.includes("\0")) {
+        throw new Error("Invalid workspace path.");
+    }
     const target = path.resolve(root, relativePath || ".");
     const relative = path.relative(root, target);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
         throw new Error("Path is outside the trusted workspace.");
     }
     return { root, target, relative: relative.replace(/\\/g, "/") };
+}
+
+async function resolveWorkspacePathStrict(rootPath, relativePath = "") {
+    const resolved = resolveWorkspacePath(rootPath, relativePath);
+    const rootReal = await fs.promises.realpath(resolved.root).catch(() => resolved.root);
+    const targetParent = await fs.promises.realpath(path.dirname(resolved.target)).catch(() => path.dirname(resolved.target));
+    const candidate = path.resolve(targetParent, path.basename(resolved.target));
+    const relative = path.relative(rootReal, candidate);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error("Path is outside the trusted workspace.");
+    }
+    return {
+        root: rootReal,
+        target: candidate,
+        relative: path.relative(rootReal, candidate).replace(/\\/g, "/")
+    };
+}
+
+async function atomicWriteFile(target, data) {
+    const directory = path.dirname(target);
+    await fs.promises.mkdir(directory, { recursive: true });
+    const tempPath = path.join(directory, `.arceus-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`);
+    const handle = await fs.promises.open(tempPath, "wx");
+    try {
+        await handle.writeFile(data);
+        await handle.sync();
+    } finally {
+        await handle.close();
+    }
+    await fs.promises.rename(tempPath, target);
+}
+
+async function inspectWorkspace(rootPath) {
+    const { root } = resolveWorkspacePath(rootPath);
+    const stat = await fs.promises.stat(root);
+    if (!stat.isDirectory()) throw new Error("Workspace root must be a directory.");
+    const id = workspaceIdFor(root);
+    const repoType = fs.existsSync(path.join(root, ".git")) ? "git" : "none";
+    const now = new Date().toISOString();
+    const previous = trustedWorkspaces.get(root);
+    const workspace = {
+        id,
+        name: path.basename(root) || root,
+        rootPath: root,
+        repositoryType: repoType,
+        trusted: Boolean(previous?.trusted),
+        openedAt: previous?.openedAt || now,
+        lastOpenedAt: now,
+        settingsPath: path.join(root, ".arceus", "workspace.json")
+    };
+    trustedWorkspaces.set(root, workspace);
+    return workspace;
 }
 
 function isIgnoredWorkspacePath(relativePath) {
@@ -632,7 +755,7 @@ async function loadFrontendRoute(windowRef, route) {
     await waitForFrontend();
     if (!windowRef || windowRef.isDestroyed()) return;
     const safeRoute = sanitizeDesktopCodeRoute(route);
-    windowRef.loadURL(`${frontendOrigin}${safeRoute}`);
+    windowRef.loadURL(safeJoinUrl(frontendOrigin, safeRoute));
 }
 
 async function resolveInitialRoute() {
@@ -865,12 +988,16 @@ function createLauncherWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
             preload: path.join(__dirname, "preload.js")
         },
         backgroundColor: "#0d0e12"
     });
 
     launcherWindow.setMenuBarVisibility(false);
+    installWindowSecurityPolicy(launcherWindow);
 
     loadFrontendRoute(launcherWindow, "/workspace");
 
@@ -893,12 +1020,16 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
             preload: path.join(__dirname, "preload.js")
         },
         backgroundColor: "#0d0e12"
     });
 
     mainWindow.setMenuBarVisibility(false);
+    installWindowSecurityPolicy(mainWindow);
 
     resolveInitialRoute().then((route) => {
         loadFrontendRoute(mainWindow, route);
@@ -914,6 +1045,56 @@ function createWindow() {
             handleDeepLink(initialUrl);
         });
     }
+}
+
+function installWindowSecurityPolicy(windowRef) {
+    if (!windowRef) return;
+    const csp = [
+        "default-src 'self' http://localhost:* http://127.0.0.1:* https://frontend-production-fbde.up.railway.app",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http://localhost:* http://127.0.0.1:* https://frontend-production-fbde.up.railway.app",
+        "style-src 'self' 'unsafe-inline' http://localhost:* http://127.0.0.1:* https://frontend-production-fbde.up.railway.app",
+        "img-src 'self' data: blob: http://localhost:* http://127.0.0.1:* https:",
+        "font-src 'self' data: http://localhost:* http://127.0.0.1:* https://frontend-production-fbde.up.railway.app",
+        "connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:",
+        "object-src 'none'",
+        "frame-src 'self' http://localhost:* http://127.0.0.1:* https://frontend-production-fbde.up.railway.app",
+        "base-uri 'self'"
+    ].join("; ");
+    windowRef.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+        callback({
+            responseHeaders: {
+                ...details.responseHeaders,
+                "Content-Security-Policy": [csp],
+                "X-Content-Type-Options": ["nosniff"]
+            }
+        });
+    });
+    windowRef.webContents.setWindowOpenHandler(({ url }) => {
+        const frontend = new URL(frontendOrigin);
+        const packaged = new URL(PACKAGED_FRONTEND_URL);
+        const allowedHosts = new Set([frontend.host, packaged.host, "localhost:3000", "127.0.0.1:3000"]);
+        if (isAllowedExternalUrl(url, allowedHosts)) {
+            shell.openExternal(url).catch(() => {});
+        }
+        return { action: "deny" };
+    });
+    windowRef.webContents.on("will-navigate", (event, url) => {
+        try {
+            const target = new URL(url);
+            const frontend = new URL(frontendOrigin);
+            const packaged = new URL(PACKAGED_FRONTEND_URL);
+            const allowedHosts = new Set([frontend.host, packaged.host, "localhost:3000", "127.0.0.1:3000"]);
+            if (!allowedHosts.has(target.host)) {
+                event.preventDefault();
+                shell.openExternal(url).catch(() => {});
+            }
+        } catch {
+            event.preventDefault();
+        }
+    });
+    windowRef.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+        callback(false);
+    });
 }
 
 // Window control IPC handlers
@@ -961,12 +1142,73 @@ ipcMain.handle("dialog-select-directory", async () => {
     return result.filePaths[0];
 });
 
+ipcMain.handle("workspace.open", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        let selectedPath = payload?.rootPath;
+        if (!selectedPath) {
+            if (!mainWindow) throw new Error("Main window is not ready.");
+            const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+            if (result.canceled) return ipcOk(requestId, null);
+            selectedPath = result.filePaths[0];
+        }
+        const workspace = await inspectWorkspace(selectedPath);
+        if (payload?.trusted === true) {
+            workspace.trusted = true;
+            trustedWorkspaces.set(workspace.rootPath, workspace);
+        }
+        logDesktopEvent("WORKSPACE_OPENED", workspace.rootPath);
+        return ipcOk(requestId, workspace);
+    } catch (error) {
+        return ipcFail(requestId, desktopError("INVALID_REQUEST", error?.message || "Could not open workspace.", true));
+    }
+});
+
+ipcMain.handle("workspace.trust", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const workspace = await inspectWorkspace(payload?.rootPath);
+        workspace.trusted = Boolean(payload?.trusted);
+        trustedWorkspaces.set(workspace.rootPath, workspace);
+        logDesktopEvent(workspace.trusted ? "WORKSPACE_TRUST_GRANTED" : "WORKSPACE_TRUST_REVOKED", workspace.rootPath);
+        return ipcOk(requestId, workspace);
+    } catch (error) {
+        return ipcFail(requestId, desktopError("INVALID_REQUEST", error?.message || "Could not update workspace trust."));
+    }
+});
+
+ipcMain.handle("workspace.discoverTasks", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const { root } = await resolveWorkspacePathStrict(payload?.rootPath);
+        const tasks = discoverWorkspaceTasks(root);
+        return ipcOk(requestId, { rootPath: root, tasks });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("INVALID_REQUEST", error?.message || "Could not discover workspace tasks.", true));
+    }
+});
+
 ipcMain.handle("workspace-read-directory-tree", async (_event, rootPath) => {
     return readWorkspaceTree(rootPath);
 });
 
+ipcMain.handle("filesystem.readFile", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const { target, relative } = await resolveWorkspacePathStrict(payload?.rootPath, payload?.relativePath);
+        const stat = await fs.promises.stat(target);
+        if (!stat.isFile()) throw new Error("Selected path is not a file.");
+        if (stat.size > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for inline editing.");
+        const buffer = await fs.promises.readFile(target);
+        if (buffer.includes(0)) throw new Error("Binary files are not supported.");
+        return ipcOk(requestId, { path: relative, content: buffer.toString("utf8"), size_bytes: stat.size });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("FILE_NOT_FOUND", error?.message || "Could not read file.", true));
+    }
+});
+
 ipcMain.handle("workspace-read-file", async (_event, rootPath, relativePath) => {
-    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const { target, relative } = await resolveWorkspacePathStrict(rootPath, relativePath);
     const stat = await fs.promises.stat(target);
     if (!stat.isFile()) throw new Error("Selected path is not a file.");
     if (stat.size > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for inline editing.");
@@ -975,17 +1217,29 @@ ipcMain.handle("workspace-read-file", async (_event, rootPath, relativePath) => 
     return { path: relative, content: buffer.toString("utf8"), size_bytes: stat.size };
 });
 
+ipcMain.handle("filesystem.writeFile", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const { target, relative } = await resolveWorkspacePathStrict(payload?.rootPath, payload?.relativePath);
+        const data = Buffer.from(String(payload?.content ?? ""), "utf8");
+        if (data.length > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for local write.");
+        await atomicWriteFile(target, data);
+        return ipcOk(requestId, { path: relative, size_bytes: data.length, atomic: true });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("INVALID_REQUEST", error?.message || "Could not write file."));
+    }
+});
+
 ipcMain.handle("workspace-write-file", async (_event, rootPath, relativePath, content = "") => {
-    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const { target, relative } = await resolveWorkspacePathStrict(rootPath, relativePath);
     const data = Buffer.from(String(content), "utf8");
     if (data.length > WORKSPACE_MAX_FILE_BYTES) throw new Error("File is too large for local write.");
-    await fs.promises.mkdir(path.dirname(target), { recursive: true });
-    await fs.promises.writeFile(target, data);
-    return { path: relative, size_bytes: data.length };
+    await atomicWriteFile(target, data);
+    return { path: relative, size_bytes: data.length, atomic: true };
 });
 
 ipcMain.handle("workspace-create-item", async (_event, rootPath, relativePath, type = "file", content = "") => {
-    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const { target, relative } = await resolveWorkspacePathStrict(rootPath, relativePath);
     if (type === "folder") {
         await fs.promises.mkdir(target, { recursive: true });
         return { path: relative, type: "folder" };
@@ -998,21 +1252,21 @@ ipcMain.handle("workspace-create-item", async (_event, rootPath, relativePath, t
 });
 
 ipcMain.handle("workspace-rename-item", async (_event, rootPath, fromRelativePath, toRelativePath) => {
-    const from = resolveWorkspacePath(rootPath, fromRelativePath);
-    const to = resolveWorkspacePath(rootPath, toRelativePath);
+    const from = await resolveWorkspacePathStrict(rootPath, fromRelativePath);
+    const to = await resolveWorkspacePathStrict(rootPath, toRelativePath);
     await fs.promises.mkdir(path.dirname(to.target), { recursive: true });
     await fs.promises.rename(from.target, to.target);
     return { from: from.relative, to: to.relative };
 });
 
 ipcMain.handle("workspace-delete-item", async (_event, rootPath, relativePath) => {
-    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const { target, relative } = await resolveWorkspacePathStrict(rootPath, relativePath);
     await fs.promises.rm(target, { recursive: true, force: false });
     return { path: relative, deleted: true };
 });
 
 ipcMain.handle("workspace-reveal-item", async (_event, rootPath, relativePath) => {
-    const { target, relative } = resolveWorkspacePath(rootPath, relativePath);
+    const { target, relative } = await resolveWorkspacePathStrict(rootPath, relativePath);
     shell.showItemInFolder(target);
     return { path: relative, revealed: true };
 });
@@ -1092,8 +1346,8 @@ function emitTerminalExit(id, code, signal) {
     }
 }
 
-ipcMain.handle("terminal-create", async (_event, rootPath, options = {}) => {
-    const { root } = resolveWorkspacePath(rootPath);
+async function createTerminalSession(rootPath, options = {}) {
+    const { root } = await resolveWorkspacePathStrict(rootPath);
     const id = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const cols = Number(options.cols || 100);
     const rows = Number(options.rows || 28);
@@ -1103,6 +1357,11 @@ ipcMain.handle("terminal-create", async (_event, rootPath, options = {}) => {
         id,
         cwd: root,
         status: "active",
+        shell,
+        title: options.title || path.basename(shell),
+        createdBy: options.createdBy || "user",
+        missionId: options.missionId || null,
+        agentId: options.agentId || null,
         history: [],
         logs: [],
         streamSeq: 0,
@@ -1150,12 +1409,42 @@ ipcMain.handle("terminal-create", async (_event, rootPath, options = {}) => {
         id,
         status: session.status,
         cwd: session.cwd,
+        shell: session.shell,
+        title: session.title,
+        createdBy: session.createdBy,
+        missionId: session.missionId,
+        agentId: session.agentId,
         history: session.history,
         logs: session.logs,
         backend: session.backend,
         created_at: session.created_at,
         updated_at: session.updated_at
     };
+}
+
+ipcMain.handle("terminal-create", async (_event, rootPath, options = {}) => {
+    return createTerminalSession(rootPath, options);
+});
+
+ipcMain.handle("terminal.create", async (_event, request = {}) => {
+    const { requestId, payload, initiatedBy, missionId, agentId } = unwrapIpcPayload([request]);
+    try {
+        const rootPath = payload?.rootPath;
+        const options = {
+            ...(payload?.options || {}),
+            shell: payload?.shell || payload?.options?.shell,
+            title: payload?.title,
+            createdBy: payload?.createdBy || initiatedBy || "user",
+            missionId: payload?.missionId || missionId,
+            agentId: payload?.agentId || agentId,
+            cols: payload?.cols,
+            rows: payload?.rows
+        };
+        const legacyResult = await createTerminalSession(rootPath, options);
+        return ipcOk(requestId, legacyResult);
+    } catch (error) {
+        return ipcFail(requestId, desktopError("PROCESS_FAILED", error?.message || "Could not create terminal.", true));
+    }
 });
 
 ipcMain.handle("terminal-input", async (_event, terminalId, input = "", options = {}) => {
@@ -1173,6 +1462,29 @@ ipcMain.handle("terminal-input", async (_event, terminalId, input = "", options 
         session.process.stdin.write(raw ? text : (text.endsWith("\n") ? text : `${text}\n`));
     }
     return { id: terminalId, status: session.status, cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend };
+});
+
+ipcMain.handle("terminal.sendInput", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const terminalId = payload?.terminalId;
+        const session = terminalSessions.get(terminalId);
+        if (!session || !session.process) throw new Error("Terminal session not found.");
+        const text = String(payload?.input || "");
+        if (!text) return ipcOk(requestId, { id: terminalId, ignored: true });
+        const raw = Boolean(payload?.raw);
+        if (!raw && text.trim()) session.history.push(text.trim());
+        session.updated_at = new Date().toISOString();
+        terminalSessions.set(terminalId, session);
+        if (nodePty && typeof session.process.write === "function") {
+            session.process.write(raw ? text : (text.endsWith("\r") || text.endsWith("\n") ? text : `${text}\r`));
+        } else if (session.process.stdin?.writable) {
+            session.process.stdin.write(raw ? text : (text.endsWith("\n") ? text : `${text}\n`));
+        }
+        return ipcOk(requestId, { id: terminalId, status: session.status, cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("PROCESS_FAILED", error?.message || "Could not send terminal input.", true));
+    }
 });
 
 ipcMain.handle("terminal-resize", async (_event, terminalId, cols, rows) => {
@@ -1202,6 +1514,32 @@ ipcMain.handle("terminal-kill", async (_event, terminalId) => {
     terminalSessions.set(terminalId, session);
     emitTerminalExit(terminalId, null, "killed");
     return { id: terminalId, status: "killed", cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend };
+});
+
+ipcMain.handle("terminal.kill", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const terminalId = payload?.terminalId;
+        const session = terminalSessions.get(terminalId);
+        if (!session) return ipcOk(requestId, { id: terminalId, status: "missing" });
+        try {
+            if (nodePty && typeof session.process?.kill === "function") {
+                session.process.kill();
+            } else if (session.process?.pid) {
+                if (process.platform === "win32") exec(`taskkill /pid ${session.process.pid} /t /f`);
+                else session.process.kill("SIGTERM");
+            }
+        } catch (error) {
+            console.error("Failed to kill terminal:", error);
+        }
+        session.status = "killed";
+        session.updated_at = new Date().toISOString();
+        terminalSessions.set(terminalId, session);
+        emitTerminalExit(terminalId, null, "killed");
+        return ipcOk(requestId, { id: terminalId, status: "killed", cwd: session.cwd, history: session.history, logs: session.logs, backend: session.backend });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("PROCESS_FAILED", error?.message || "Could not kill terminal."));
+    }
 });
 
 function flushDirectoryChanges() {

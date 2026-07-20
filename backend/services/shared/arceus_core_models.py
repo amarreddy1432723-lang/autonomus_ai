@@ -112,6 +112,677 @@ class ArceusTenantMembership(KernelTenantMixin, Base):
     )
 
 
+class ArceusRolePermission(KernelMutableMixin, Base):
+    __tablename__ = "arceus_role_permissions"
+
+    role_key = Column(String(120), nullable=False)
+    permission_key = Column(String(240), nullable=False)
+    source = Column(String(80), default="builtin", nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("role_key", "permission_key", name="uq_arceus_role_permission"),
+        Index("ix_arceus_role_permissions_role", "role_key", "active"),
+    )
+
+
+class ArceusUserSession(KernelTenantMixin, Base):
+    __tablename__ = "arceus_user_sessions"
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"), nullable=False)
+    external_session_id = Column(String(255))
+    device_id = Column(String(255))
+    ip_address = Column(String(80))
+    user_agent = Column(Text)
+    status = Column(String(40), default="active", nullable=False)
+    risk_score = Column(Integer, default=0, nullable=False)
+    mfa_verified = Column(Boolean, default=False, nullable=False)
+    device_trusted = Column(Boolean, default=False, nullable=False)
+    issued_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    revoked_at = Column(DateTime(timezone=True))
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'idle', 'high_risk', 'expired', 'revoked')", name="ck_arceus_user_sessions_status"),
+        UniqueConstraint("tenant_id", "external_session_id", name="uq_arceus_user_sessions_external"),
+        Index("ix_arceus_user_sessions_user_status", "tenant_id", "user_id", "status"),
+        Index("ix_arceus_user_sessions_expires", "tenant_id", "expires_at"),
+    )
+
+
+class ArceusApiToken(KernelTenantMixin, Base):
+    __tablename__ = "arceus_api_tokens"
+
+    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    service_account_id = Column(UUID(as_uuid=True))
+    name = Column(Text, nullable=False)
+    prefix = Column(String(32), nullable=False)
+    checksum_sha256 = Column(String(64), nullable=False)
+    scopes = Column(JSON, default=list, nullable=False)
+    environment = Column(String(80), default="development", nullable=False)
+    status = Column(String(40), default="active", nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    last_used_at = Column(DateTime(timezone=True))
+    revoked_at = Column(DateTime(timezone=True))
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'revoked', 'expired')", name="ck_arceus_api_tokens_status"),
+        UniqueConstraint("tenant_id", "checksum_sha256", name="uq_arceus_api_tokens_checksum"),
+        Index("ix_arceus_api_tokens_owner", "tenant_id", "owner_user_id", "status"),
+        Index("ix_arceus_api_tokens_prefix", "tenant_id", "prefix"),
+    )
+
+
+class ArceusServiceAccount(KernelTenantMixin, Base):
+    __tablename__ = "arceus_service_accounts"
+
+    name = Column(Text, nullable=False)
+    purpose = Column(Text)
+    scopes = Column(JSON, default=list, nullable=False)
+    allowed_environments = Column(JSON, default=list, nullable=False)
+    status = Column(String(40), default="active", nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'disabled', 'revoked')", name="ck_arceus_service_accounts_status"),
+        UniqueConstraint("tenant_id", "name", name="uq_arceus_service_accounts_name"),
+        Index("ix_arceus_service_accounts_status", "tenant_id", "status"),
+    )
+
+
+class ArceusAgentIdentity(KernelTenantMixin, Base):
+    __tablename__ = "arceus_agent_identities"
+
+    profile_id = Column(String(160), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    capabilities = Column(JSON, default=list, nullable=False)
+    allowed_tools = Column(JSON, default=list, nullable=False)
+    maximum_risk_level = Column(String(40), default="medium", nullable=False)
+    status = Column(String(40), default="active", nullable=False)
+    runtime_claims = Column(JSON, default=dict, nullable=False)
+    restrictions = Column(JSON, default=list, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("maximum_risk_level IN ('low', 'medium', 'high', 'critical')", name="ck_arceus_agent_identities_risk"),
+        CheckConstraint("status IN ('active', 'suspended', 'revoked')", name="ck_arceus_agent_identities_status"),
+        Index("ix_arceus_agent_identities_mission", "tenant_id", "mission_id", "status"),
+        Index("ix_arceus_agent_identities_profile", "tenant_id", "profile_id", "status"),
+    )
+
+
+class ArceusAuthorizationDecision(KernelTenantMixin, Base):
+    __tablename__ = "arceus_authorization_decisions"
+
+    actor_type = Column(String(80), nullable=False)
+    actor_id = Column(String(160), nullable=False)
+    action = Column(String(160), nullable=False)
+    resource_type = Column(String(120), nullable=False)
+    resource_id = Column(String(300))
+    decision = Column(String(60), nullable=False)
+    allowed = Column(Boolean, default=False, nullable=False)
+    reason = Column(Text, nullable=False)
+    matched_policies = Column(JSON, default=list, nullable=False)
+    obligations = Column(JSON, default=list, nullable=False)
+    effective_permissions = Column(JSON, default=list, nullable=False)
+    request_payload = Column(JSON, default=dict, nullable=False)
+    expires_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('allow', 'deny', 'needs_approval', 'requires_mfa', 'requires_reauth')",
+            name="ck_arceus_authorization_decisions_decision",
+        ),
+        Index("ix_arceus_authorization_actor", "tenant_id", "actor_type", "actor_id", "created_at"),
+        Index("ix_arceus_authorization_resource", "tenant_id", "resource_type", "resource_id", "created_at"),
+        Index("ix_arceus_authorization_decision", "tenant_id", "decision", "created_at"),
+    )
+
+
+class ArceusIdentityProvider(KernelTenantMixin, Base):
+    __tablename__ = "arceus_identity_providers"
+
+    provider_key = Column(String(120), nullable=False)
+    provider_type = Column(String(80), nullable=False)
+    issuer = Column(Text)
+    status = Column(String(40), default="configured", nullable=False)
+    capabilities = Column(JSON, default=list, nullable=False)
+    scim_enabled = Column(Boolean, default=False, nullable=False)
+    enterprise_sso_enabled = Column(Boolean, default=False, nullable=False)
+    device_trust_enabled = Column(Boolean, default=False, nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("provider_type IN ('clerk', 'oidc', 'saml', 'oauth', 'api_token')", name="ck_arceus_identity_providers_type"),
+        CheckConstraint("status IN ('configured', 'active', 'disabled', 'error')", name="ck_arceus_identity_providers_status"),
+        UniqueConstraint("tenant_id", "provider_key", name="uq_arceus_identity_provider_key"),
+    )
+
+
+class ArceusTelemetryLog(KernelTenantMixin, Base):
+    __tablename__ = "arceus_telemetry_logs"
+
+    trace_id = Column(String(160), nullable=False)
+    span_id = Column(String(160))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    workflow_id = Column(UUID(as_uuid=True))
+    agent_id = Column(String(160))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    service = Column(String(160), nullable=False)
+    level = Column(String(20), nullable=False)
+    message = Column(Text, nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+    occurred_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("level IN ('TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL')", name="ck_arceus_telemetry_logs_level"),
+        Index("ix_arceus_telemetry_logs_trace", "tenant_id", "trace_id", "occurred_at"),
+        Index("ix_arceus_telemetry_logs_mission", "tenant_id", "mission_id", "occurred_at"),
+        Index("ix_arceus_telemetry_logs_level", "tenant_id", "level", "occurred_at"),
+    )
+
+
+class ArceusMetricSample(KernelTenantMixin, Base):
+    __tablename__ = "arceus_metric_samples"
+
+    metric_key = Column(String(160), nullable=False)
+    metric_type = Column(String(40), default="gauge", nullable=False)
+    value = Column(Float, nullable=False)
+    unit = Column(String(80), default="count", nullable=False)
+    service = Column(String(160))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    workflow_id = Column(UUID(as_uuid=True))
+    model_key = Column(String(160))
+    provider_key = Column(String(160))
+    labels = Column(JSON, default=dict, nullable=False)
+    observed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("metric_type IN ('counter', 'gauge', 'histogram', 'summary')", name="ck_arceus_metric_samples_type"),
+        Index("ix_arceus_metric_samples_key", "tenant_id", "metric_key", "observed_at"),
+        Index("ix_arceus_metric_samples_mission", "tenant_id", "mission_id", "observed_at"),
+    )
+
+
+class ArceusTrace(Base):
+    __tablename__ = "arceus_traces"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    trace_id = Column(String(160), nullable=False)
+    root_span_id = Column(String(160))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    workflow_id = Column(UUID(as_uuid=True))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    service = Column(String(160), nullable=False)
+    name = Column(Text, nullable=False)
+    status = Column(String(40), default="running", nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True))
+    duration_ms = Column(Float)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('running', 'ok', 'error', 'cancelled')", name="ck_arceus_traces_status"),
+        UniqueConstraint("tenant_id", "trace_id", name="uq_arceus_traces_trace_id"),
+        Index("ix_arceus_traces_mission", "tenant_id", "mission_id", "started_at"),
+    )
+
+
+class ArceusSpan(Base):
+    __tablename__ = "arceus_spans"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    trace_id = Column(String(160), nullable=False)
+    span_id = Column(String(160), nullable=False)
+    parent_span_id = Column(String(160))
+    span_type = Column(String(80), nullable=False)
+    name = Column(Text, nullable=False)
+    service = Column(String(160), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    workflow_id = Column(UUID(as_uuid=True))
+    node_id = Column(String(160))
+    agent_id = Column(String(160))
+    status = Column(String(40), default="ok", nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True))
+    duration_ms = Column(Float)
+    attributes = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('ok', 'error', 'cancelled')", name="ck_arceus_spans_status"),
+        UniqueConstraint("tenant_id", "trace_id", "span_id", name="uq_arceus_spans_trace_span"),
+        Index("ix_arceus_spans_trace", "tenant_id", "trace_id", "started_at"),
+        Index("ix_arceus_spans_type", "tenant_id", "span_type", "started_at"),
+    )
+
+
+class ArceusAlert(Base):
+    __tablename__ = "arceus_alerts"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    alert_key = Column(String(160), nullable=False)
+    severity = Column(String(20), nullable=False)
+    status = Column(String(40), default="firing", nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text, nullable=False)
+    source = Column(String(160), default="arceus", nullable=False)
+    trace_id = Column(String(160))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    labels = Column(JSON, default=dict, nullable=False)
+    annotations = Column(JSON, default=dict, nullable=False)
+    fired_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('P0', 'P1', 'P2', 'P3')", name="ck_arceus_alerts_severity"),
+        CheckConstraint("status IN ('firing', 'acknowledged', 'resolved', 'suppressed')", name="ck_arceus_alerts_status"),
+        Index("ix_arceus_alerts_status", "tenant_id", "status", "severity", "fired_at"),
+    )
+
+
+class ArceusIncident(Base):
+    __tablename__ = "arceus_incidents"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    incident_key = Column(String(160), nullable=False)
+    severity = Column(String(20), nullable=False)
+    status = Column(String(40), default="detected", nullable=False)
+    title = Column(Text, nullable=False)
+    summary = Column(Text, nullable=False)
+    assigned_to = Column(String(160))
+    related_alert_ids = Column(JSON, default=list, nullable=False)
+    trace_id = Column(String(160))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    aiops_recommendations = Column(JSON, default=list, nullable=False)
+    postmortem = Column(JSON, default=dict, nullable=False)
+    opened_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    resolved_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('P0', 'P1', 'P2', 'P3')", name="ck_arceus_incidents_severity"),
+        CheckConstraint("status IN ('detected', 'classified', 'assigned', 'investigating', 'resolved', 'postmortem')", name="ck_arceus_incidents_status"),
+        UniqueConstraint("tenant_id", "incident_key", name="uq_arceus_incidents_key"),
+        Index("ix_arceus_incidents_status", "tenant_id", "status", "severity", "opened_at"),
+    )
+
+
+class ArceusProviderHealth(Base):
+    __tablename__ = "arceus_provider_health"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    provider_key = Column(String(160), nullable=False)
+    model_key = Column(String(160))
+    availability = Column(Float, default=1.0, nullable=False)
+    latency_ms = Column(Float, default=0.0, nullable=False)
+    error_rate = Column(Float, default=0.0, nullable=False)
+    rate_limited = Column(Boolean, default=False, nullable=False)
+    cost_per_1k_tokens = Column(Float, default=0.0, nullable=False)
+    status = Column(String(40), default="healthy", nullable=False)
+    observed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('healthy', 'degraded', 'down', 'rate_limited')", name="ck_arceus_provider_health_status"),
+        Index("ix_arceus_provider_health_provider", "tenant_id", "provider_key", "observed_at"),
+    )
+
+
+class ArceusMissionStatistic(Base):
+    __tablename__ = "arceus_mission_statistics"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    status = Column(String(60), nullable=False)
+    duration_ms = Column(Float, default=0.0, nullable=False)
+    retry_count = Column(Integer, default=0, nullable=False)
+    cost_usd = Column(Numeric(12, 6), default=0, nullable=False)
+    prompt_tokens = Column(BigInteger, default=0, nullable=False)
+    completion_tokens = Column(BigInteger, default=0, nullable=False)
+    success = Column(Boolean, default=False, nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        Index("ix_arceus_mission_statistics_mission", "tenant_id", "mission_id", "recorded_at"),
+        Index("ix_arceus_mission_statistics_status", "tenant_id", "status", "recorded_at"),
+    )
+
+
+class ArceusCostStatistic(Base):
+    __tablename__ = "arceus_cost_statistics"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    scope_type = Column(String(80), nullable=False)
+    scope_id = Column(String(160), nullable=False)
+    cost_type = Column(String(80), nullable=False)
+    amount_usd = Column(Numeric(12, 6), default=0, nullable=False)
+    units = Column(Float, default=0.0, nullable=False)
+    provider_key = Column(String(160))
+    model_key = Column(String(160))
+    observed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        Index("ix_arceus_cost_statistics_scope", "tenant_id", "scope_type", "scope_id", "observed_at"),
+        Index("ix_arceus_cost_statistics_type", "tenant_id", "cost_type", "observed_at"),
+    )
+
+
+class ArceusDashboardConfig(Base):
+    __tablename__ = "arceus_dashboard_configs"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    dashboard_key = Column(String(160), nullable=False)
+    name = Column(Text, nullable=False)
+    audience = Column(String(80), nullable=False)
+    widgets = Column(JSON, default=list, nullable=False)
+    filters = Column(JSON, default=dict, nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dashboard_key", name="uq_arceus_dashboard_configs_key"),
+        Index("ix_arceus_dashboard_configs_audience", "tenant_id", "audience", "active"),
+    )
+
+
+class ArceusTelemetryExporterConfig(Base):
+    __tablename__ = "arceus_telemetry_exporter_configs"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    exporter_key = Column(String(160), nullable=False)
+    exporter_type = Column(String(80), nullable=False)
+    target = Column(Text, nullable=False)
+    status = Column(String(40), default="configured", nullable=False)
+    signal_types = Column(JSON, default=list, nullable=False)
+    headers = Column(JSON, default=dict, nullable=False)
+    sample_rate = Column(Float, default=1.0, nullable=False)
+    last_export_at = Column(DateTime(timezone=True))
+    last_error = Column(JSON, default=dict, nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("exporter_type IN ('prometheus', 'loki', 'tempo', 'otlp_http', 'otlp_grpc', 'sentry')", name="ck_arceus_telemetry_exporter_configs_type"),
+        CheckConstraint("status IN ('configured', 'active', 'disabled', 'error')", name="ck_arceus_telemetry_exporter_configs_status"),
+        UniqueConstraint("tenant_id", "exporter_key", name="uq_arceus_telemetry_exporter_configs_key"),
+        Index("ix_arceus_telemetry_exporter_configs_type", "tenant_id", "exporter_type", "active"),
+    )
+
+
+class ArceusAlertDeliveryChannel(Base):
+    __tablename__ = "arceus_alert_delivery_channels"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    channel_key = Column(String(160), nullable=False)
+    channel_type = Column(String(80), nullable=False)
+    display_name = Column(Text, nullable=False)
+    target = Column(Text, nullable=False)
+    severity_filter = Column(JSON, default=list, nullable=False)
+    status = Column(String(40), default="active", nullable=False)
+    secret_ref = Column(String(255))
+    metadata_json = Column(JSON, default=dict, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("channel_type IN ('slack', 'email', 'teams', 'webhook')", name="ck_arceus_alert_delivery_channels_type"),
+        CheckConstraint("status IN ('active', 'disabled', 'error')", name="ck_arceus_alert_delivery_channels_status"),
+        UniqueConstraint("tenant_id", "channel_key", name="uq_arceus_alert_delivery_channels_key"),
+        Index("ix_arceus_alert_delivery_channels_type", "tenant_id", "channel_type", "active"),
+    )
+
+
+class ArceusAlertDeliveryAttempt(Base):
+    __tablename__ = "arceus_alert_delivery_attempts"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    alert_id = Column(UUID(as_uuid=True), ForeignKey("arceus_alerts.id"), nullable=False)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("arceus_alert_delivery_channels.id"), nullable=False)
+    status = Column(String(40), default="queued", nullable=False)
+    attempt_number = Column(Integer, default=1, nullable=False)
+    delivered_at = Column(DateTime(timezone=True))
+    response = Column(JSON, default=dict, nullable=False)
+    error = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('queued', 'sent', 'failed', 'suppressed')", name="ck_arceus_alert_delivery_attempts_status"),
+        Index("ix_arceus_alert_delivery_attempts_alert", "tenant_id", "alert_id", "status"),
+        Index("ix_arceus_alert_delivery_attempts_channel", "tenant_id", "channel_id", "created_at"),
+    )
+
+
+class ArceusRecoveryAction(Base):
+    __tablename__ = "arceus_recovery_actions"
+
+    id = _uuid_pk()
+    tenant_id = _tenant_fk()
+    action_key = Column(String(160), nullable=False)
+    title = Column(Text, nullable=False)
+    trigger_alert_key = Column(String(160))
+    incident_id = Column(UUID(as_uuid=True), ForeignKey("arceus_incidents.id"))
+    risk_level = Column(String(40), default="low", nullable=False)
+    policy_status = Column(String(60), default="pending_policy", nullable=False)
+    execution_status = Column(String(60), default="proposed", nullable=False)
+    action_type = Column(String(120), nullable=False)
+    parameters = Column(JSON, default=dict, nullable=False)
+    approval_required = Column(Boolean, default=True, nullable=False)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"))
+    evidence = Column(JSON, default=list, nullable=False)
+    result = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    executed_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("risk_level IN ('low', 'moderate', 'high', 'critical')", name="ck_arceus_recovery_actions_risk"),
+        CheckConstraint("policy_status IN ('pending_policy', 'allowed', 'needs_approval', 'denied')", name="ck_arceus_recovery_actions_policy"),
+        CheckConstraint("execution_status IN ('proposed', 'queued', 'executed', 'failed', 'cancelled', 'blocked')", name="ck_arceus_recovery_actions_execution"),
+        UniqueConstraint("tenant_id", "action_key", name="uq_arceus_recovery_actions_key"),
+        Index("ix_arceus_recovery_actions_status", "tenant_id", "policy_status", "execution_status", "created_at"),
+    )
+
+
+class ArceusPluginPublisher(KernelTenantMixin, Base):
+    __tablename__ = "arceus_plugin_publishers"
+
+    publisher_key = Column(String(160), nullable=False)
+    display_name = Column(Text, nullable=False)
+    verification_level = Column(String(60), default="unverified", nullable=False)
+    signing_key_id = Column(String(255))
+    status = Column(String(40), default="active", nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "verification_level IN ('unverified', 'identity_verified', 'organization_verified', 'trusted_partner', 'arceus')",
+            name="ck_arceus_plugin_publishers_verification",
+        ),
+        CheckConstraint("status IN ('active', 'suspended', 'revoked')", name="ck_arceus_plugin_publishers_status"),
+        UniqueConstraint("tenant_id", "publisher_key", name="uq_arceus_plugin_publishers_key"),
+        Index("ix_arceus_plugin_publishers_status", "tenant_id", "verification_level", "status"),
+    )
+
+
+class ArceusPlugin(KernelTenantMixin, Base):
+    __tablename__ = "arceus_plugins"
+
+    plugin_key = Column(String(180), nullable=False)
+    name = Column(Text, nullable=False)
+    description = Column(Text)
+    publisher_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_publishers.id"), nullable=False)
+    category = Column(String(80), default="private", nullable=False)
+    latest_version_id = Column(UUID(as_uuid=True))
+    status = Column(String(40), default="draft", nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("category IN ('official', 'partner', 'private', 'community')", name="ck_arceus_plugins_category"),
+        CheckConstraint("status IN ('draft', 'published', 'deprecated', 'revoked')", name="ck_arceus_plugins_status"),
+        UniqueConstraint("tenant_id", "plugin_key", name="uq_arceus_plugins_key"),
+        Index("ix_arceus_plugins_publisher", "tenant_id", "publisher_id", "status"),
+    )
+
+
+class ArceusPluginVersion(KernelMutableMixin, Base):
+    __tablename__ = "arceus_plugin_versions"
+
+    plugin_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugins.id"), nullable=False)
+    version = Column(String(80), nullable=False)
+    manifest = Column(JSON, default=dict, nullable=False)
+    manifest_digest = Column(String(128), nullable=False)
+    package_digest = Column(String(128))
+    signing_key_id = Column(String(255))
+    signature = Column(Text)
+    status = Column(String(60), default="draft", nullable=False)
+    security_score = Column(Float, default=0.0, nullable=False)
+    compatibility = Column(JSON, default=dict, nullable=False)
+    published_at = Column(DateTime(timezone=True))
+    revoked_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'uploaded', 'scanning', 'pending_review', 'approved', 'published', 'deprecated', 'yanked', 'revoked')",
+            name="ck_arceus_plugin_versions_status",
+        ),
+        UniqueConstraint("plugin_id", "version", name="uq_arceus_plugin_versions_version"),
+        Index("ix_arceus_plugin_versions_status", "plugin_id", "status"),
+    )
+
+
+class ArceusPluginInstallation(KernelTenantMixin, Base):
+    __tablename__ = "arceus_plugin_installations"
+
+    plugin_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugins.id"), nullable=False)
+    plugin_version_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_versions.id"), nullable=False)
+    scope_type = Column(String(60), default="organization", nullable=False)
+    scope_id = Column(String(255), nullable=False)
+    status = Column(String(60), default="pending_review", nullable=False)
+    installed_by = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"), nullable=False)
+    installed_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    enabled_at = Column(DateTime(timezone=True))
+    disabled_at = Column(DateTime(timezone=True))
+    update_policy = Column(String(60), default="manual", nullable=False)
+    configuration = Column(JSON, default=dict, nullable=False)
+    secret_references = Column(JSON, default=list, nullable=False)
+    extension_identity_id = Column(String(255), nullable=False)
+    last_health = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("scope_type IN ('organization', 'workspace', 'repository', 'user')", name="ck_arceus_plugin_installations_scope"),
+        CheckConstraint(
+            "status IN ('pending_review', 'installing', 'installed', 'configuration_required', 'enabled', 'disabled', 'update_available', 'updating', 'suspended', 'revoked', 'removing', 'removed', 'failed')",
+            name="ck_arceus_plugin_installations_status",
+        ),
+        CheckConstraint("update_policy IN ('manual', 'security_only', 'compatible_minor', 'automatic')", name="ck_arceus_plugin_installations_update_policy"),
+        UniqueConstraint("tenant_id", "plugin_id", "scope_type", "scope_id", name="uq_arceus_plugin_installations_scope"),
+        Index("ix_arceus_plugin_installations_status", "tenant_id", "scope_type", "status"),
+    )
+
+
+class ArceusPluginInstallationPermission(KernelMutableMixin, Base):
+    __tablename__ = "arceus_plugin_installation_permissions"
+
+    installation_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_installations.id"), nullable=False)
+    permission_key = Column(String(220), nullable=False)
+    scope = Column(JSON, default=dict, nullable=False)
+    conditions = Column(JSON, default=dict, nullable=False)
+    risk_level = Column(String(40), default="low", nullable=False)
+    granted_by = Column(UUID(as_uuid=True), ForeignKey("arceus_users.id"), nullable=False)
+    expires_at = Column(DateTime(timezone=True))
+    revoked_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("risk_level IN ('low', 'moderate', 'high', 'critical')", name="ck_arceus_plugin_installation_permissions_risk"),
+        UniqueConstraint("installation_id", "permission_key", name="uq_arceus_plugin_installation_permissions_key"),
+        Index("ix_arceus_plugin_installation_permissions_installation", "installation_id", "revoked_at"),
+    )
+
+
+class ArceusPluginInvocation(KernelTenantMixin, Base):
+    __tablename__ = "arceus_plugin_invocations"
+
+    installation_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_installations.id"), nullable=False)
+    capability_id = Column(String(220), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    workflow_node_id = Column(UUID(as_uuid=True), ForeignKey("arceus_workflow_nodes.id"))
+    actor_identity_id = Column(String(255), nullable=False)
+    extension_identity_id = Column(String(255), nullable=False)
+    trace_id = Column(String(120), nullable=False)
+    status = Column(String(40), default="authorized", nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True))
+    duration_ms = Column(Integer)
+    input_fingerprint = Column(String(128))
+    output_fingerprint = Column(String(128))
+    error_code = Column(String(120))
+    receipt = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('authorized', 'running', 'succeeded', 'failed', 'denied', 'cancelled', 'timeout')", name="ck_arceus_plugin_invocations_status"),
+        Index("ix_arceus_plugin_invocations_installation", "tenant_id", "installation_id", "started_at"),
+        Index("ix_arceus_plugin_invocations_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
+class ArceusPluginSecurityFinding(KernelMutableMixin, Base):
+    __tablename__ = "arceus_plugin_security_findings"
+
+    plugin_version_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_versions.id"), nullable=False)
+    category = Column(String(100), nullable=False)
+    severity = Column(String(40), default="low", nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text)
+    rule_id = Column(String(160))
+    blocking = Column(Boolean, default=False, nullable=False)
+    status = Column(String(40), default="open", nullable=False)
+    resolved_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('info', 'low', 'medium', 'high', 'critical')", name="ck_arceus_plugin_security_findings_severity"),
+        CheckConstraint("status IN ('open', 'acknowledged', 'resolved', 'waived')", name="ck_arceus_plugin_security_findings_status"),
+        Index("ix_arceus_plugin_security_findings_version", "plugin_version_id", "severity", "status"),
+    )
+
+
+class ArceusPluginUsageEvent(KernelTenantMixin, Base):
+    __tablename__ = "arceus_plugin_usage_events"
+
+    plugin_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugins.id"), nullable=False)
+    installation_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_installations.id"), nullable=False)
+    invocation_id = Column(UUID(as_uuid=True), ForeignKey("arceus_plugin_invocations.id"))
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"))
+    metric = Column(String(100), nullable=False)
+    quantity = Column(Numeric(18, 6), default=0, nullable=False)
+    idempotency_key = Column(String(180), nullable=False)
+    occurred_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    metadata_json = Column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_arceus_plugin_usage_events_idempotency"),
+        Index("ix_arceus_plugin_usage_events_plugin", "tenant_id", "plugin_id", "metric", "occurred_at"),
+    )
+
+
 class ArceusProject(KernelTenantMixin, Base):
     __tablename__ = "arceus_projects"
 
@@ -705,6 +1376,108 @@ class ArceusVerificationRun(KernelTenantMixin, Base):
     __table_args__ = (
         CheckConstraint("status IN ('running', 'passed', 'failed', 'cancelled')", name="ck_arceus_verification_runs_status"),
         Index("ix_arceus_verification_runs_mission", "tenant_id", "mission_id", "status"),
+    )
+
+
+class ArceusVerificationFinding(KernelTenantMixin, Base):
+    __tablename__ = "arceus_verification_findings"
+
+    verification_run_id = Column(UUID(as_uuid=True), ForeignKey("arceus_verification_runs.id"), nullable=False)
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    finding_key = Column(String(180), nullable=False)
+    severity = Column(String(40), nullable=False)
+    title = Column(Text, nullable=False)
+    detail = Column(Text, nullable=False)
+    recommendation = Column(Text, nullable=False)
+    evidence_ids = Column(JSON, default=list, nullable=False)
+    blocks_release = Column(Boolean, default=False, nullable=False)
+    status = Column(String(60), default="open", nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('info', 'low', 'medium', 'moderate', 'high', 'critical')", name="ck_arceus_verification_findings_severity"),
+        CheckConstraint("status IN ('open', 'acknowledged', 'resolved', 'waived', 'superseded')", name="ck_arceus_verification_findings_status"),
+        Index("ix_arceus_verification_findings_run", "tenant_id", "verification_run_id"),
+        Index("ix_arceus_verification_findings_mission", "tenant_id", "mission_id", "severity", "status"),
+    )
+
+
+class ArceusVerificationWorkerJob(KernelTenantMixin, Base):
+    __tablename__ = "arceus_verification_worker_jobs"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    plan_id = Column(String(180), nullable=False)
+    check_id = Column(String(180), nullable=False)
+    check_definition_id = Column(String(180), nullable=False)
+    category = Column(String(100), nullable=False)
+    evidence_producer = Column(String(120), nullable=False)
+    mandatory = Column(Boolean, default=True, nullable=False)
+    blocking = Column(Boolean, default=True, nullable=False)
+    status = Column(String(60), default="queued", nullable=False)
+    inputs = Column(JSON, default=dict, nullable=False)
+    depends_on = Column(JSON, default=list, nullable=False)
+    timeout_seconds = Column(Integer, default=300, nullable=False)
+    attempts = Column(Integer, default=0, nullable=False)
+    last_error = Column(JSON, default=dict, nullable=False)
+    durable_task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    evidence_id = Column(UUID(as_uuid=True), ForeignKey("arceus_evidence.id"))
+    idempotency_key = Column(String(255), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('queued', 'leased', 'running', 'succeeded', 'failed', 'cancelled', 'blocked')", name="ck_arceus_verification_worker_jobs_status"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_arceus_verification_worker_jobs_idempotency"),
+        Index("ix_arceus_verification_worker_jobs_plan", "tenant_id", "mission_id", "plan_id", "status"),
+        Index("ix_arceus_verification_worker_jobs_queue", "tenant_id", "status", "category", "created_at"),
+    )
+
+
+class ArceusEvidenceProducerRun(KernelTenantMixin, Base):
+    __tablename__ = "arceus_evidence_producer_runs"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("arceus_tasks.id"))
+    worker_job_id = Column(UUID(as_uuid=True), ForeignKey("arceus_verification_worker_jobs.id"))
+    producer_key = Column(String(120), nullable=False)
+    check_id = Column(String(180))
+    status = Column(String(60), default="running", nullable=False)
+    command = Column(Text)
+    exit_code = Column(Integer)
+    duration_ms = Column(Integer)
+    output_summary = Column(Text, default="", nullable=False)
+    artifacts = Column(JSON, default=list, nullable=False)
+    payload = Column(JSON, default=dict, nullable=False)
+    evidence_id = Column(UUID(as_uuid=True), ForeignKey("arceus_evidence.id"))
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('running', 'succeeded', 'failed', 'cancelled')", name="ck_arceus_evidence_producer_runs_status"),
+        Index("ix_arceus_evidence_producer_runs_mission", "tenant_id", "mission_id", "producer_key", "status"),
+        Index("ix_arceus_evidence_producer_runs_job", "tenant_id", "worker_job_id"),
+    )
+
+
+class ArceusReleaseReadinessGate(KernelTenantMixin, Base):
+    __tablename__ = "arceus_release_readiness_gates"
+
+    mission_id = Column(UUID(as_uuid=True), ForeignKey("arceus_missions.id"), nullable=False)
+    subject_type = Column(String(80), default="release", nullable=False)
+    subject_id = Column(String(180), nullable=False)
+    ready = Column(Boolean, default=False, nullable=False)
+    status = Column(String(60), nullable=False)
+    score = Column(Float, default=0.0, nullable=False)
+    blockers = Column(JSON, default=list, nullable=False)
+    warnings = Column(JSON, default=list, nullable=False)
+    required_actions = Column(JSON, default=list, nullable=False)
+    evidence_summary = Column(JSON, default=dict, nullable=False)
+    response_payload = Column(JSON, default=dict, nullable=False)
+    checked_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("subject_type IN ('pull_request', 'deployment', 'release', 'merge')", name="ck_arceus_release_readiness_gates_subject"),
+        CheckConstraint("status IN ('ready', 'blocked', 'review_required')", name="ck_arceus_release_readiness_gates_status"),
+        Index("ix_arceus_release_readiness_gates_latest", "tenant_id", "mission_id", "subject_type", "subject_id", "checked_at"),
     )
 
 

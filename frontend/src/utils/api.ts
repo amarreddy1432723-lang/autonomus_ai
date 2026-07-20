@@ -34,6 +34,19 @@ export function getServiceUrl(path: string): string {
         path.startsWith('/api/v1/jobs') ||
         path.startsWith('/api/v1/os') ||
         path.startsWith('/api/v1/runtime') ||
+        path.startsWith('/api/v1/platform') ||
+        path.startsWith('/api/v1/learning') ||
+        path.startsWith('/api/v1/strategy') ||
+        path.startsWith('/api/v1/kernel') ||
+        path.startsWith('/api/v1/compute') ||
+        path.startsWith('/api/v1/graph') ||
+        path.startsWith('/api/v1/governance') ||
+        path.startsWith('/api/v1/memory') ||
+        path.startsWith('/api/v1/research') ||
+        path.startsWith('/api/v1/extensions') ||
+        path.startsWith('/api/v1/verification-engine') ||
+        path.startsWith('/api/v1/federation') ||
+        path.startsWith('/api/v1/civilization') ||
         path.startsWith('/api/v1/product') ||
         path.startsWith('/api/v1/automation') ||
         path.startsWith('/api/v1/intents') ||
@@ -95,6 +108,19 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/jobs') ||
     path.startsWith('/api/v1/os') ||
     path.startsWith('/api/v1/runtime') ||
+    path.startsWith('/api/v1/platform') ||
+    path.startsWith('/api/v1/learning') ||
+    path.startsWith('/api/v1/strategy') ||
+    path.startsWith('/api/v1/kernel') ||
+    path.startsWith('/api/v1/compute') ||
+    path.startsWith('/api/v1/graph') ||
+    path.startsWith('/api/v1/governance') ||
+    path.startsWith('/api/v1/memory') ||
+    path.startsWith('/api/v1/research') ||
+    path.startsWith('/api/v1/extensions') ||
+    path.startsWith('/api/v1/verification-engine') ||
+    path.startsWith('/api/v1/federation') ||
+    path.startsWith('/api/v1/civilization') ||
     path.startsWith('/api/v1/product') ||
     path.startsWith('/api/v1/automation') ||
     path.startsWith('/api/v1/intents') ||

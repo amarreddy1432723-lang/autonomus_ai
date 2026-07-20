@@ -8,10 +8,11 @@ from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from services.shared.database import get_db
-from services.shared.arceus_core_models import ArceusTenant, ArceusTenantMembership, ArceusUser
+from services.shared.arceus_core_models import ArceusRolePermission, ArceusTenant, ArceusTenantMembership, ArceusUser
 
 from ...deps import get_current_user_id
 from ..application.errors import InvalidIdempotencyKey, PermissionDenied
+from ..identity.service import ROLE_DEFINITIONS
 
 
 ALL_LOCAL_PERMISSIONS = frozenset(
@@ -22,6 +23,7 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "mission.start",
         "mission.pause",
         "mission.plan",
+        "planning.intelligence",
         "mission.resume",
         "mission.cancel",
         "mission.clarify",
@@ -39,8 +41,10 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "capability.view",
         "compiler.view",
         "context.view",
+        "context.build",
         "model_registry.view",
         "model_registry.manage",
+        "model.gateway",
         "provider_registry.view",
         "provider_registry.manage",
         "tool_registry.view",
@@ -57,10 +61,45 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "event.replay",
         "usage.view",
         "runtime.health",
+        "identity.view",
+        "identity.authorize",
+        "identity.session.evaluate",
+        "identity.token.issue",
+        "identity.service_account.create",
+        "identity.agent.create",
+        "identity.provider.sync",
+        "identity.governance.view",
+        "policy.view",
+        "policy.manage",
+        "telemetry.view",
+        "telemetry.write",
+        "telemetry.dashboard.view",
+        "alert.view",
+        "alert.manage",
+        "incident.manage",
+        "runtime.report",
+        "runtime.execute",
         "runtime.schedule",
         "runtime.lease",
         "runtime.checkpoint",
         "approval.vote",
+        "collaboration.view",
+        "collaboration.message",
+        "decision.create",
+        "decision.approve",
+        "review.create",
+        "review.complete",
+        "agent.register",
+        "agent.view",
+        "agent.manage",
+        "agent.heartbeat",
+        "agent.metrics.view",
+        "agent.assign",
+        "agent.message",
+        "prompt.view",
+        "prompt.compile",
+        "prompt.validate",
+        "prompt.manage",
         "task.view",
         "task.retry",
         "task.skip",
@@ -89,6 +128,9 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "knowledge.search",
         "knowledge.index",
         "knowledge.impact",
+        "repository.view",
+        "repository.search",
+        "repository.index",
         "product.view",
         "product.requirement.create",
         "product.experiment.create",
@@ -107,6 +149,69 @@ ALL_LOCAL_PERMISSIONS = frozenset(
         "runtime.kernel.manage",
         "runtime.kernel.lease",
         "runtime.kernel.checkpoint",
+        "platform.view",
+        "platform.manage",
+        "marketplace.view",
+        "extension.view",
+        "extension.manage",
+        "extension.install",
+        "extension.invoke",
+        "extension.publish",
+        "extension.security.review",
+        "platform.federation",
+        "learning.view",
+        "learning.record.create",
+        "learning.promote",
+        "learning.evaluate",
+        "strategy.view",
+        "strategy.objective.create",
+        "strategy.simulate",
+        "strategy.decision.record",
+        "kernel.view",
+        "kernel.events.view",
+        "kernel.validate",
+        "kernel.replay",
+        "compute.view",
+        "compute.plan",
+        "compute.schedule",
+        "compute.infer",
+        "graph.view",
+        "graph.query",
+        "graph.search",
+        "graph.sync",
+        "governance.view",
+        "governance.model.view",
+        "governance.policy.view",
+        "governance.evaluate",
+        "governance.approve",
+        "governance.compliance.view",
+        "governance.audit.view",
+        "memory.create",
+        "memory.approve",
+        "memory.view",
+        "memory.store",
+        "memory.search",
+        "memory.summarize",
+        "memory.archive",
+        "memory.delete",
+        "research.project.create",
+        "research.hypothesis.create",
+        "research.experiment.create",
+        "research.findings.view",
+        "research.publish",
+        "research.innovation.view",
+        "federation.create",
+        "federation.join",
+        "federation.delegate",
+        "federation.view",
+        "federation.knowledge.share",
+        "federation.resources.negotiate",
+        "civilization.view",
+        "civilization.evolve",
+        "civilization.propose",
+        "civilization.metrics.view",
+        "civilization.simulate",
+        "civilization.constitution.view",
     }
 )
 
@@ -125,22 +230,61 @@ class RequestContext:
     user_agent: str | None
 
 
-def _ensure_runtime_identity(db: Session, user_id: UUID) -> tuple[ArceusTenant, ArceusUser, ArceusTenantMembership]:
-    tenant = db.query(ArceusTenant).filter(ArceusTenant.slug == "default").first()
+def _role_permissions(db: Session, role_keys: frozenset[str]) -> frozenset[str]:
+    builtin = {role.role_key: set(role.permissions) for role in ROLE_DEFINITIONS}
+    permissions: set[str] = set()
+    for role_key in role_keys:
+        permissions.update(builtin.get(role_key, set()))
+    persisted = (
+        db.query(ArceusRolePermission)
+        .filter(ArceusRolePermission.role_key.in_(list(role_keys)), ArceusRolePermission.active.is_(True))
+        .all()
+        if role_keys
+        else []
+    )
+    permissions.update(item.permission_key for item in persisted)
+    return frozenset(permissions)
+
+
+def _tenant_slug_from_request(request: Request) -> str:
+    clerk_org_id = request.headers.get("x-clerk-org-id") or request.headers.get("x-organization-id")
+    if clerk_org_id:
+        return f"clerk-{clerk_org_id}".lower().replace("_", "-")[:240]
+    return "default"
+
+
+def _ensure_runtime_identity(db: Session, user_id: UUID, request: Request) -> tuple[ArceusTenant, ArceusUser, ArceusTenantMembership]:
+    tenant_slug = _tenant_slug_from_request(request)
+    tenant_name = request.headers.get("x-organization-name") or ("Default Tenant" if tenant_slug == "default" else tenant_slug)
+    tenant = db.query(ArceusTenant).filter(ArceusTenant.slug == tenant_slug).first()
     if tenant is None:
-        tenant = ArceusTenant(name="Default Tenant", slug="default", status="active", plan_key="local")
+        tenant = ArceusTenant(
+            name=tenant_name,
+            slug=tenant_slug,
+            status="active",
+            plan_key="local",
+            settings={
+                "clerk_org_id": request.headers.get("x-clerk-org-id"),
+                "enterprise_sso": request.headers.get("x-enterprise-sso") in {"1", "true", "yes"},
+                "scim_enabled": request.headers.get("x-scim-enabled") in {"1", "true", "yes"},
+            },
+        )
         db.add(tenant)
         db.flush()
 
-    external_identity_id = f"legacy:{user_id}"
+    external_identity_id = request.headers.get("x-clerk-user-id") or f"legacy:{user_id}"
     user = db.query(ArceusUser).filter(ArceusUser.external_identity_id == external_identity_id).first()
     if user is None:
         user = ArceusUser(
             id=user_id,
             external_identity_id=external_identity_id,
-            email=f"{user_id}@local.arceus",
-            display_name="Local User",
+            email=request.headers.get("x-user-email") or f"{user_id}@local.arceus",
+            display_name=request.headers.get("x-user-name") or "Local User",
             status="active",
+            preferences={
+                "clerk_session_id": request.headers.get("x-clerk-session-id"),
+                "device_trust": request.headers.get("x-device-trusted") in {"1", "true", "yes"},
+            },
         )
         db.add(user)
         db.flush()
@@ -169,7 +313,7 @@ def get_request_context(
     user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> RequestContext:
-    tenant, user, membership = _ensure_runtime_identity(db, user_id)
+    tenant, user, membership = _ensure_runtime_identity(db, user_id, request)
     request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or f"req_{uuid.uuid4().hex}"
     correlation_id = getattr(request.state, "correlation_id", None) or uuid.uuid4()
     request.state.request_id = request_id
@@ -181,7 +325,7 @@ def get_request_context(
         user_id=user.id,
         membership_id=membership.id,
         role_keys=frozenset({membership.role_key}),
-        permissions=ALL_LOCAL_PERMISSIONS,
+        permissions=_role_permissions(db, frozenset({membership.role_key})),
         client_type=request.headers.get("x-client-type", "api"),
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
@@ -190,7 +334,7 @@ def get_request_context(
 
 def require_permission(permission: str):
     def dependency(context: RequestContext = Depends(get_request_context)) -> RequestContext:
-        if permission not in context.permissions:
+        if "*" not in context.permissions and permission not in context.permissions:
             raise PermissionDenied("Permission denied.", details={"permission": permission})
         return context
 

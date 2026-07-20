@@ -19,6 +19,15 @@
   letter-spacing: 0;
 }
 
+.headerSubcopy {
+  display: block;
+  max-width: 760px;
+  margin-top: 6px;
+  color: #a1a1aa;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .kicker {
   margin: 0 0 4px;
   color: #a1a1aa;
@@ -30,6 +39,41 @@
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
   gap: 16px;
+}
+
+.platformStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.platformStrip article {
+  min-height: 104px;
+  border: 1px solid #26282d;
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(139, 92, 246, 0.14), transparent 34%),
+    #15161a;
+  padding: 14px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+}
+
+.platformStrip span {
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.platformStrip strong {
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+.platformStrip small {
+  color: #8b8f9a;
+  font-size: 11px;
 }
 
 .panel {
@@ -102,6 +146,20 @@
   font-size: 12px;
 }
 
+.verified {
+  color: #86efac !important;
+}
+
+.blocked {
+  color: #fbbf24 !important;
+}
+
+.publisher {
+  margin-top: 4px !important;
+  color: #858994 !important;
+  font-size: 12px !important;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -171,5 +229,9 @@
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .platformStrip {
+    grid-template-columns: 1fr 1fr;
   }
 }

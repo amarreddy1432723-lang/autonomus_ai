@@ -421,6 +421,94 @@
   overflow-x: auto;
 }
 
+.observabilityStrip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.observabilityStrip button {
+  min-height: 86px;
+  padding: 13px;
+  border: 1px solid #ececec;
+  border-radius: 18px;
+  background: rgba(247, 248, 250, 0.72);
+  color: #1b1b1f;
+  text-align: left;
+}
+
+.observabilityStrip strong {
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.observabilityStrip span {
+  display: block;
+  margin-top: 8px;
+  color: #343943;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.observabilityStrip small {
+  display: block;
+  margin-top: 5px;
+  color: #737986;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiopsNote {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(123, 97, 255, 0.18);
+  border-radius: 18px;
+  background: rgba(123, 97, 255, 0.08);
+  color: #4e3ec5;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.releaseGateReady,
+.releaseGateBlocked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  font-size: 13px;
+}
+
+.releaseGateReady strong,
+.releaseGateBlocked strong {
+  color: #1b1b1f;
+  font-weight: 950;
+}
+
+.releaseGateReady span,
+.releaseGateBlocked span {
+  color: #343943;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.releaseGateReady {
+  border: 1px solid rgba(31, 157, 85, 0.22);
+  background: rgba(31, 157, 85, 0.09);
+}
+
+.releaseGateBlocked {
+  border: 1px solid rgba(196, 117, 0, 0.24);
+  background: rgba(255, 183, 77, 0.13);
+}
+
 .feed article {
   min-width: 300px;
   padding: 14px;
@@ -488,7 +576,8 @@
 
 @media (max-width: 1500px) {
   .topbar,
-  .grid {
+  .grid,
+  .observabilityStrip {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -508,7 +597,8 @@
   }
 
   .topbar,
-  .grid {
+  .grid,
+  .observabilityStrip {
     grid-template-columns: 1fr;
   }
 

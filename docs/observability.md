@@ -130,6 +130,115 @@ It checks:
 
 For production, the Observability Gate should have zero warnings before a public release.
 
+## Runtime Telemetry APIs
+
+Book II Part 45 adds first-class operational APIs:
+
+- `POST /api/v1/telemetry/logs`
+- `GET /api/v1/telemetry/logs`
+- `POST /api/v1/telemetry/metrics`
+- `GET /api/v1/telemetry/metrics`
+- `POST /api/v1/telemetry/spans`
+- `GET /api/v1/telemetry/traces/{trace_id}`
+- `POST /api/v1/telemetry/provider-health`
+- `POST /api/v1/telemetry/alerts`
+- `GET /api/v1/telemetry/alerts`
+- `POST /api/v1/telemetry/incidents`
+- `POST /api/v1/telemetry/mission-statistics`
+- `POST /api/v1/telemetry/cost-statistics`
+- `GET /api/v1/telemetry/dashboard`
+- `POST /api/v1/telemetry/exporters`
+- `GET /api/v1/telemetry/exporters`
+- `POST /api/v1/telemetry/alert-channels`
+- `GET /api/v1/telemetry/alert-channels`
+- `GET /api/v1/telemetry/alert-deliveries`
+- `POST /api/v1/telemetry/alert-deliveries/{attempt_id}/send`
+- `POST /api/v1/telemetry/alert-deliveries/drain`
+- `POST /api/v1/telemetry/recovery-actions`
+- `GET /api/v1/telemetry/recovery-actions`
+- `POST /api/v1/telemetry/recovery-actions/{recovery_action_id}/execute`
+- `GET /api/v1/telemetry/exporters/runtime-status`
+- `GET /api/v1/telemetry/mission-control`
+
+All persisted telemetry is tenant-scoped and correlated by trace ID, mission ID, workflow ID, service, and actor where available.
+
+`POST /api/v1/telemetry/spans` persists spans to Postgres and also attempts to emit an OpenTelemetry SDK span when the SDK is installed and configured. Local development continues to work without OpenTelemetry installed.
+
+## Persistence
+
+Migration `k8f9a0b1c2d3_arceus_observability_aiops.py` creates:
+
+- `arceus_telemetry_logs`
+- `arceus_metric_samples`
+- `arceus_traces`
+- `arceus_spans`
+- `arceus_alerts`
+- `arceus_incidents`
+- `arceus_provider_health`
+- `arceus_mission_statistics`
+- `arceus_cost_statistics`
+- `arceus_dashboard_configs`
+
+Migration `m0b1c2d3e4f5_arceus_observability_delivery_recovery.py` creates:
+
+- `arceus_telemetry_exporter_configs`
+- `arceus_alert_delivery_channels`
+- `arceus_alert_delivery_attempts`
+- `arceus_recovery_actions`
+
+## Redaction
+
+Telemetry ingestion redacts common secret patterns before persistence, including bearer tokens, `password=`, `token=`, `secret=`, and `sk-` values. Do not send raw prompts, source code, or personal data to telemetry unless explicitly permitted by policy.
+
+## AIOps
+
+The MVP AIOps layer provides:
+
+- Provider health classification and reroute recommendations.
+- Incident recommendations based on provider, queue, database, cost, and security signals.
+- Operations dashboard recommendations based on active alerts, open incidents, degraded providers, total cost, and failed missions.
+- Alert delivery configuration for Slack, email, Teams, and webhooks. Alerts create queued/suppressed delivery attempts based on channel filters.
+- Exporter configuration records for Prometheus, Loki, Tempo, OTLP, and Sentry targets.
+- Policy-gated recovery actions. Low-risk actions such as retrying failed checks or refreshing GitHub checks can auto-execute; high-risk actions require approval or are blocked when auto-execution is requested.
+- Mission Control observability snapshots containing traces, logs, alerts, incidents, exporters, delivery channels, recovery actions, and AIOps recommendations.
+
+Queued alert attempts can now be delivered by calling `POST /api/v1/telemetry/alert-deliveries/drain`.
+Webhook, Slack, and Teams channels send JSON payloads to the configured URL. Email delivery uses SMTP when these environment variables are present:
+
+```text
+ARCEUS_SMTP_HOST=
+ARCEUS_SMTP_PORT=587
+ARCEUS_SMTP_USER=
+ARCEUS_SMTP_PASSWORD=
+ARCEUS_ALERT_FROM_EMAIL=
+```
+
+Vault-backed channel targets such as `vault://slack-webhook` intentionally fail with `secret_resolution_not_configured` until the production secret resolver worker is connected.
+
+Low-risk recovery actions have safe executors for:
+
+- `retry_failed_check`
+- `restart_preview`
+- `reroute_model_provider`
+- `clear_context_cache`
+- `refresh_github_checks`
+- `requeue_worker_job`
+
+High-risk actions remain blocked or approval-required by policy.
+
+`GET /api/v1/telemetry/exporters/runtime-status` reports whether OpenTelemetry SDK/exporter envs are configured for live OTLP/Tempo/Loki-style export. Postgres span persistence continues even when external exporters are unavailable.
+
+## Exporters And Channels
+
+Recommended production mapping:
+
+- Prometheus: metrics scrape and alert rules.
+- Loki: structured application logs.
+- Tempo: distributed traces.
+- Slack or Teams: P0/P1 engineering alerts.
+- Email: lower-priority release and billing alerts.
+- Webhook: integration with external incident tooling.
+
 ## Release Gate
 
 The release gate runs the observability verifier before production approval:
