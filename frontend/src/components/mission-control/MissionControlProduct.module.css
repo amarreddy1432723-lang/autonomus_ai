@@ -1,0 +1,385 @@
+.shell {
+  display: grid;
+  gap: 16px;
+  padding: 0 28px 20px;
+}
+
+.missionHeader,
+.panel,
+.completion {
+  border: 1px solid #ececec;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 18px 42px rgba(26, 31, 47, 0.07);
+  backdrop-filter: blur(18px);
+}
+
+.missionHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 20px;
+}
+
+.missionHeader h2,
+.panel h3 {
+  margin: 0;
+  color: #1b1b1f;
+  letter-spacing: 0;
+}
+
+.missionHeader h2 {
+  font-size: 28px;
+}
+
+.missionHeader p,
+.panel p,
+.muted {
+  margin: 6px 0 0;
+  color: #737986;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.statusPill,
+.miniPill,
+.eventTime,
+.taskBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.statusPill {
+  min-height: 34px;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(76, 195, 138, 0.24);
+  background: rgba(76, 195, 138, 0.11);
+  color: #24885e;
+}
+
+.statusPill[data-state="attention_required"],
+.statusPill[data-state="failed"] {
+  border-color: rgba(255, 176, 83, 0.32);
+  background: rgba(255, 176, 83, 0.15);
+  color: #a86408;
+}
+
+.progressRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.progressRow i {
+  display: block;
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+  background: #eceff4;
+}
+
+.progressRow em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7b61ff, #5ba7ff);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.controls button,
+.panel button,
+.completionActions button {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid #ececec;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #1b1b1f;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.controls button {
+  padding: 0 12px;
+}
+
+.controls button[data-primary="true"],
+.completionActions button[data-primary="true"] {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+}
+
+.topGrid,
+.bottomGrid {
+  display: grid;
+  gap: 16px;
+}
+
+.topGrid {
+  grid-template-columns: minmax(280px, 0.78fr) minmax(0, 1.22fr);
+}
+
+.bottomGrid {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
+}
+
+.panel {
+  min-height: 240px;
+  padding: 18px;
+}
+
+.panel header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.panel h3 {
+  font-size: 18px;
+}
+
+.workerList,
+.taskList,
+.timeline,
+.lockList,
+.metricGrid,
+.evidenceList,
+.recoveryList {
+  display: grid;
+  gap: 10px;
+}
+
+.workerCard,
+.taskNode,
+.timelineItem,
+.lockItem,
+.metric,
+.evidenceItem,
+.recoveryItem {
+  border: 1px solid #ececec;
+  border-radius: 18px;
+  background: rgba(247, 248, 250, 0.74);
+}
+
+.workerCard {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #7b61ff, #5ba7ff);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.workerCard strong,
+.taskNode strong,
+.lockItem strong,
+.metric strong,
+.evidenceItem strong,
+.recoveryItem strong {
+  display: block;
+  color: #1b1b1f;
+  font-size: 13px;
+}
+
+.workerCard small,
+.taskNode small,
+.lockItem small,
+.metric small,
+.evidenceItem small,
+.recoveryItem small {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #737986;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.miniPill {
+  min-width: 74px;
+  min-height: 26px;
+  padding: 0 8px;
+  background: rgba(76, 195, 138, 0.12);
+  color: #24885e;
+}
+
+.miniPill[data-state="Delayed"],
+.miniPill[data-state="Stale"],
+.miniPill[data-state="Review required"] {
+  background: rgba(255, 176, 83, 0.16);
+  color: #a86408;
+}
+
+.taskNode {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+}
+
+.taskDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #b9bfca;
+}
+
+.taskNode[data-state="completed"] .taskDot {
+  background: #4cc38a;
+}
+
+.taskNode[data-state="running"] .taskDot,
+.taskNode[data-state="accepted"] .taskDot {
+  background: #7b61ff;
+  box-shadow: 0 0 0 6px rgba(123, 97, 255, 0.10);
+}
+
+.taskNode[data-state="blocked"] .taskDot,
+.taskNode[data-state="failed"] .taskDot {
+  background: #f0a500;
+}
+
+.taskBadge {
+  min-height: 24px;
+  padding: 0 8px;
+  background: rgba(115, 121, 134, 0.10);
+  color: #626875;
+}
+
+.timelineItem {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+}
+
+.eventTime {
+  align-self: start;
+  min-height: 26px;
+  background: rgba(123, 97, 255, 0.09);
+  color: #5743d1;
+}
+
+.timelineItem details {
+  margin-top: 6px;
+  color: #737986;
+  font-size: 11px;
+}
+
+.timelineItem pre {
+  overflow: auto;
+  max-height: 120px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.lockItem,
+.evidenceItem,
+.recoveryItem {
+  padding: 12px;
+}
+
+.metricGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric {
+  min-height: 86px;
+  padding: 13px;
+}
+
+.metric b {
+  display: block;
+  color: #7b61ff;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  min-height: 160px;
+  border: 1px dashed #d9dde6;
+  border-radius: 18px;
+  color: #737986;
+  font-size: 13px;
+}
+
+.completion {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 18px;
+}
+
+.completionActions {
+  display: flex;
+  gap: 8px;
+}
+
+.completionActions button {
+  padding: 0 12px;
+}
+
+@media (max-width: 1200px) {
+  .missionHeader,
+  .topGrid,
+  .bottomGrid,
+  .completion {
+    grid-template-columns: 1fr;
+  }
+
+  .controls,
+  .completionActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    padding: 0 18px 18px;
+  }
+
+  .metricGrid,
+  .taskNode,
+  .workerCard,
+  .timelineItem {
+    grid-template-columns: 1fr;
+  }
+}

@@ -14,6 +14,7 @@ Arceus is a desktop-first AI software engineering workspace with separate produc
 - [Production Hardening](./production-hardening.md)
 - [Distribution](./distribution.md)
 - [Observability](./observability.md)
+- [v1 Product Roadmap](./v1-product-roadmap.md)
 - [Changelog](./changelog.md)
 
 ## Five-Minute Path

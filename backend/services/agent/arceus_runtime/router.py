@@ -6,6 +6,7 @@ from .approvals.routes import router as approvals_router
 from .artifacts.routes import router as artifacts_router
 from .audit.routes import router as audit_router
 from .automation.routes import router as automation_router
+from .billing.routes import router as billing_router
 from .api.responses import handle_domain_error
 from .application.errors import DomainError
 from .capabilities.routes import router as capabilities_router
@@ -15,7 +16,10 @@ from .collaboration.routes import router as collaboration_router
 from .compute.routes import router as compute_router
 from .constitution.routes import router as constitution_router
 from .context_engine.routes import router as context_engine_router
+from .data_platform.routes import router as data_platform_router
 from .decisions.routes import router as decisions_router
+from .deployment.routes import router as deployment_router
+from .enterprise_admin.routes import router as enterprise_admin_router
 from .evidence.routes import router as evidence_router
 from .events.routes import router as events_router
 from .execution.routes import router as execution_router
@@ -62,6 +66,7 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, handle_domain_error)
     app.include_router(missions_router)
     app.include_router(automation_router)
+    app.include_router(billing_router)
     app.include_router(experience_router)
     app.include_router(runtime_kernel_router)
     app.include_router(mission_runtime_router)
@@ -74,7 +79,10 @@ def install_arceus_runtime(app: FastAPI) -> None:
     app.include_router(evidence_router)
     app.include_router(tasks_router)
     app.include_router(telemetry_router)
+    app.include_router(data_platform_router)
     app.include_router(decisions_router)
+    app.include_router(deployment_router)
+    app.include_router(enterprise_admin_router)
     app.include_router(organizations_router)
     app.include_router(planning_router)
     app.include_router(planning_intelligence_router)

@@ -7,6 +7,7 @@ import { isElectronRuntime } from '../utils/serviceHealth';
 
 const DESKTOP_CODE_ALLOWED_PREFIXES = [
   '/launch',
+  '/onboarding',
   '/workspace',
   '/idea-discovery',
   '/product-intelligence',
@@ -52,14 +53,14 @@ export default function DesktopCodeRouteGuard({ children }: { children: React.Re
         minHeight: '100vh',
         display: 'grid',
         placeItems: 'center',
-        background: '#07080b',
-        color: '#f6f7fb',
+        background: '#f7f7f8',
+        color: '#111827',
         fontFamily: 'var(--font-sans), system-ui, sans-serif',
       }}>
         <section style={{ display: 'grid', justifyItems: 'center', gap: 12 }}>
-          <Code2 size={28} color="#9b7cff" />
+          <Code2 size={28} color="#111827" />
           <strong>Opening Arceus Code workspace...</strong>
-          <span style={{ color: '#9aa3b2', fontSize: 13 }}>Desktop routes are scoped to Code.</span>
+          <span style={{ color: '#6b7280', fontSize: 13 }}>Desktop routes are scoped to Code.</span>
         </section>
       </main>
     );

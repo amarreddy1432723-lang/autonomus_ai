@@ -21,6 +21,7 @@ export const routeBoundaries: RouteBoundary[] = [
   { prefix: '/products', boundary: 'marketing', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
   { prefix: '/workspace', boundary: 'workspace', surfaces: ['web', 'desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/launch', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
+  { prefix: '/onboarding', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/idea-discovery', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/product-intelligence', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/domain-intelligence', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },

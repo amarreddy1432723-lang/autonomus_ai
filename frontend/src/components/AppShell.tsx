@@ -87,6 +87,7 @@ function initialElectronState() {
 
 const DESKTOP_FULLSCREEN_PREFIXES = [
   '/launch',
+  '/onboarding',
   '/workspace',
   '/idea-discovery',
   '/product-intelligence',

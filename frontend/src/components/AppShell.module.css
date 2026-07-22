@@ -11,18 +11,18 @@
   min-height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: #f7f8fa;
-  color: #1b1b1f;
+  background: var(--surface-secondary);
+  color: var(--text-primary);
 }
 
 .topbar {
-  height: 40px;
+  height: var(--topbar-height);
   display: grid;
   grid-template-columns: auto auto minmax(220px, 520px) auto;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-3);
-  background: rgba(8, 9, 14, 0.94);
+  padding: 0 var(--space-4);
+  background: var(--surface);
   border-bottom: 1px solid var(--color-border);
   z-index: 100;
 }
@@ -39,7 +39,7 @@
 
 .logoGlow {
   color: var(--color-accent-primary);
-  filter: drop-shadow(0 0 10px var(--color-accent-glow));
+  filter: none;
 }
 
 .productMenu {
@@ -187,13 +187,13 @@
 }
 
 .serviceStatusPill[data-state='online'] {
-  border-color: rgba(0, 208, 132, 0.28);
+  border-color: rgba(22, 163, 74, 0.28);
   color: var(--color-success);
 }
 
 .serviceStatusPill[data-state='online'] span {
   background: var(--color-success);
-  box-shadow: 0 0 10px rgba(0, 208, 132, 0.32);
+  box-shadow: none;
 }
 
 .serviceStatusPill[data-state='auth_required'],
@@ -209,8 +209,8 @@
 
 .serviceStatusPill[data-state='agent_offline'],
 .serviceStatusPill[data-state='offline_local_only'] {
-  border-color: rgba(239, 68, 68, 0.32);
-  color: #fca5a5;
+  border-color: rgba(220, 38, 38, 0.32);
+  color: var(--color-error);
 }
 
 .serviceStatusPill[data-state='agent_offline'] span,
@@ -295,7 +295,7 @@
 
 .sidebar {
   width: 48px;
-  background: rgba(8, 9, 14, 0.96);
+  background: var(--surface);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
@@ -411,7 +411,7 @@
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(8, 9, 14, 0.72);
+  background: rgba(17, 24, 39, 0.24);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -515,7 +515,7 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: var(--space-6);
+  padding: var(--space-5);
   background: var(--color-bg-primary);
 }
 
@@ -599,7 +599,7 @@
 
   .activityBar {
     position: fixed;
-    top: 40px;
+    top: var(--topbar-height);
     right: 0;
     bottom: 0;
     width: min(380px, 90vw);

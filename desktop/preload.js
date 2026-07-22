@@ -87,6 +87,11 @@ const arceusDesktopApi = {
         onData: (callback) => on("terminal-data", callback),
         onExit: (callback) => on("terminal-exit", callback),
     },
+    tools: {
+        list: () => ipcRenderer.invoke("runtime.tools.list", request()),
+        invoke: (toolId, input = {}, metadata = {}) => ipcRenderer.invoke("runtime.tools.invoke", request({ toolId, input }, metadata)),
+        auditLog: () => ipcRenderer.invoke("runtime.tools.auditLog", request()),
+    },
     updater: {
         install: () => ipcRenderer.invoke("desktop-install-update"),
         onAvailable: (callback) => on("update-available", callback),

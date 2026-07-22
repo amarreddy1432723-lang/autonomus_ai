@@ -15,6 +15,7 @@ const {
     workspaceIdFor
 } = require("./architecture");
 const { discoverWorkspaceTasks } = require("./task-discovery");
+const { getAuditLog, invokeTool, listTools } = require("./runtime/tool-registry");
 
 function installSafeConsole() {
     const wrap = (method) => {
@@ -249,6 +250,28 @@ ipcMain.handle("desktop.diagnostics", async (_event, request = {}) => {
         trustedWorkspaces: Array.from(trustedWorkspaces.values()),
         logFile: path.join(userData, "arceus-desktop.log")
     });
+});
+
+ipcMain.handle("runtime.tools.list", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    return ipcOk(requestId, { tools: listTools() });
+});
+
+ipcMain.handle("runtime.tools.invoke", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const toolId = payload?.toolId || payload?.tool;
+        const input = payload?.input || {};
+        const result = await invokeTool(toolId, input);
+        return ipcOk(requestId, result);
+    } catch (error) {
+        return ipcFail(requestId, desktopError("TOOL_FAILED", error?.message || "Runtime tool failed.", true));
+    }
+});
+
+ipcMain.handle("runtime.tools.auditLog", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    return ipcOk(requestId, { audit: getAuditLog() });
 });
 
 function checkForAppUpdates() {

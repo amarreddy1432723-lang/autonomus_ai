@@ -1,33 +1,18 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
-import styles from './Button.module.css';
+import styles from './ui.module.css';
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-type ButtonSize = 'sm' | 'md' | 'lg';
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
-  size?: ButtonSize;
-  leadingIcon?: ReactNode;
-  trailingIcon?: ReactNode;
-}
+  icon?: ReactNode;
+};
 
-export function Button({
-  variant = 'secondary',
-  size = 'md',
-  leadingIcon,
-  trailingIcon,
-  className,
-  children,
-  type = 'button',
-  ...props
-}: ButtonProps) {
-  const classes = [styles.button, styles[variant], styles[size], className].filter(Boolean).join(' ');
+export function Button({ children, className = '', icon, variant = 'secondary', ...props }: ButtonProps) {
   return (
-    <button type={type} className={classes} {...props}>
-      {leadingIcon}
+    <button className={`${styles.button} ${styles[`button_${variant}`]} ${className}`} type="button" {...props}>
+      {icon}
       <span>{children}</span>
-      {trailingIcon}
     </button>
   );
 }
-

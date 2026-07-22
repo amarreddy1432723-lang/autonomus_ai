@@ -1,0 +1,5 @@
+fastapi
+psycopg
+pyjwt
+redis
+pytest

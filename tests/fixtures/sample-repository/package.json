@@ -1,0 +1,15 @@
+{
+  "scripts": {
+    "build": "next build",
+    "lint": "next lint",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "next": "16.0.0",
+    "react": "19.0.0",
+    "@clerk/nextjs": "latest"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}

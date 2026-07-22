@@ -473,6 +473,187 @@
   font-weight: 850;
 }
 
+.runtimeMap {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.runtimeMap article {
+  min-height: 190px;
+  padding: 14px;
+  border: 1px solid rgba(236, 236, 236, 0.94);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.runtimeMap header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.runtimeMap header strong {
+  color: #1b1b1f;
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.runtimeMap div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid rgba(236, 236, 236, 0.88);
+}
+
+.runtimeMap div span {
+  justify-self: start;
+  min-width: 76px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(115, 121, 134, 0.10);
+  color: #626875;
+  font-size: 10px;
+  font-weight: 950;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.runtimeMap div span[data-state="completed"],
+.runtimeMap div span[data-state="active"],
+.runtimeMap div span[data-state="recovered"],
+.runtimeMap div span[data-state="reconciled"] {
+  background: rgba(76, 195, 138, 0.13);
+  color: #24885e;
+}
+
+.runtimeMap div span[data-state="blocked"],
+.runtimeMap div span[data-state="manual_review_required"],
+.runtimeMap div span[data-state="rollback_required"] {
+  background: rgba(255, 176, 83, 0.16);
+  color: #a86408;
+}
+
+.runtimeMap div span[data-state="failed"],
+.runtimeMap div span[data-state="expired"] {
+  background: rgba(255, 107, 107, 0.11);
+  color: #9d2222;
+}
+
+.runtimeMap div b {
+  overflow: hidden;
+  color: #1b1b1f;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtimeMap div small {
+  grid-column: 2;
+  overflow: hidden;
+  color: #737986;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtimeMap p {
+  margin: 28px 0 0;
+  color: #737986;
+  font-size: 13px;
+}
+
+.executionProof {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(123, 97, 255, 0.16);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(123, 97, 255, 0.08), rgba(91, 167, 255, 0.07)),
+    rgba(255, 255, 255, 0.78);
+}
+
+.executionProof header,
+.executionProof header span {
+  display: flex;
+  align-items: center;
+}
+
+.executionProof header {
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.executionProof h3 {
+  margin: 0;
+  color: #1b1b1f;
+  font-size: 17px;
+}
+
+.executionProof header span {
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(123, 97, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #5743d1;
+  font-size: 11px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.executionProof > div {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.executionProof article {
+  min-height: 112px;
+  padding: 12px;
+  border: 1px solid #ececec;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.executionProof article small {
+  display: block;
+  color: #737986;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.executionProof article strong {
+  display: block;
+  margin-top: 8px;
+  color: #1b1b1f;
+  font-size: 16px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.executionProof article p {
+  display: -webkit-box;
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #626875;
+  font-size: 12px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .releaseGateReady,
 .releaseGateBlocked {
   display: flex;
@@ -577,7 +758,9 @@
 @media (max-width: 1500px) {
   .topbar,
   .grid,
-  .observabilityStrip {
+  .observabilityStrip,
+  .runtimeMap,
+  .executionProof > div {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -598,7 +781,9 @@
 
   .topbar,
   .grid,
-  .observabilityStrip {
+  .observabilityStrip,
+  .runtimeMap,
+  .executionProof > div {
     grid-template-columns: 1fr;
   }
 

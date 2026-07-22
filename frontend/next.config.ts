@@ -94,6 +94,10 @@ const nextConfig: NextConfig = {
         destination: `${agentUrl}/api/v1/runtime/:path*`,
       },
       {
+        source: '/api/v1/task-runtime/:path*',
+        destination: `${agentUrl}/api/v1/task-runtime/:path*`,
+      },
+      {
         source: '/api/v1/product/:path*',
         destination: `${agentUrl}/api/v1/product/:path*`,
       },
@@ -168,6 +172,10 @@ const nextConfig: NextConfig = {
       {
         source: '/api/v1/downloads/:path*',
         destination: `${agentUrl}/api/v1/downloads/:path*`,
+      },
+      {
+        source: '/api/v1/missions/:path*',
+        destination: `${agentUrl}/api/v1/missions/:path*`,
       },
       {
         source: '/api/v1/intelligence/:path*',

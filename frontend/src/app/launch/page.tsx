@@ -58,6 +58,7 @@ export default function LaunchPage() {
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [openProjectIds, setOpenProjectIds] = useState<string[]>([]);
   const [activeProjectId, setActiveProjectId] = useState('');
+  const [hydrated, setHydrated] = useState(false);
 
   const runChecks = useCallback(async () => {
     const openIds = JSON.parse(window.localStorage.getItem(OPEN_PROJECTS_KEY) || '[]');
@@ -81,10 +82,11 @@ export default function LaunchPage() {
   }, []);
 
   useEffect(() => {
+    setHydrated(true);
     void runChecks();
   }, [runChecks]);
 
-  const authReady = health.authReady || hasDesktopAuthToken();
+  const authReady = hydrated && (health.authReady || hasDesktopAuthToken());
   const openProjects = useMemo(
     () => openProjectIds.map((id) => projects.find((project) => project.id === id)).filter(Boolean) as CodeProject[],
     [openProjectIds, projects],
@@ -114,7 +116,7 @@ export default function LaunchPage() {
       subtitle: 'Start from an idea.',
       icon: <Sparkles size={28} />,
       accent: 'purple',
-      onClick: () => router.push('/idea-discovery'),
+      onClick: () => router.push('/onboarding'),
     },
     {
       title: 'Open Existing Project',
@@ -252,7 +254,7 @@ export default function LaunchPage() {
 
         <footer className={styles.footer}>
           <p>Everything is ready.</p>
-          <button type="button" className={styles.startButton} onClick={() => router.push('/idea-discovery')}>
+          <button type="button" className={styles.startButton} onClick={() => router.push('/onboarding')}>
             <Sparkles size={22} />
             Start Building
           </button>

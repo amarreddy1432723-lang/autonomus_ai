@@ -671,6 +671,8 @@ def _decode_signature(value: str) -> bytes:
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix):]
             break
+    if re.fullmatch(r"[0-9a-fA-F]+", cleaned) and len(cleaned) % 2 == 0:
+        return bytes.fromhex(cleaned)
     try:
         return base64.b64decode(cleaned, validate=True)
     except Exception:

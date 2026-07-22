@@ -29,11 +29,14 @@ export function getServiceUrl(path: string): string {
         path.startsWith('/api/v1/code') ||
         path.startsWith('/api/v1/deploy') ||
         path.startsWith('/api/v1/downloads') ||
+        path.startsWith('/api/v1/repositories') ||
+        path.startsWith('/api/v1/missions') ||
         path.startsWith('/api/v1/intelligence') ||
         path.startsWith('/api/v1/safety') ||
         path.startsWith('/api/v1/jobs') ||
         path.startsWith('/api/v1/os') ||
         path.startsWith('/api/v1/runtime') ||
+        path.startsWith('/api/v1/task-runtime') ||
         path.startsWith('/api/v1/platform') ||
         path.startsWith('/api/v1/learning') ||
         path.startsWith('/api/v1/strategy') ||
@@ -101,6 +104,8 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/design') ||
     path.startsWith('/api/v1/deploy') ||
     path.startsWith('/api/v1/downloads') ||
+    path.startsWith('/api/v1/repositories') ||
+    path.startsWith('/api/v1/missions') ||
     path.startsWith('/api/v1/intelligence') ||
     path.startsWith('/api/v1/safety') ||
     path.startsWith('/api/v1/memories') ||
@@ -108,6 +113,7 @@ export function getServiceUrl(path: string): string {
     path.startsWith('/api/v1/jobs') ||
     path.startsWith('/api/v1/os') ||
     path.startsWith('/api/v1/runtime') ||
+    path.startsWith('/api/v1/task-runtime') ||
     path.startsWith('/api/v1/platform') ||
     path.startsWith('/api/v1/learning') ||
     path.startsWith('/api/v1/strategy') ||

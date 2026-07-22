@@ -6,13 +6,26 @@ from typing import Any
 from uuid import UUID
 
 from services.shared.arceus_core_models import (
+    ArceusActivityEvent,
+    ArceusCollaborationMilestone,
     ArceusCollaborationMessage,
     ArceusCollaborationMessageRecipient,
     ArceusCollaborationMessageTopic,
+    ArceusCollaborationTask,
+    ArceusCollaborationTeam,
+    ArceusCollaborationTeamMember,
+    ArceusComment,
     ArceusDecision,
+    ArceusDiscussionThread,
+    ArceusKnowledgePage,
+    ArceusKnowledgeRevision,
+    ArceusNotification,
     ArceusMemoryItem,
     ArceusParticipant,
     ArceusParticipantInboxItem,
+    ArceusPresenceSession,
+    ArceusProject,
+    ArceusProjectMember,
     ArceusReview,
     ArceusReviewFinding,
     ArceusTask,
@@ -25,11 +38,259 @@ from ..compiler.utils import stable_hash
 
 SECRET_PATTERN = re.compile(r"(sk-|Bearer\s+|password=|token=|secret=)[^\s]+", re.IGNORECASE)
 HIGH_RISK_DECISIONS = {"security", "authentication", "authorization", "deployment", "data_migration", "budget", "risk_acceptance"}
+MENTION_PATTERN = re.compile(r"@([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)")
 
 
 class CollaborationService:
     def __init__(self, uow: SqlAlchemyUnitOfWork) -> None:
         self.uow = uow
+
+    def create_team(self, *, tenant_id: UUID, organization_id: UUID | None, name: str, description: str | None, lead_user_id: UUID | None = None) -> ArceusCollaborationTeam:
+        slug = self._unique_slug(ArceusCollaborationTeam, tenant_id=tenant_id, value=name)
+        team = ArceusCollaborationTeam(
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            name=name,
+            slug=slug,
+            description=description,
+            lead_user_id=lead_user_id,
+        )
+        self.uow.db.add(team)
+        self.uow.db.flush()
+        self._activity(tenant_id=tenant_id, project_id=None, event_type="team.created", resource_type="team", resource_id=team.id, message=f"Team created: {name}")
+        return team
+
+    def add_team_member(self, *, tenant_id: UUID, team_id: UUID, user_id: UUID | None, participant_id: UUID | None, member_type: str, role_key: str) -> ArceusCollaborationTeamMember:
+        if not user_id and not participant_id:
+            raise RuntimeStateConflict("Team member requires either user_id or participant_id.")
+        existing = (
+            self.uow.db.query(ArceusCollaborationTeamMember)
+            .filter(
+                ArceusCollaborationTeamMember.tenant_id == tenant_id,
+                ArceusCollaborationTeamMember.team_id == team_id,
+                ArceusCollaborationTeamMember.user_id == user_id,
+                ArceusCollaborationTeamMember.participant_id == participant_id,
+            )
+            .first()
+        )
+        if existing:
+            existing.status = "active"
+            existing.role_key = role_key
+            return existing
+        item = ArceusCollaborationTeamMember(
+            tenant_id=tenant_id,
+            team_id=team_id,
+            user_id=user_id,
+            participant_id=participant_id,
+            member_type=member_type,
+            role_key=role_key,
+        )
+        self.uow.db.add(item)
+        self.uow.db.flush()
+        return item
+
+    def create_project_workspace(
+        self,
+        *,
+        tenant_id: UUID,
+        organization_id: UUID | None,
+        name: str,
+        description: str | None,
+        created_by: UUID,
+        team_ids: list[UUID] | None = None,
+        settings: dict[str, Any] | None = None,
+    ) -> ArceusProject:
+        slug = self._unique_slug(ArceusProject, tenant_id=tenant_id, value=name)
+        project = ArceusProject(
+            tenant_id=tenant_id,
+            name=name,
+            slug=slug,
+            description=description,
+            status="active",
+            created_by=created_by,
+            settings={**(settings or {}), "organization_id": str(organization_id) if organization_id else None, "collaboration_enabled": True},
+        )
+        self.uow.db.add(project)
+        self.uow.db.flush()
+        for team_id in team_ids or []:
+            self.add_project_member(tenant_id=tenant_id, project_id=project.id, team_id=team_id, user_id=None, participant_id=None, role_key="team")
+        self._activity(tenant_id=tenant_id, project_id=project.id, event_type="project.created", resource_type="project", resource_id=project.id, message=f"Project workspace created: {name}")
+        return project
+
+    def add_project_member(self, *, tenant_id: UUID, project_id: UUID, user_id: UUID | None, participant_id: UUID | None, team_id: UUID | None, role_key: str, permissions: list[str] | None = None) -> ArceusProjectMember:
+        if not any([user_id, participant_id, team_id]):
+            raise RuntimeStateConflict("Project membership requires a user, participant, or team.")
+        existing = (
+            self.uow.db.query(ArceusProjectMember)
+            .filter(
+                ArceusProjectMember.tenant_id == tenant_id,
+                ArceusProjectMember.project_id == project_id,
+                ArceusProjectMember.user_id == user_id,
+                ArceusProjectMember.participant_id == participant_id,
+                ArceusProjectMember.team_id == team_id,
+            )
+            .first()
+        )
+        if existing:
+            existing.status = "active"
+            existing.role_key = role_key
+            existing.permissions = permissions or existing.permissions or []
+            return existing
+        item = ArceusProjectMember(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            participant_id=participant_id,
+            team_id=team_id,
+            role_key=role_key,
+            permissions=permissions or [],
+        )
+        self.uow.db.add(item)
+        self.uow.db.flush()
+        return item
+
+    def create_milestone(self, *, tenant_id: UUID, project_id: UUID, title: str, objective: str | None = None, sort_order: int = 0, due_at=None) -> ArceusCollaborationMilestone:
+        milestone = ArceusCollaborationMilestone(tenant_id=tenant_id, project_id=project_id, title=title, objective=objective, sort_order=sort_order, due_at=due_at)
+        self.uow.db.add(milestone)
+        self.uow.db.flush()
+        self._activity(tenant_id=tenant_id, project_id=project_id, event_type="milestone.created", resource_type="milestone", resource_id=milestone.id, message=f"Milestone created: {title}")
+        return milestone
+
+    def create_workspace_task(self, *, tenant_id: UUID, project_id: UUID, title: str, **kwargs) -> ArceusCollaborationTask:
+        task = ArceusCollaborationTask(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            title=title,
+            status="backlog",
+            dependencies=[str(item) for item in kwargs.pop("dependencies", [])],
+            **kwargs,
+        )
+        self.uow.db.add(task)
+        self.uow.db.flush()
+        self._activity(tenant_id=tenant_id, project_id=project_id, mission_id=task.mission_id, event_type="task.created", resource_type="task", resource_id=task.id, message=f"Task created: {title}")
+        if task.assignee_user_id or task.assignee_participant_id:
+            self._notification(
+                tenant_id=tenant_id,
+                recipient_user_id=task.assignee_user_id,
+                recipient_participant_id=task.assignee_participant_id,
+                notification_type="assignment",
+                title=f"Assigned: {title}",
+                body=task.description or "A workspace task was assigned to you.",
+                resource_type="task",
+                resource_id=task.id,
+            )
+        return task
+
+    def upsert_presence(self, *, tenant_id: UUID, **kwargs) -> ArceusPresenceSession:
+        if not kwargs.get("user_id") and not kwargs.get("participant_id"):
+            raise RuntimeStateConflict("Presence requires user_id or participant_id.")
+        device_id = kwargs.get("device_id") or "default"
+        existing = (
+            self.uow.db.query(ArceusPresenceSession)
+            .filter(
+                ArceusPresenceSession.tenant_id == tenant_id,
+                ArceusPresenceSession.user_id == kwargs.get("user_id"),
+                ArceusPresenceSession.participant_id == kwargs.get("participant_id"),
+                ArceusPresenceSession.device_id == device_id,
+            )
+            .first()
+        )
+        if existing:
+            for key, value in kwargs.items():
+                setattr(existing, key, value)
+            existing.device_id = device_id
+            existing.last_seen_at = datetime.now(timezone.utc)
+            existing.version_number = int(existing.version_number or 1) + 1
+            return existing
+        item = ArceusPresenceSession(tenant_id=tenant_id, device_id=device_id, **kwargs)
+        self.uow.db.add(item)
+        self.uow.db.flush()
+        return item
+
+    def create_thread(self, *, tenant_id: UUID, **kwargs) -> ArceusDiscussionThread:
+        thread = ArceusDiscussionThread(tenant_id=tenant_id, **kwargs)
+        self.uow.db.add(thread)
+        self.uow.db.flush()
+        self._activity(tenant_id=tenant_id, project_id=thread.project_id, mission_id=thread.mission_id, event_type="discussion.created", resource_type="discussion", resource_id=thread.id, message=f"Discussion opened: {thread.title}")
+        return thread
+
+    def add_comment(self, *, tenant_id: UUID, body: str, **kwargs) -> ArceusComment:
+        if SECRET_PATTERN.search(body):
+            raise RuntimeStateConflict("Raw secrets cannot be posted in comments.")
+        mentions = sorted(set(MENTION_PATTERN.findall(body)))
+        comment = ArceusComment(tenant_id=tenant_id, body=body, mentions=mentions, body_hash=stable_hash({"body": body, "resource": kwargs.get("resource_id")}), **kwargs)
+        self.uow.db.add(comment)
+        self.uow.db.flush()
+        self._activity(tenant_id=tenant_id, project_id=comment.project_id, mission_id=comment.mission_id, event_type="comment.added", resource_type=comment.resource_type, resource_id=comment.resource_id, message="Comment added")
+        for mention in mentions:
+            self._notification(
+                tenant_id=tenant_id,
+                recipient_user_id=None,
+                recipient_participant_id=None,
+                notification_type="mention",
+                title=f"New mention: @{mention}",
+                body=body[:500],
+                resource_type="comment",
+                resource_id=comment.id,
+            )
+        return comment
+
+    def upsert_knowledge_page(self, *, tenant_id: UUID, project_id: UUID, title: str, markdown: str, change_summary: str | None = None, **kwargs) -> ArceusKnowledgePage:
+        if SECRET_PATTERN.search(markdown):
+            raise RuntimeStateConflict("Raw secrets cannot be stored in knowledge pages.")
+        slug = self._slug(title)
+        content_hash = stable_hash({"title": title, "markdown": markdown})
+        page = self.uow.db.query(ArceusKnowledgePage).filter(ArceusKnowledgePage.tenant_id == tenant_id, ArceusKnowledgePage.project_id == project_id, ArceusKnowledgePage.slug == slug).first()
+        if page:
+            revision_number = int(page.version_number or 1) + 1
+            page.title = title
+            page.markdown = markdown
+            page.content_hash = content_hash
+            page.version_number = revision_number
+        else:
+            revision_number = 1
+            page = ArceusKnowledgePage(tenant_id=tenant_id, project_id=project_id, title=title, slug=slug, markdown=markdown, content_hash=content_hash, **kwargs)
+            self.uow.db.add(page)
+            self.uow.db.flush()
+        self.uow.db.add(
+            ArceusKnowledgeRevision(
+                tenant_id=tenant_id,
+                page_id=page.id,
+                revision_number=revision_number,
+                markdown=markdown,
+                content_hash=content_hash,
+                author_user_id=kwargs.get("author_user_id"),
+                change_summary=change_summary,
+            )
+        )
+        self._activity(tenant_id=tenant_id, project_id=project_id, event_type="knowledge.updated", resource_type="knowledge_page", resource_id=page.id, message=f"Knowledge page updated: {title}")
+        self.uow.db.flush()
+        return page
+
+    def workspace_health(self, *, tenant_id: UUID, project_id: UUID) -> dict[str, Any]:
+        open_tasks = self.uow.db.query(ArceusCollaborationTask).filter(ArceusCollaborationTask.tenant_id == tenant_id, ArceusCollaborationTask.project_id == project_id, ArceusCollaborationTask.status.in_(["backlog", "planned", "in_progress", "review"])).count()
+        blocked_tasks = self.uow.db.query(ArceusCollaborationTask).filter(ArceusCollaborationTask.tenant_id == tenant_id, ArceusCollaborationTask.project_id == project_id, ArceusCollaborationTask.status == "blocked").count()
+        unresolved = self.uow.db.query(ArceusDiscussionThread).filter(ArceusDiscussionThread.tenant_id == tenant_id, ArceusDiscussionThread.project_id == project_id, ArceusDiscussionThread.status == "open").count()
+        stale_docs = self.uow.db.query(ArceusKnowledgePage).filter(ArceusKnowledgePage.tenant_id == tenant_id, ArceusKnowledgePage.project_id == project_id, ArceusKnowledgePage.freshness_status == "stale").count()
+        unread = self.uow.db.query(ArceusNotification).filter(ArceusNotification.tenant_id == tenant_id, ArceusNotification.status == "unread").count()
+        recommendations = []
+        if blocked_tasks:
+            recommendations.append("Resolve blocked tasks before planning new implementation work.")
+        if unresolved:
+            recommendations.append("Summarize or resolve open discussions to reduce decision drift.")
+        if stale_docs:
+            recommendations.append("Refresh stale knowledge pages before using them as mission context.")
+        health = "attention" if blocked_tasks or stale_docs else "review" if unresolved else "healthy"
+        return {
+            "project_id": project_id,
+            "open_tasks": open_tasks,
+            "blocked_tasks": blocked_tasks,
+            "unresolved_discussions": unresolved,
+            "stale_knowledge_pages": stale_docs,
+            "unread_notifications": unread,
+            "health": health,
+            "recommendations": recommendations,
+        }
 
     def register_participant(
         self,
@@ -447,3 +708,46 @@ class CollaborationService:
             correlation_id=correlation_id,
             idempotency_key=f"{event_type}:{aggregate_id}:{aggregate_version}:{actor_id}",
         )
+
+    def _activity(self, *, tenant_id: UUID, project_id: UUID | None, event_type: str, resource_type: str, resource_id: UUID | None, message: str, mission_id: UUID | None = None, payload: dict[str, Any] | None = None) -> None:
+        self.uow.db.add(
+            ArceusActivityEvent(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                mission_id=mission_id,
+                event_type=event_type,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                message=message,
+                payload=payload or {},
+            )
+        )
+
+    def _notification(self, *, tenant_id: UUID, recipient_user_id: UUID | None, recipient_participant_id: UUID | None, notification_type: str, title: str, body: str, resource_type: str, resource_id: UUID | None) -> None:
+        self.uow.db.add(
+            ArceusNotification(
+                tenant_id=tenant_id,
+                recipient_user_id=recipient_user_id,
+                recipient_participant_id=recipient_participant_id,
+                notification_type=notification_type,
+                title=title,
+                body=body,
+                channels=["desktop", "web"],
+                status="unread",
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+
+    def _unique_slug(self, model, *, tenant_id: UUID, value: str) -> str:
+        base = self._slug(value)
+        slug = base
+        index = 2
+        while self.uow.db.query(model).filter(model.tenant_id == tenant_id, model.slug == slug).first():
+            slug = f"{base}-{index}"
+            index += 1
+        return slug
+
+    def _slug(self, value: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        return cleaned or "workspace"

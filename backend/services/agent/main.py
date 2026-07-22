@@ -27,6 +27,10 @@ from .deps import get_current_user_id, parse_vault_key, require_entitlement_or_4
 from .routes_admin import router as admin_router
 from .routes_billing import router as billing_router
 from .routes_public import router as public_router
+from .repository_analysis import router as repository_analysis_router
+from .cognitive_execution import router as cognitive_execution_router
+from .desktop_task_runtime import router as desktop_task_runtime_router
+from .task_runtime.routes import router as task_runtime_router
 from .routes_os_kernel import router as os_kernel_router
 from .arceus_runtime.router import install_arceus_runtime
 from .orchestration import router as orchestration_router
@@ -77,6 +81,10 @@ register_error_handlers(app)
 app.include_router(terminal_router)
 app.include_router(lsp_router)
 app.include_router(public_router)
+app.include_router(repository_analysis_router)
+app.include_router(cognitive_execution_router)
+app.include_router(desktop_task_runtime_router)
+app.include_router(task_runtime_router)
 app.include_router(os_kernel_router)
 app.include_router(billing_router)
 app.include_router(admin_router)

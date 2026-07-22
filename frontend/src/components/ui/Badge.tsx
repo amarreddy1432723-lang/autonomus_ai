@@ -1,20 +1,16 @@
-import type { HTMLAttributes, ReactNode } from 'react';
-import styles from './Badge.module.css';
+import type { HTMLAttributes } from 'react';
+import styles from './ui.module.css';
 
-type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info';
+type BadgeTone = 'neutral' | 'success' | 'warning' | 'error' | 'info';
 
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+type BadgeProps = HTMLAttributes<HTMLSpanElement> & {
   tone?: BadgeTone;
-  leadingIcon?: ReactNode;
-}
+};
 
-export function Badge({ tone = 'neutral', leadingIcon, className, children, ...props }: BadgeProps) {
-  const classes = [styles.badge, tone !== 'neutral' ? styles[tone] : '', className].filter(Boolean).join(' ');
+export function Badge({ children, className = '', tone = 'neutral', ...props }: BadgeProps) {
   return (
-    <span className={classes} {...props}>
-      {leadingIcon}
+    <span className={`${styles.badge} ${styles[`badge_${tone}`]} ${className}`} {...props}>
       {children}
     </span>
   );
 }
-

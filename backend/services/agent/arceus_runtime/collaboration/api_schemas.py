@@ -7,6 +7,218 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class CreateTeamRequest(BaseModel):
+    organization_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=2000)
+    lead_user_id: UUID | None = None
+
+
+class TeamResponse(BaseModel):
+    id: UUID
+    organization_id: UUID | None
+    name: str
+    slug: str
+    description: str | None
+    lead_user_id: UUID | None
+    status: str
+    member_count: int = 0
+    created_at: datetime
+
+
+class AddTeamMemberRequest(BaseModel):
+    user_id: UUID | None = None
+    participant_id: UUID | None = None
+    member_type: str = Field(default="human", max_length=60)
+    role_key: str = Field(default="member", max_length=120)
+
+
+class CreateCollaborativeProjectRequest(BaseModel):
+    organization_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=3000)
+    created_by: UUID | None = None
+    team_ids: list[UUID] = Field(default_factory=list)
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectWorkspaceResponse(BaseModel):
+    id: UUID
+    organization_id: UUID | None
+    name: str
+    slug: str
+    description: str | None
+    status: str
+    team_count: int = 0
+    member_count: int = 0
+    open_task_count: int = 0
+    knowledge_page_count: int = 0
+    unresolved_discussion_count: int = 0
+    created_at: datetime
+
+
+class ProjectMemberRequest(BaseModel):
+    user_id: UUID | None = None
+    participant_id: UUID | None = None
+    team_id: UUID | None = None
+    role_key: str = Field(default="observer", max_length=120)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class CreateMilestoneRequest(BaseModel):
+    project_id: UUID
+    title: str = Field(min_length=1, max_length=240)
+    objective: str | None = Field(default=None, max_length=2000)
+    sort_order: int = 0
+    due_at: datetime | None = None
+
+
+class CreateWorkspaceTaskRequest(BaseModel):
+    project_id: UUID
+    milestone_id: UUID | None = None
+    mission_id: UUID | None = None
+    source_type: str = Field(default="user", max_length=80)
+    source_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=4000)
+    assignee_user_id: UUID | None = None
+    assignee_participant_id: UUID | None = None
+    priority: str = Field(default="medium", max_length=40)
+    dependencies: list[UUID] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    due_at: datetime | None = None
+
+
+class WorkspaceTaskResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    milestone_id: UUID | None
+    mission_id: UUID | None
+    title: str
+    description: str | None
+    assignee_user_id: UUID | None
+    assignee_participant_id: UUID | None
+    priority: str
+    status: str
+    dependencies: list[Any]
+    acceptance_criteria: list[str]
+    created_at: datetime
+
+
+class UpsertPresenceRequest(BaseModel):
+    user_id: UUID | None = None
+    participant_id: UUID | None = None
+    project_id: UUID | None = None
+    mission_id: UUID | None = None
+    resource_type: str | None = Field(default=None, max_length=120)
+    resource_id: UUID | None = None
+    status: str = Field(default="online", max_length=60)
+    activity: str = Field(default="viewing", max_length=160)
+    device_id: str | None = Field(default=None, max_length=180)
+    cursor_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class PresenceResponse(BaseModel):
+    id: UUID
+    user_id: UUID | None
+    participant_id: UUID | None
+    project_id: UUID | None
+    mission_id: UUID | None
+    status: str
+    activity: str
+    resource_type: str | None
+    resource_id: UUID | None
+    last_seen_at: datetime
+
+
+class CreateDiscussionThreadRequest(BaseModel):
+    project_id: UUID | None = None
+    mission_id: UUID | None = None
+    resource_type: str = Field(default="project", max_length=120)
+    resource_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=240)
+    created_by_user_id: UUID | None = None
+    created_by_participant_id: UUID | None = None
+
+
+class CreateCommentRequest(BaseModel):
+    thread_id: UUID | None = None
+    project_id: UUID | None = None
+    mission_id: UUID | None = None
+    resource_type: str = Field(default="project", max_length=120)
+    resource_id: UUID | None = None
+    parent_comment_id: UUID | None = None
+    author_user_id: UUID | None = None
+    author_participant_id: UUID | None = None
+    body: str = Field(min_length=1, max_length=6000)
+
+
+class CommentResponse(BaseModel):
+    id: UUID
+    thread_id: UUID | None
+    project_id: UUID | None
+    mission_id: UUID | None
+    resource_type: str
+    resource_id: UUID | None
+    author_user_id: UUID | None
+    author_participant_id: UUID | None
+    body: str
+    mentions: list[str]
+    body_hash: str
+    status: str
+    created_at: datetime
+
+
+class UpsertKnowledgePageRequest(BaseModel):
+    project_id: UUID
+    parent_page_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=240)
+    page_type: str = Field(default="doc", max_length=80)
+    markdown: str = Field(min_length=1, max_length=30000)
+    author_user_id: UUID | None = None
+    author_participant_id: UUID | None = None
+    source_ids: list[UUID] = Field(default_factory=list)
+    change_summary: str | None = Field(default=None, max_length=1000)
+
+
+class KnowledgePageResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    slug: str
+    page_type: str
+    markdown: str
+    status: str
+    freshness_status: str
+    content_hash: str
+    created_at: datetime
+
+
+class NotificationResponse(BaseModel):
+    id: UUID
+    recipient_user_id: UUID | None
+    recipient_participant_id: UUID | None
+    notification_type: str
+    title: str
+    body: str
+    channels: list[str]
+    status: str
+    resource_type: str | None
+    resource_id: UUID | None
+    created_at: datetime
+
+
+class WorkspaceHealthResponse(BaseModel):
+    project_id: UUID
+    open_tasks: int
+    blocked_tasks: int
+    unresolved_discussions: int
+    stale_knowledge_pages: int
+    unread_notifications: int
+    health: str
+    recommendations: list[str]
+
+
 class SendCollaborationMessageRequest(BaseModel):
     message_type: str = Field(min_length=1, max_length=80)
     sender_participant_id: UUID

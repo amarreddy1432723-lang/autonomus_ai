@@ -1,7 +1,10 @@
 from services.agent.arceus_runtime.extensions.service import (
     OFFICIAL_MARKETPLACE,
+    broker_secret_use,
     evaluate_permission_grants,
+    runtime_policy_for_manifest,
     sdk_manifest,
+    stable_json_digest,
     validate_plugin_manifest,
 )
 
@@ -135,3 +138,80 @@ def test_part46_extension_type_aliases_normalize_to_public_contract():
 
     assert response.valid is True
     assert response.extension_types == ["workflow_template"]
+
+
+def test_ed25519_manifest_signature_verifies_with_public_key():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    manifest = {
+        "id": "arceus.signed",
+        "name": "Signed Extension",
+        "version": "1.0.0",
+        "publisher": "Arceus",
+        "extensionTypes": ["tool"],
+        "permissions": ["repository.read"],
+    }
+    digest = stable_json_digest(manifest)
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    signature = private_key.sign(digest.encode("utf-8")).hex()
+    manifest["integrity"] = {"signature": signature, "publicKey": public_key, "signedPayload": digest}
+
+    response = validate_plugin_manifest(manifest)
+
+    assert response.valid is True
+    assert response.signed is True
+    assert response.verified is True
+    assert response.normalized_manifest["integrity"]["signature_check"]["valid"] is True
+
+
+def test_runtime_policy_uses_manifest_permissions_and_runtime_limits():
+    manifest = validate_plugin_manifest(
+        {
+            "id": "arceus.repo",
+            "name": "Repo Tool",
+            "version": "1.0.0",
+            "publisher": "Arceus",
+            "extensionTypes": ["tool"],
+            "runtime": {"type": "container", "maximumMemoryMb": 256, "maximumExecutionSeconds": 30},
+            "permissions": [
+                {"permission": "repository.write", "scope": {"domains": ["api.github.com"]}},
+                {"permission": "network.outbound", "scope": {"domains": ["api.github.com"]}},
+            ],
+            "signature": "sha256:signed",
+        }
+    ).normalized_manifest
+
+    policy = runtime_policy_for_manifest(manifest, installation_id="00000000-0000-0000-0000-000000000000")
+
+    assert policy.minimum_isolation == "container"
+    assert policy.filesystem_mode == "workspace_overlay"
+    assert policy.allow_network is True
+    assert policy.allowed_domains == ["api.github.com"]
+    assert policy.maximum_memory_mb == 256
+
+
+def test_secret_broker_never_returns_raw_secret_and_requires_bound_reference():
+    missing = broker_secret_use(
+        installation_status="enabled",
+        granted_permissions=[{"permission": "secrets.use", "scope": {}, "risk_level": "high"}],
+        secret_references=[],
+        secret_ref="vault://railway-token",
+        purpose="deploy",
+    )
+    bound = broker_secret_use(
+        installation_status="enabled",
+        granted_permissions=[{"permission": "secrets.use", "scope": {}, "risk_level": "high"}],
+        secret_references=["vault://railway-token"],
+        secret_ref="vault://railway-token",
+        purpose="deploy",
+    )
+
+    assert missing.allowed is False
+    assert "bind_secret_reference" in missing.obligations
+    assert bound.direct_value_returned is False
+    assert bound.secret_fingerprint is not None
