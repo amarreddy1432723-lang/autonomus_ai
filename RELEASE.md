@@ -44,7 +44,7 @@ cd .\desktop
 npm ci
 npm run dist
 cd ..
-.\scripts\generate-release-download-env.ps1 -ArtifactsDir .\desktop\dist -ReleaseVersion arceus-code-v1.2.3 -OwnerRepo arceus-ai/arceus-code -Signed
+.\scripts\generate-release-download-env.ps1 -ArtifactsDir .\desktop\dist -ReleaseVersion arceus-code-v1.2.3 -OwnerRepo amarreddy1432723-lang/autonomus_ai -Signed
 ```
 
 After GitHub Actions publishes desktop artifacts, copy the generated `release-download-env-*.ps1` values into the production environment so `/download` shows real installer URLs and SHA-256 checksums.

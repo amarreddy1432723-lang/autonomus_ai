@@ -68,6 +68,21 @@ class UserSession(Base):
 
     user = relationship("User", back_populates="sessions")
 
+class DesktopAuthCode(Base):
+    __tablename__ = "desktop_auth_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    redirect_uri = Column(Text, nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
@@ -926,6 +941,9 @@ class AuditLog(Base):
 UserSession.__table__.append_constraint(UniqueConstraint(UserSession.token_hash, name="uq_user_sessions_token_hash"))
 Index("idx_user_sessions_user_active", UserSession.user_id, UserSession.is_active)
 Index("idx_user_sessions_expires", UserSession.expires_at)
+DesktopAuthCode.__table__.append_constraint(UniqueConstraint(DesktopAuthCode.code_hash, name="uq_desktop_auth_codes_code_hash"))
+Index("idx_desktop_auth_codes_user_created", DesktopAuthCode.user_id, DesktopAuthCode.created_at)
+Index("idx_desktop_auth_codes_expires_consumed", DesktopAuthCode.expires_at, DesktopAuthCode.consumed_at)
 
 Subscription.__table__.append_constraint(
     UniqueConstraint(Subscription.provider, Subscription.provider_subscription_id, name="uq_subscriptions_provider_subscription")

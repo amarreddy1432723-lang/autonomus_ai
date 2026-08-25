@@ -73,6 +73,14 @@ export function eventCopy(eventType?: string, payload: Record<string, unknown> =
     case 'task.change_set.recorded':
     case 'arceus.task.change_set.recorded':
       return 'Changes ready for review';
+    case 'task.change_set.approve':
+      return 'Change set approved';
+    case 'task.change_set.reject':
+      return 'Change set rejected';
+    case 'task.change_set.rollback':
+      return 'Rollback requested for change set';
+    case 'task.change_set.apply':
+      return 'Change set marked applied';
     case 'verification.completed':
       return 'Verification completed';
     default:

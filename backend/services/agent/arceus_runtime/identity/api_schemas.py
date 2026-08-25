@@ -196,8 +196,8 @@ class GovernanceSummaryResponse(IdentitySchema):
 
 
 class IdentityProviderSyncRequest(IdentitySchema):
-    provider_key: str = Field(default="clerk", max_length=120)
-    provider_type: Literal["clerk", "oidc", "saml", "oauth", "api_token"] = "clerk"
+    provider_key: str = Field(default="arceus", max_length=120)
+    provider_type: Literal["oidc", "saml", "oauth", "api_token"] = "api_token"
     issuer: str | None = Field(default=None, max_length=2000)
     capabilities: list[str] = Field(default_factory=list, max_length=100)
     scim_enabled: bool = False

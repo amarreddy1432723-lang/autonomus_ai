@@ -8,7 +8,17 @@ const FALLBACK_TASKS: MissionControlTask[] = [
   { taskId: 'verification', taskKey: 'verification.evidence', title: 'Evidence verification', status: 'ready' },
 ];
 
-export function TaskDag({ tasks, edges }: { tasks: MissionControlTask[]; edges: MissionControlEdge[] }) {
+export function TaskDag({
+  tasks,
+  edges,
+  selectedTaskKey,
+  onSelectTask,
+}: {
+  tasks: MissionControlTask[];
+  edges: MissionControlEdge[];
+  selectedTaskKey?: string;
+  onSelectTask?: (task: MissionControlTask) => void;
+}) {
   const visibleTasks = tasks.length > 0 ? tasks : FALLBACK_TASKS;
 
   return (
@@ -22,7 +32,12 @@ export function TaskDag({ tasks, edges }: { tasks: MissionControlTask[]; edges: 
       </header>
       <div className={styles.taskList}>
         {visibleTasks.map((task) => (
-          <TaskNode key={task.taskId || task.taskKey} task={task} />
+          <TaskNode
+            key={task.taskId || task.taskKey}
+            task={task}
+            selected={selectedTaskKey === task.taskKey}
+            onSelect={onSelectTask ? () => onSelectTask(task) : undefined}
+          />
         ))}
       </div>
     </section>

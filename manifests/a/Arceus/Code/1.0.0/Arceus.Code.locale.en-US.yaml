@@ -3,10 +3,10 @@ PackageIdentifier: Arceus.Code
 PackageVersion: 1.0.0
 PackageLocale: en-US
 Publisher: Arceus
-PublisherUrl: https://github.com/arceus-ai
-PublisherSupportUrl: https://github.com/arceus-ai/arceus-code/issues
+PublisherUrl: https://github.com/amarreddy1432723-lang
+PublisherSupportUrl: https://github.com/amarreddy1432723-lang/autonomus_ai/issues
 PackageName: Arceus Code
-PackageUrl: https://github.com/arceus-ai/arceus-code
+PackageUrl: https://github.com/amarreddy1432723-lang/autonomus_ai
 License: Proprietary
 ShortDescription: Desktop-first AI coding workspace for local projects, terminal workflows, patches, previews, and PRs.
 Description: Arceus Code is a desktop AI engineering workspace with trusted local folder access, bottom terminal, work receipts, patch review, preview verification, and GitHub PR flow.

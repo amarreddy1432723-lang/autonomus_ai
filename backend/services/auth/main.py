@@ -1,14 +1,16 @@
 import os
+import hashlib
+import secrets
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 from uuid import UUID
 
 from common.sentry_setup import initialize_sentry
 from services.shared.database import get_db
-from services.shared.models import User, UserProfile, Integration, UserSession
+from services.shared.models import User, UserProfile, Integration, UserSession, DesktopAuthCode
 from services.shared.error_handler import register_error_handlers
 from services.shared.rate_limiter import RateLimitHeaderMiddleware
 from services.shared.api import install_api_foundation
@@ -82,32 +84,42 @@ def get_current_user_id(
     authorization = f"Bearer {token}" if token else None
     return resolve_user_id_from_auth_or_clerk(db, authorization, x_user_id, settings.JWT_SECRET, settings.JWT_ALGORITHM)
 
-def _create_desktop_auth_code(user_id: UUID) -> str:
-    import jwt
+def _hash_desktop_auth_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
-    payload = {
-        "sub": str(user_id),
-        "type": "desktop_auth_code",
-        "aud": "arceus-desktop",
-        "exp": datetime.utcnow() + timedelta(minutes=5),
-    }
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+def _create_desktop_auth_code(db: Session, user_id: UUID, redirect_uri: str, request: Request | None = None) -> str:
+    code = secrets.token_urlsafe(48)
+    record = DesktopAuthCode(
+        user_id=user_id,
+        code_hash=_hash_desktop_auth_code(code),
+        redirect_uri=redirect_uri,
+        ip_address=request.client.host if request and request.client else None,
+        user_agent=request.headers.get("user-agent") if request else None,
+        expires_at=datetime.utcnow() + timedelta(minutes=5),
+    )
+    db.add(record)
+    db.commit()
+    return code
 
-def _decode_desktop_auth_code(code: str) -> UUID:
-    import jwt
-
-    try:
-        payload = jwt.decode(
-            code,
-            settings.JWT_SECRET,
-            algorithms=[settings.JWT_ALGORITHM],
-            audience="arceus-desktop",
-        )
-    except jwt.PyJWTError:
+def _consume_desktop_auth_code(db: Session, code: str) -> UUID:
+    if not code or len(code) > 512:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code is invalid or expired")
-    if payload.get("type") != "desktop_auth_code":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code has the wrong purpose")
-    return UUID(str(payload["sub"]))
+    record = (
+        db.query(DesktopAuthCode)
+        .filter(DesktopAuthCode.code_hash == _hash_desktop_auth_code(code))
+        .with_for_update()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code is invalid or expired")
+    now = datetime.now(timezone.utc) if record.expires_at.tzinfo else datetime.utcnow()
+    if record.expires_at <= now:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code is invalid or expired")
+    if record.consumed_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization code was already used")
+    record.consumed_at = datetime.utcnow()
+    db.commit()
+    return record.user_id
 
 def require_scopes(*required_scopes: str):
     def dependency(
@@ -238,11 +250,13 @@ def logout(logout_in: LogoutRequest, user_id: UUID = Depends(get_current_user_id
 @app.post("/api/v1/auth/desktop/code")
 def create_desktop_auth_code(
     request_in: DesktopAuthCodeRequest,
+    request: Request,
     user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
 ):
     if not request_in.redirect_uri.startswith("arceus://auth/callback"):
         raise HTTPException(status_code=400, detail="Desktop redirect URI must use arceus://auth/callback")
-    code = _create_desktop_auth_code(user_id)
+    code = _create_desktop_auth_code(db, user_id, request_in.redirect_uri, request)
     separator = "&" if "?" in request_in.redirect_uri else "?"
     return {
         "code_expires_in_seconds": 300,
@@ -255,7 +269,7 @@ def exchange_desktop_auth_code(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    user_id = _decode_desktop_auth_code(exchange_in.code)
+    user_id = _consume_desktop_auth_code(db, exchange_in.code)
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Desktop authorization user is unavailable")

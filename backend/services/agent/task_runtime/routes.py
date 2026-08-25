@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from services.shared.arceus_core_models import ArceusAgentRuntimeWorker, ArceusMission, ArceusMissionPathReservation, ArceusMissionTaskAssignment, ArceusTask
+from services.shared.arceus_core_models import ArceusAgentRuntimeWorker, ArceusArtifact, ArceusArtifactVersion, ArceusMission, ArceusMissionPathReservation, ArceusMissionTaskAssignment, ArceusTask
 from services.shared.database import get_db
 
 from ..arceus_runtime.api.dependencies import RequestContext, require_permission
+from ..arceus_runtime.evidence.api_schemas import TaskChangeSetRequest
+from ..arceus_runtime.evidence.routes import _normalize_change_set_content
 from .dispatcher import DispatchSummary, append_runtime_event, dispatch_mission, utc_now
 from .observability import build_mission_observability
 from .scheduler import ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_ACCEPTANCE_TIMEOUT_SECONDS, ScheduleSummary, schedule_ready_tasks
@@ -141,6 +143,7 @@ class CompleteAssignmentRequest(BaseModel):
     task_result_id: str | None = None
     evidence_count: int = 0
     change_set_id: str | None = None
+    change_set: TaskChangeSetRequest | None = None
     result: dict = Field(default_factory=dict)
 
 
@@ -300,6 +303,66 @@ def _task_for_assignment(db: Session, *, tenant_id: UUID, assignment: ArceusMiss
 def _stable_json_hash(payload: dict) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _persist_worker_change_set(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    mission_id: UUID,
+    task: ArceusTask,
+    payload: TaskChangeSetRequest,
+) -> tuple[ArceusArtifact, ArceusArtifactVersion, dict]:
+    content = _normalize_change_set_content(payload, mission_id=mission_id, task_id=task.id)
+    content_hash = _stable_json_hash(content)
+    impact = dict(content.get("impact") or {})
+    artifact = ArceusArtifact(
+        tenant_id=tenant_id,
+        mission_id=mission_id,
+        task_id=task.id,
+        artifact_key=f"task-{task.id}-change-set-{content_hash[:12]}",
+        artifact_type="change_set",
+        title=payload.title,
+        trust_status="verified" if payload.review_state in {"applied", "rolled_back"} else "unverified",
+        metadata_json={
+            "source": payload.source,
+            "review_state": payload.review_state,
+            "change_count": len(content.get("changes") or []),
+            "impact": impact,
+            "diffs_present": impact.get("diffs_present", 0),
+            "apply_payloads_present": impact.get("apply_payloads_present", 0),
+            "rollback_payloads_present": impact.get("rollback_payloads_present", 0),
+            "content_hash": content_hash,
+        },
+    )
+    db.add(artifact)
+    db.flush()
+    version = ArceusArtifactVersion(
+        tenant_id=tenant_id,
+        artifact_id=artifact.id,
+        version=1,
+        content=content,
+        content_hash=content_hash,
+        provenance={"source": payload.source, "mission_id": str(mission_id), "task_id": str(task.id), "review_state": payload.review_state},
+    )
+    db.add(version)
+    db.flush()
+    artifact.current_version_id = version.id
+
+    metadata = dict(task.output_contract or {})
+    metadata["change_set_artifact_ids"] = sorted(set([*(metadata.get("change_set_artifact_ids") or []), str(artifact.id)]))
+    metadata["latest_change_set"] = {
+        "artifact_id": str(artifact.id),
+        "version_id": str(version.id),
+        "review_state": payload.review_state,
+        "change_count": len(content.get("changes") or []),
+        "impact": impact,
+        "diffs_present": impact.get("diffs_present", 0),
+        "apply_payloads_present": impact.get("apply_payloads_present", 0),
+        "rollback_payloads_present": impact.get("rollback_payloads_present", 0),
+    }
+    task.output_contract = metadata
+    return artifact, version, impact
 
 
 @router.post("/missions/{mission_id}/dispatch", response_model=DispatchMissionResponse)
@@ -562,6 +625,29 @@ def complete_assignment_endpoint(
         raise HTTPException(status_code=409, detail={"error": {"code": "ASSIGNMENT_VERSION_CONFLICT", "message": "Assignment version changed.", "retryable": True}})
     task = _task_for_assignment(db, tenant_id=context.tenant_id, assignment=assignment)
     now = utc_now()
+    recorded_change_set: dict = {}
+    effective_change_set_id = payload.change_set_id
+    if payload.change_set is not None:
+        if task is None:
+            raise HTTPException(status_code=404, detail={"error": {"code": "TASK_NOT_FOUND", "message": "Task not found.", "retryable": False}})
+        change_set_payload = payload.change_set
+        repository_root = payload.result.get("repository_root") or payload.result.get("workspace_root")
+        if repository_root:
+            change_set_payload.metadata = {
+                **(change_set_payload.metadata or {}),
+                "repository_root": repository_root,
+                "workspace_root": repository_root,
+            }
+        artifact, version, impact = _persist_worker_change_set(db, tenant_id=context.tenant_id, mission_id=assignment.mission_id, task=task, payload=change_set_payload)
+        effective_change_set_id = str(artifact.id)
+        recorded_change_set = {
+            "artifact_id": str(artifact.id),
+            "version_id": str(version.id),
+            "review_state": change_set_payload.review_state,
+            "change_count": int(impact.get("files_changed") or 0),
+            "impact": impact,
+            "repository_root": repository_root,
+        }
     assignment.status = "completed"
     assignment.completed_at = now
     assignment.released_at = now
@@ -570,13 +656,16 @@ def complete_assignment_endpoint(
         "task_status": payload.task_status,
         "task_result_id": payload.task_result_id,
         "evidence_count": payload.evidence_count,
-        "change_set_id": payload.change_set_id,
+        "change_set_id": effective_change_set_id,
+        "recorded_change_set": recorded_change_set,
         "result": payload.result,
     }
     assignment.version_number = int(assignment.version_number or 1) + 1
     if task is not None and task.status == "running":
         task.status = "completed" if payload.task_status == "completed" else payload.task_status
         task.completed_at = now if task.status == "completed" else task.completed_at
+        task.version_number = int(task.version_number or 1) + 1
+    elif task is not None and recorded_change_set:
         task.version_number = int(task.version_number or 1) + 1
     _mark_worker_idle(worker)
     _release_reservations(db, tenant_id=context.tenant_id, assignment_id=assignment.id)
@@ -587,11 +676,24 @@ def complete_assignment_endpoint(
         event_type="assignment.completed",
         actor_type="worker",
         actor_id=str(worker.id),
-        payload={"assignment_id": str(assignment.id), "task_id": str(assignment.task_id), "worker_id": str(worker.id), "evidence_count": payload.evidence_count, "change_set_id": payload.change_set_id},
+        payload={"assignment_id": str(assignment.id), "task_id": str(assignment.task_id), "worker_id": str(worker.id), "evidence_count": payload.evidence_count, "change_set_id": effective_change_set_id, "recorded_change_set": recorded_change_set},
         correlation_id=context.correlation_id,
         idempotency_key=f"assignment.completed:{assignment.id}:{assignment.version_number}",
         outbox_topic="arceus.assignment.completed",
     )
+    if recorded_change_set:
+        append_runtime_event(
+            db,
+            tenant_id=context.tenant_id,
+            mission_id=assignment.mission_id,
+            event_type="task.change_set.recorded",
+            actor_type="worker",
+            actor_id=str(worker.id),
+            payload={"assignment_id": str(assignment.id), "task_id": str(assignment.task_id), **recorded_change_set},
+            correlation_id=context.correlation_id,
+            idempotency_key=f"task.change_set.recorded:{assignment.id}:{recorded_change_set.get('artifact_id')}",
+            outbox_topic="arceus.task.change_set.recorded",
+        )
     schedule_ready_tasks(db, tenant_id=context.tenant_id, mission_id=assignment.mission_id, correlation_id=context.correlation_id)
     db.commit()
     return _assignment_response(assignment)

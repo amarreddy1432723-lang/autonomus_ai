@@ -14,6 +14,6 @@ nsis:
   artifactName: "${productName}-${version}-Setup.${ext}"
 publish:
   - provider: github
-    owner: arceus-ai
-    repo: arceus-code
+    owner: amarreddy1432723-lang
+    repo: autonomus_ai
     releaseType: release

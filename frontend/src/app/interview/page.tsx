@@ -4,7 +4,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bot, Clipboard, Copy, Eraser, FileText, Mic, MicOff, Pause, Save, Send, Upload, X } from 'lucide-react';
 import AppShell from '../../components/AppShell';
-import DesktopOnlyGuard from '../../components/DesktopOnlyGuard';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
 import styles from './Interview.module.css';
@@ -1045,8 +1044,7 @@ export default function InterviewPage() {
 
   return (
     <AppShell>
-      <DesktopOnlyGuard product="Arceus Interview" reason="Interview Assist requires desktop Chrome or Edge for microphone capture, live coaching, resume context, and the two-panel answer cockpit.">
-        <div className={`${styles.page} ${isFocusMode ? styles.focusMode : ''}`}>
+      <div className={`${styles.page} ${isFocusMode ? styles.focusMode : ''}`}>
         <header className={styles.header}>
           <div className={styles.titleBlock}>
             <h1 className={styles.title}>Interview Assist</h1>
@@ -1370,7 +1368,6 @@ export default function InterviewPage() {
           </section>
         </main>
         </div>
-      </DesktopOnlyGuard>
     </AppShell>
   );
 }

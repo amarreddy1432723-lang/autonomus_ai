@@ -74,9 +74,9 @@ export default function AppShell({
       data-ai-visible={layout.aiPanelVisible}
       data-bottom-visible={layout.bottomPanelVisible}
     >
+      <div className={styles.activitySlot}>{activityBar}</div>
       <div className={styles.topBarSlot}>{topBar}</div>
       <div className={styles.main}>
-        <div className={styles.activitySlot}>{activityBar}</div>
         <aside className={styles.sidebarSlot}>
           {sidebar}
           <div className={styles.resizeHandleVertical} role="separator" aria-label="Resize sidebar" onPointerDown={(event) => startResize('sidebar', event)} />

@@ -3,15 +3,12 @@
 import { useRouter } from 'next/navigation';
 import {
   Bell,
-  Brain,
-  Check,
   ChevronRight,
   Cloud,
-  Code2,
   FolderOpen,
   GitBranch,
-  Globe2,
-  Layers3,
+  History,
+  LogIn,
   Settings,
   Sparkles,
 } from 'lucide-react';
@@ -29,12 +26,6 @@ type RecentProject = {
   tone: 'purple' | 'green' | 'blue';
   project?: CodeProject;
 };
-
-const SAMPLE_PROJECTS: RecentProject[] = [
-  { id: 'sample-arceus', name: 'Arceus Platform', status: 'Active', lastOpened: '2 hours ago', tone: 'purple' },
-  { id: 'sample-localadda', name: 'LocalAdda', status: 'Waiting Review', lastOpened: 'Yesterday', tone: 'green' },
-  { id: 'sample-healthcare', name: 'Healthcare AI', status: 'Deploying', lastOpened: 'Now', tone: 'blue' },
-];
 
 function initialHealth(): ServiceHealthSnapshot {
   const copy = serviceHealthCopy('partially_online');
@@ -54,6 +45,7 @@ function projectStatus(project: CodeProject, index: number): string {
 
 export default function LaunchPage() {
   const router = useRouter();
+  const [showSplash, setShowSplash] = useState(true);
   const [health, setHealth] = useState<ServiceHealthSnapshot>(initialHealth);
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [openProjectIds, setOpenProjectIds] = useState<string[]>([]);
@@ -63,7 +55,7 @@ export default function LaunchPage() {
   const runChecks = useCallback(async () => {
     const openIds = JSON.parse(window.localStorage.getItem(OPEN_PROJECTS_KEY) || '[]');
     const activeId = window.localStorage.getItem(ACTIVE_PROJECT_KEY) || '';
-    setOpenProjectIds(Array.isArray(openIds) ? openIds.slice(0, 3) : []);
+    setOpenProjectIds(Array.isArray(openIds) ? openIds.slice(0, 6) : []);
     setActiveProjectId(activeId);
 
     const snapshot = await probeServiceHealth({ timeoutMs: 3500 });
@@ -82,8 +74,10 @@ export default function LaunchPage() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setShowSplash(false), 1200);
     setHydrated(true);
     void runChecks();
+    return () => window.clearTimeout(timer);
   }, [runChecks]);
 
   const authReady = hydrated && (health.authReady || hasDesktopAuthToken());
@@ -93,8 +87,7 @@ export default function LaunchPage() {
   );
   const activeProject = projects.find((project) => project.id === activeProjectId) || openProjects[0] || null;
   const recentProjects = useMemo<RecentProject[]>(() => {
-    const source = (openProjects.length ? openProjects : projects).slice(0, 3);
-    if (!source.length) return SAMPLE_PROJECTS;
+    const source = (openProjects.length ? openProjects : projects).slice(0, 5);
     return source.map((project, index) => ({
       id: project.id,
       name: project.name || `Project ${index + 1}`,
@@ -110,120 +103,108 @@ export default function LaunchPage() {
     else router.push(activeProject ? `/workspace?project_id=${activeProject.id}` : '/workspace');
   };
 
-  const actions = [
-    {
-      title: 'Build a New Product',
-      subtitle: 'Start from an idea.',
-      icon: <Sparkles size={28} />,
-      accent: 'purple',
-      onClick: () => router.push('/onboarding'),
-    },
-    {
-      title: 'Open Existing Project',
-      subtitle: 'Continue local development.',
-      icon: <FolderOpen size={28} />,
-      accent: 'blue',
-      onClick: () => router.push('/workspace?action=open-folder'),
-    },
-    {
-      title: 'Clone Repository',
-      subtitle: 'GitHub, GitLab or Bitbucket.',
-      icon: <Globe2 size={28} />,
-      accent: 'purple',
-      onClick: () => router.push('/workspace?drawer=git&action=clone'),
-    },
-    {
-      title: 'Continue Previous Work',
-      subtitle: 'Resume unfinished AI tasks.',
-      icon: <Brain size={28} />,
-      accent: 'blue',
-      onClick: () => openWorkspace(),
-    },
-  ];
-
-  const workforce = [
-    { role: 'Engineering Manager', state: 'Thinking', tone: 'purple' },
-    { role: 'Architect', state: 'Ready', tone: 'green' },
-    { role: 'Frontend Team', state: 'Ready', tone: 'green' },
-    { role: 'Backend Team', state: 'Ready', tone: 'green' },
-    { role: 'QA', state: 'Ready', tone: 'green' },
-  ];
+  if (showSplash) {
+    return (
+      <main className={styles.splash} aria-label="Arceus is initializing">
+        <span className={styles.splashMark}>A</span>
+        <h1>Arceus</h1>
+        <p>AI Engineering Platform</p>
+        <i><em /></i>
+        <span>Initializing...</span>
+      </main>
+    );
+  }
 
   return (
     <main className={styles.launch}>
-      <section className={styles.chrome} aria-label="Arceus Code opening screen">
+      <section className={styles.chrome} aria-label="Arceus Code welcome screen">
         <header className={styles.topbar}>
           <button className={styles.brand} type="button" onClick={() => router.push('/launch')} aria-label="Arceus Code home">
-            <span className={styles.logoMark}>
-              <Layers3 size={26} />
-            </span>
+            <span className={styles.logoMark}>A</span>
             <span>
               <strong>Arceus Code</strong>
               <small>AI Engineering Platform</small>
             </span>
           </button>
 
-          <div className={styles.windowControls} aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-
           <nav className={styles.topActions} aria-label="Account and system">
+            <button className={styles.accountButton} type="button" onClick={() => router.push(authReady ? '/settings?tab=account' : '/auth/desktop')}>
+              {authReady ? (
+                <>
+                  <span className={styles.avatar}>VK</span>
+                  <span><strong>Vamsi Krishna</strong><small>Pro Plan</small></span>
+                </>
+              ) : (
+                <>
+                  <LogIn size={16} />
+                  <span><strong>Not Signed In</strong><small>Continue locally available</small></span>
+                </>
+              )}
+            </button>
+            {!authReady && (
+              <button className={styles.signInButton} type="button" onClick={() => router.push('/auth/desktop')}>
+                Connect Account
+              </button>
+            )}
             <button className={styles.iconButton} type="button" aria-label="Notifications">
               <Bell size={18} />
             </button>
             <button className={styles.iconButton} type="button" aria-label="Settings" onClick={() => router.push('/settings')}>
               <Settings size={18} />
             </button>
-            <button className={styles.avatar} type="button" aria-label={authReady ? 'Profile' : 'Connect account'} onClick={() => router.push(authReady ? '/settings?tab=account' : '/auth/desktop')}>
-              {authReady ? 'V' : <Code2 size={16} />}
-            </button>
             <button className={styles.syncPill} type="button" onClick={() => void runChecks()} aria-label={`Cloud sync: ${health.label}`}>
               <Cloud size={16} />
-              <span>{health.online ? 'Synced' : 'Local mode'}</span>
+              <span>{health.online ? 'Connected' : 'Local mode'}</span>
               <i data-state={health.online ? 'online' : 'warning'} />
             </button>
           </nav>
         </header>
 
         <section className={styles.hero}>
-          <p className={styles.greeting}>Good Afternoon, Vamsi <span aria-hidden="true">👋</span></p>
-          <h1>What are we building today?</h1>
+          <p className={styles.greeting}>Welcome to Arceus</p>
+          <h1>{recentProjects.length ? 'Continue building with your AI engineering team.' : "Let's start by opening a project."}</h1>
+          <p className={styles.heroSubcopy}>Build software with an AI engineering team. Open a repository, let Arceus understand it, then create your first mission.</p>
         </section>
 
-        <section className={styles.actionGrid} aria-label="Primary actions">
-          {actions.map((action) => (
-            <button key={action.title} className={styles.actionCard} data-accent={action.accent} type="button" onClick={action.onClick}>
-              <span className={styles.actionIcon}>{action.icon}</span>
-              <span className={styles.actionText}>
-                <strong>{action.title}</strong>
-                <small>{action.subtitle}</small>
-              </span>
-              <ChevronRight size={20} className={styles.chevron} />
+        <section className={styles.primaryWelcomeActions} aria-label="Start options">
+          <button type="button" className={styles.startCard} onClick={() => router.push('/onboarding?mode=open')}>
+            <FolderOpen size={24} />
+            <strong>Open Folder</strong>
+            <span>Use an existing local repository.</span>
+            <ChevronRight size={18} />
+          </button>
+          <button type="button" className={styles.startCard} onClick={() => router.push('/onboarding?mode=clone')}>
+            <GitBranch size={24} />
+            <strong>Clone Repository</strong>
+            <span>GitHub, GitLab, or Bitbucket.</span>
+            <ChevronRight size={18} />
+          </button>
+          {recentProjects.length > 0 && (
+            <button type="button" className={styles.startCard} onClick={() => openWorkspace()}>
+              <History size={24} />
+              <strong>Continue Last Mission</strong>
+              <span>Resume the most recent workspace.</span>
+              <ChevronRight size={18} />
             </button>
-          ))}
+          )}
         </section>
 
-        <section className={styles.lowerGrid}>
-          <article className={styles.recentCard}>
+        {recentProjects.length > 0 && (
+          <section className={styles.recentCard}>
             <div className={styles.cardHeader}>
               <div>
                 <h2>Recent Projects</h2>
-                <p>Continue where your engineering team left off.</p>
+                <p>Pinned and recently opened workspaces.</p>
               </div>
               <button type="button" className={styles.viewAll} onClick={() => router.push('/workspace')}>
-                View All
+                Open Another Folder
                 <ChevronRight size={15} />
               </button>
             </div>
-
             <div className={styles.projectRows}>
               {recentProjects.map((project) => (
                 <div className={styles.projectRow} key={project.id}>
-                  <span className={styles.projectIcon} data-tone={project.tone}>
-                    {project.tone === 'green' ? 'LA' : project.tone === 'blue' ? <Check size={18} /> : <Layers3 size={18} />}
-                  </span>
+                  <span className={styles.projectIcon} data-tone={project.tone}>{project.name.slice(0, 2).toUpperCase()}</span>
                   <strong>{project.name}</strong>
                   <span className={styles.badge} data-tone={project.tone}>{project.status}</span>
                   <span className={styles.lastOpened}>{project.lastOpened}</span>
@@ -231,33 +212,21 @@ export default function LaunchPage() {
                 </div>
               ))}
             </div>
-          </article>
+          </section>
+        )}
 
-          <article className={styles.workforceCard}>
-            <div className={styles.cardHeader}>
-              <div>
-                <h2>AI Workforce</h2>
-                <p>Your engineering organization is ready.</p>
-              </div>
-            </div>
-            <div className={styles.workforceRows}>
-              {workforce.map((worker) => (
-                <div key={worker.role} className={styles.workforceRow}>
-                  <span className={styles.workerDot} data-tone={worker.tone} />
-                  <strong>{worker.role}</strong>
-                  <span data-tone={worker.tone}>{worker.state}</span>
-                </div>
-              ))}
-            </div>
-          </article>
-        </section>
+        {recentProjects.length === 0 && (
+          <section className={styles.firstRunHint}>
+            <Sparkles size={18} />
+            <p>No projects yet. Arceus will show repository analysis, mission plans, and activity after you open a folder.</p>
+          </section>
+        )}
 
         <footer className={styles.footer}>
-          <p>Everything is ready.</p>
-          <button type="button" className={styles.startButton} onClick={() => router.push('/onboarding')}>
-            <Sparkles size={22} />
-            Start Building
+          <button type="button" className={styles.textButton} onClick={() => router.push('/settings')}>
+            Settings
           </button>
+          <span>Ctrl+O Open Folder · Ctrl+Shift+M Create Mission · Ctrl+K Command Palette</span>
         </footer>
       </section>
     </main>

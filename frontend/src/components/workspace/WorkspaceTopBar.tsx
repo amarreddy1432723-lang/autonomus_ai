@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, Search, Settings } from 'lucide-react';
+import { Bell, ChevronDown, CircleHelp, GitBranch, Play, Plus, Search, Share2 } from 'lucide-react';
 import styles from './AppShell.module.css';
 
 export type MissionStatus = 'idle' | 'planning' | 'running' | 'waiting' | 'failed';
@@ -31,29 +31,48 @@ export default function WorkspaceTopBar({
   return (
     <div className={styles.topBar}>
       <div className={styles.brandGroup}>
-        <span className={styles.brandMark}>A</span>
+        <span className={styles.projectGlyph}>{repositoryName.slice(0, 2).toUpperCase()}</span>
         <span className={styles.brandText}>
-          <strong>{projectName}</strong>
-          <span>{repositoryName}</span>
+          <strong>{repositoryName}</strong>
+          <span>{projectName}</span>
+        </span>
+        <ChevronDown size={14} />
+        <span className={styles.branchPill}>
+          <GitBranch size={13} />
+          main
+          <ChevronDown size={12} />
         </span>
       </div>
       <label className={styles.searchBox}>
         <Search size={15} />
-        <input placeholder="Search project, files, commands..." />
+        <input placeholder="Search files, code, agents, docs..." />
+        <kbd>Ctrl K</kbd>
       </label>
       <div className={styles.topActions}>
+        <button type="button" className={styles.topButton}>
+          <Plus size={15} />
+          New
+        </button>
+        <button type="button" className={styles.topButton}>
+          <Share2 size={15} />
+          Share
+        </button>
+        <button type="button" className={styles.runButton}>
+          <Play size={15} />
+          Run
+          <ChevronDown size={12} />
+        </button>
         <span className={styles.statusPill}>
           <span className={styles.statusDot} />
           {statusLabel[missionStatus]}
         </span>
-        <span className={styles.statusPill}>{selectedModel}</span>
         <button type="button" className={styles.iconButton} aria-label="Notifications">
           <Bell size={16} />
         </button>
-        <button type="button" className={styles.iconButton} aria-label="Settings">
-          <Settings size={16} />
+        <button type="button" className={styles.iconButton} aria-label="Help">
+          <CircleHelp size={16} />
         </button>
-        <span className={styles.statusPill}>{userName}</span>
+        <span className={styles.avatarPill}>{userName}</span>
       </div>
     </div>
   );

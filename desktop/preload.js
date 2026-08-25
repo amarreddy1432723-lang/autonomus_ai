@@ -39,6 +39,7 @@ const legacyElectronApi = {
     terminalResize: (terminalId, cols, rows) => ipcRenderer.invoke("terminal-resize", terminalId, cols, rows),
     terminalKill: (terminalId) => ipcRenderer.invoke("terminal-kill", terminalId),
     installUpdate: () => ipcRenderer.invoke("desktop-install-update"),
+    exportLogs: (options = {}) => ipcRenderer.invoke("desktop.logs.export", request(options)),
     onUpdateAvailable: (callback) => {
         return on("update-available", callback);
     },
@@ -62,7 +63,12 @@ const legacyElectronApi = {
     },
     onAuthCode: (callback) => {
         return on("desktop-auth-code", callback);
-    }
+    },
+    desktopAuth: {
+        read: () => ipcRenderer.invoke("desktop.auth.read", request()),
+        write: (tokens = {}) => ipcRenderer.invoke("desktop.auth.write", request(tokens)),
+        clear: () => ipcRenderer.invoke("desktop.auth.clear", request()),
+    },
 };
 
 const arceusDesktopApi = {
@@ -104,8 +110,10 @@ const arceusDesktopApi = {
         close: legacyElectronApi.close,
         openExternal: legacyElectronApi.openExternal,
         openRoute: legacyElectronApi.openRoute,
+        exportLogs: legacyElectronApi.exportLogs,
         onAuthCode: legacyElectronApi.onAuthCode,
     },
+    auth: legacyElectronApi.desktopAuth,
 };
 
 contextBridge.exposeInMainWorld("electron", legacyElectronApi);

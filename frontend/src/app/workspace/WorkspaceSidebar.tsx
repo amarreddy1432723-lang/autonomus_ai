@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Code2, Folder, FolderPlus, GitMerge, MessageSquarePlus, Search, Settings, Trash2, X } from 'lucide-react';
+import { Activity, Code2, Folder, FolderPlus, GitMerge, MessageSquarePlus, Search, Settings, Trash2, X } from 'lucide-react';
 import styles from './Workspace.module.css';
 
 export type WorkspaceRecentItem = {
@@ -158,6 +158,10 @@ export default function WorkspaceSidebar({
       </section>
 
       <div className={styles.sidebarUtilities}>
+        <Link className={styles.sidebarSettings} href="/mission-control">
+          <Activity size={13} />
+          Mission Control
+        </Link>
         <Link className={styles.sidebarSettings} href="/settings">
           <Settings size={13} />
           Settings

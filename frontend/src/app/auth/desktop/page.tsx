@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ExternalLink, MonitorCheck, RefreshCw } from 'lucide-react';
 import { apiRequest } from '../../../utils/api';
+import { hydrateDesktopAuthState, readDesktopAuthState } from '../../../utils/desktopAuth';
 import { isElectronRuntime } from '../../../utils/serviceHealth';
 
 export default function DesktopAuthPage() {
@@ -41,36 +42,18 @@ export default function DesktopAuthPage() {
         const desktop = isElectronRuntime();
         setIsDesktop(desktop);
         setStatus('Creating secure desktop handoff...');
-        const clerk = (window as any).Clerk;
-        const clerkToken = clerk?.session?.getToken ? await clerk.session.getToken() : null;
-        let result;
-        if (desktop && !clerkToken) {
+        if (desktop) {
+          await hydrateDesktopAuthState();
+        }
+        const authState = readDesktopAuthState();
+        if (desktop && !authState.accessToken) {
           await openBrowserSignIn();
           return;
         }
-        if (clerk && !clerkToken && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
-          setNeedsSignIn(true);
-          setStatus('Sign in in the browser to continue to Arceus Code.');
-          return;
-        }
-        if (clerkToken) {
-          result = await fetch('/api/v1/auth/desktop/code', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(clerkToken ? { Authorization: `Bearer ${clerkToken}` } : {}),
-            },
-            body: JSON.stringify({ redirect_uri: 'arceus://auth/callback' }),
-          }).then(async (response) => {
-            if (!response.ok) throw new Error((await response.json())?.detail || 'Desktop handoff failed');
-            return response.json();
-          });
-        } else {
-          result = await apiRequest('/api/v1/auth/desktop/code', {
-            method: 'POST',
-            body: JSON.stringify({ redirect_uri: 'arceus://auth/callback' }),
-          });
-        }
+        const result = await apiRequest('/api/v1/auth/desktop/code', {
+          method: 'POST',
+          body: JSON.stringify({ redirect_uri: 'arceus://auth/callback' }),
+        });
         if (!cancelled) {
           setStatus('Opening Arceus Code...');
           window.location.href = result.redirect_url;

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut, shell } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, globalShortcut, shell, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const net = require("net");
@@ -74,32 +74,74 @@ let dirWatcherBatch = [];
 let dirWatcherTimer = null;
 let managedPostgres = null;
 const DEFAULT_ROUTE = process.env.NEXUS_DESKTOP_ROUTE || "/launch";
+const DESKTOP_AUTH_SESSION_FILE = "desktop-auth-session.bin";
 const DESKTOP_CODE_ALLOWED_ROUTE_PREFIXES = [
     "/launch",
+    "/onboarding",
     "/workspace",
-    "/idea-discovery",
-    "/product-intelligence",
-    "/domain-intelligence",
-    "/product-blueprint",
-    "/architecture-strategy",
-    "/technology-stack",
-    "/engineering-roadmap",
-    "/ai-workforce",
-    "/executive-review",
     "/mission-control",
-    "/evolution-center",
-    "/knowledge-graph",
-    "/organization-network",
-    "/intelligence-kernel",
     "/settings",
     "/auth/desktop",
-    "/download",
-    "/ui-preview"
+    "/download"
 ];
 const WORKSPACE_IGNORED_DIRS = new Set([".git", ".hg", ".svn", "node_modules", ".next", "dist", "build", "coverage", ".venv", "venv", "__pycache__", "pycache", ".pytest_cache", ".turbo", ".cache"]);
 const WORKSPACE_IGNORED_EXTS = new Set([".pyc", ".pyo", ".map"]);
 const WORKSPACE_MAX_TREE_FILES = Number(process.env.NEXUS_DESKTOP_MAX_TREE_FILES || 5000);
 const WORKSPACE_MAX_FILE_BYTES = Number(process.env.NEXUS_DESKTOP_MAX_FILE_BYTES || 1500000);
+const LOG_EXPORT_MAX_FILE_BYTES = Number(process.env.ARCEUS_LOG_EXPORT_MAX_FILE_BYTES || 750000);
+const LOG_EXPORT_MAX_FILES = Number(process.env.ARCEUS_LOG_EXPORT_MAX_FILES || 40);
+
+function desktopAuthSessionPath() {
+    return path.join(app.getPath("userData"), DESKTOP_AUTH_SESSION_FILE);
+}
+
+function sanitizeDesktopAuthSession(value = {}) {
+    return {
+        access_token: typeof value.access_token === "string" ? value.access_token : "",
+        refresh_token: typeof value.refresh_token === "string" ? value.refresh_token : "",
+        user_id: typeof value.user_id === "string" ? value.user_id : "",
+        token_type: typeof value.token_type === "string" ? value.token_type : "bearer",
+        updated_at: typeof value.updated_at === "string" ? value.updated_at : new Date().toISOString()
+    };
+}
+
+function readDesktopAuthSessionFromDisk() {
+    try {
+        const sessionPath = desktopAuthSessionPath();
+        if (!fs.existsSync(sessionPath)) return {};
+        const bytes = fs.readFileSync(sessionPath);
+        let raw = "";
+        if (safeStorage?.isEncryptionAvailable?.()) {
+            raw = safeStorage.decryptString(bytes);
+        } else {
+            raw = bytes.toString("utf8");
+        }
+        const parsed = JSON.parse(raw);
+        return sanitizeDesktopAuthSession(parsed);
+    } catch (error) {
+        console.warn("Could not read desktop auth session:", error?.message || error);
+        return {};
+    }
+}
+
+function writeDesktopAuthSessionToDisk(value = {}) {
+    const payload = sanitizeDesktopAuthSession(value);
+    const raw = JSON.stringify(payload);
+    const bytes = safeStorage?.isEncryptionAvailable?.()
+        ? safeStorage.encryptString(raw)
+        : Buffer.from(raw, "utf8");
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(desktopAuthSessionPath(), bytes);
+    return payload;
+}
+
+function clearDesktopAuthSessionFromDisk() {
+    try {
+        fs.rmSync(desktopAuthSessionPath(), { force: true });
+    } catch {
+        // Clearing auth state should be idempotent.
+    }
+}
 
 function sanitizeDesktopCodeRoute(route) {
     let candidate = typeof route === "string" && route.trim() ? route.trim() : DEFAULT_ROUTE;
@@ -222,6 +264,30 @@ ipcMain.handle("desktop.capabilities", async (_event, request = {}) => {
     });
 });
 
+ipcMain.handle("desktop.auth.read", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    const session = readDesktopAuthSessionFromDisk();
+    return ipcOk(requestId, {
+        ...session,
+        encrypted: Boolean(safeStorage?.isEncryptionAvailable?.())
+    });
+});
+
+ipcMain.handle("desktop.auth.write", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    const session = writeDesktopAuthSessionToDisk(payload || {});
+    return ipcOk(requestId, {
+        ...session,
+        encrypted: Boolean(safeStorage?.isEncryptionAvailable?.())
+    });
+});
+
+ipcMain.handle("desktop.auth.clear", async (_event, request = {}) => {
+    const { requestId } = unwrapIpcPayload([request]);
+    clearDesktopAuthSessionFromDisk();
+    return ipcOk(requestId, { cleared: true });
+});
+
 ipcMain.handle("desktop.diagnostics", async (_event, request = {}) => {
     const { requestId } = unwrapIpcPayload([request]);
     const userData = app.getPath("userData");
@@ -250,6 +316,38 @@ ipcMain.handle("desktop.diagnostics", async (_event, request = {}) => {
         trustedWorkspaces: Array.from(trustedWorkspaces.values()),
         logFile: path.join(userData, "arceus-desktop.log")
     });
+});
+
+ipcMain.handle("desktop.logs.export", async (_event, request = {}) => {
+    const { requestId, payload } = unwrapIpcPayload([request]);
+    try {
+        const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const defaultPath = path.join(app.getPath("downloads"), `arceus-code-diagnostics-${safeTimestamp}.json`);
+        const saveResult = payload?.silent
+            ? { canceled: false, filePath: payload?.filePath || defaultPath }
+            : await dialog.showSaveDialog(mainWindow, {
+                title: "Export Arceus Code diagnostics",
+                defaultPath,
+                filters: [{ name: "JSON", extensions: ["json"] }]
+            });
+
+        if (saveResult.canceled || !saveResult.filePath) {
+            return ipcOk(requestId, { exported: false, canceled: true });
+        }
+
+        const bundle = createLogExportBundle();
+        fs.mkdirSync(path.dirname(saveResult.filePath), { recursive: true });
+        fs.writeFileSync(saveResult.filePath, JSON.stringify(bundle, null, 2), "utf8");
+        logDesktopEvent("Diagnostics exported", saveResult.filePath);
+        return ipcOk(requestId, {
+            exported: true,
+            path: saveResult.filePath,
+            fileCount: bundle.files.length,
+            redacted: true
+        });
+    } catch (error) {
+        return ipcFail(requestId, desktopError("PROCESS_FAILED", error?.message || "Could not export diagnostics.", true));
+    }
 });
 
 ipcMain.handle("runtime.tools.list", async (_event, request = {}) => {
@@ -862,6 +960,158 @@ function logDesktopEvent(message, detail = "") {
     console.log(message, detail);
 }
 
+function redactDiagnosticText(text = "") {
+    return String(text || "")
+        .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+        .replace(/((?:token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*)[^\s"',}]+/gi, "$1[REDACTED]")
+        .replace(/(sk-[A-Za-z0-9_-]{12,})/g, "[REDACTED_API_KEY]")
+        .replace(/(pk_live_[A-Za-z0-9_-]{12,}|sk_live_[A-Za-z0-9_-]{12,})/g, "[REDACTED_STRIPE_KEY]");
+}
+
+function safeStatFile(filePath) {
+    try {
+        return fs.statSync(filePath);
+    } catch {
+        return null;
+    }
+}
+
+function collectDiagnosticFiles(rootDir, files = []) {
+    if (!rootDir || files.length >= LOG_EXPORT_MAX_FILES) return files;
+    const stat = safeStatFile(rootDir);
+    if (!stat) return files;
+
+    if (stat.isFile()) {
+        const lower = rootDir.toLowerCase();
+        if (/\.(log|json|txt)$/i.test(lower)) files.push(rootDir);
+        return files;
+    }
+
+    if (!stat.isDirectory()) return files;
+
+    let entries = [];
+    try {
+        entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    } catch {
+        return files;
+    }
+
+    for (const entry of entries) {
+        if (files.length >= LOG_EXPORT_MAX_FILES) break;
+        if (entry.name === "desktop-auth-session.bin") continue;
+        const fullPath = path.join(rootDir, entry.name);
+        if (entry.isDirectory()) {
+            if (["crashes", "logs"].includes(entry.name) || rootDir === app.getPath("userData")) {
+                collectDiagnosticFiles(fullPath, files);
+            }
+            continue;
+        }
+        if (/\.(log|json|txt)$/i.test(entry.name)) files.push(fullPath);
+    }
+
+    return files;
+}
+
+function createLogExportBundle() {
+    const userData = app.getPath("userData");
+    const candidateFiles = collectDiagnosticFiles(userData, [path.join(userData, "arceus-desktop.log")]);
+    const uniqueFiles = Array.from(new Set(candidateFiles)).slice(0, LOG_EXPORT_MAX_FILES);
+    const files = [];
+
+    for (const filePath of uniqueFiles) {
+        const stat = safeStatFile(filePath);
+        if (!stat || !stat.isFile()) continue;
+        const size = stat.size;
+        const truncated = size > LOG_EXPORT_MAX_FILE_BYTES;
+        let content = "";
+        try {
+            const buffer = fs.readFileSync(filePath);
+            content = buffer.slice(Math.max(0, buffer.length - LOG_EXPORT_MAX_FILE_BYTES)).toString("utf8");
+        } catch (error) {
+            content = `Could not read diagnostic file: ${error?.message || error}`;
+        }
+        files.push({
+            name: path.basename(filePath),
+            relativePath: path.relative(userData, filePath),
+            sizeBytes: size,
+            truncated,
+            content: redactDiagnosticText(content)
+        });
+    }
+
+    return {
+        product: "Arceus Code",
+        generatedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        isDev,
+        electron: process.versions.electron,
+        node: process.versions.node,
+        chrome: process.versions.chrome,
+        frontendOrigin,
+        diagnostics: {
+            backendProcesses: backendProcesses.map((processRef) => ({ pid: processRef.pid, killed: processRef.killed })),
+            frontendProcess: frontendProcess ? { pid: frontendProcess.pid, killed: frontendProcess.killed } : null,
+            trustedWorkspaceCount: trustedWorkspaces.size,
+            terminalSessionCount: terminalSessions.size
+        },
+        files
+    };
+}
+
+function writeCrashReport(kind, details = {}) {
+    try {
+        const crashDir = path.join(app.getPath("userData"), "crashes");
+        fs.mkdirSync(crashDir, { recursive: true });
+        const timestamp = new Date().toISOString();
+        const safeTimestamp = timestamp.replace(/[:.]/g, "-");
+        const error = details instanceof Error ? details : null;
+        const report = {
+            product: "Arceus Code",
+            kind,
+            timestamp,
+            appVersion: app.getVersion(),
+            platform: process.platform,
+            arch: process.arch,
+            versions: {
+                electron: process.versions.electron,
+                chrome: process.versions.chrome,
+                node: process.versions.node
+            },
+            message: error ? error.message : details?.message,
+            stack: error ? error.stack : details?.stack,
+            details: error ? {} : details
+        };
+        fs.writeFileSync(path.join(crashDir, `crash-${safeTimestamp}.json`), JSON.stringify(report, null, 2), "utf8");
+    } catch {
+        // Crash reporting must never create a second crash.
+    }
+}
+
+process.on("uncaughtException", (error) => {
+    writeCrashReport("main_uncaught_exception", error);
+    logDesktopEvent("Main process uncaught exception", error?.message || String(error));
+});
+
+process.on("unhandledRejection", (reason) => {
+    writeCrashReport("main_unhandled_rejection", reason instanceof Error ? reason : { message: String(reason || "Unknown rejection") });
+    logDesktopEvent("Main process unhandled rejection", reason?.message || String(reason));
+});
+
+app.on("render-process-gone", (_event, webContents, details) => {
+    writeCrashReport("render-process-gone", {
+        ...details,
+        url: webContents?.getURL?.() || ""
+    });
+    logDesktopEvent("Renderer process gone", JSON.stringify(details || {}));
+});
+
+app.on("child-process-gone", (_event, details) => {
+    writeCrashReport("child-process-gone", details || {});
+    logDesktopEvent("Child process gone", JSON.stringify(details || {}));
+});
+
 function attachServiceLogging(childProcess, label) {
     const logChunk = (streamName, data) => {
         const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data || "");
@@ -1016,13 +1266,13 @@ function createLauncherWindow() {
             allowRunningInsecureContent: false,
             preload: path.join(__dirname, "preload.js")
         },
-        backgroundColor: "#0d0e12"
+        backgroundColor: "#ffffff"
     });
 
     launcherWindow.setMenuBarVisibility(false);
     installWindowSecurityPolicy(launcherWindow);
 
-    loadFrontendRoute(launcherWindow, "/workspace");
+    loadFrontendRoute(launcherWindow, "/launch");
 
     launcherWindow.on("blur", () => {
         if (launcherWindow) launcherWindow.hide();
@@ -1048,7 +1298,7 @@ function createWindow() {
             allowRunningInsecureContent: false,
             preload: path.join(__dirname, "preload.js")
         },
-        backgroundColor: "#0d0e12"
+        backgroundColor: "#ffffff"
     });
 
     mainWindow.setMenuBarVisibility(false);

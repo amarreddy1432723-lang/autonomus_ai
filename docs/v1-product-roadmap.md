@@ -1,5 +1,7 @@
 # Arceus v1.0 Product Roadmap
 
+Arceus v1.0 is the first release of the Autonomous Software Engineering Organization. It should not compete as another autocomplete/chat IDE. The core promise is a persistent AI engineering team that understands a repository, plans missions, executes with evidence, verifies outcomes, supports rollback, and learns from every completed mission.
+
 This roadmap freezes Arceus around one adoptable product loop:
 
 ```text

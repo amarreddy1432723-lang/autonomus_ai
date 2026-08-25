@@ -1,45 +1,59 @@
-import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const isPublicRoute = createRouteMatcher([
+const publicRoutePrefixes = [
   '/',
-  '/hub(.*)',
-  '/workspace(.*)',
-  '/download(.*)',
-  '/auth/desktop(.*)',
-  '/sign-in(.*)',
-  '/sign-up(.*)',
-  '/api/public(.*)',
-  '/api/v1(.*)'
-]);
+  '/hub',
+  '/download',
+  '/auth/desktop',
+  '/login',
+  '/signup',
+  '/sign-in',
+  '/sign-up',
+  '/api/public',
+  '/api/v1',
+];
+const desktopLocalRoutePrefixes = [
+  '/launch',
+  '/workspace',
+  '/onboarding',
+  '/settings',
+  '/mission-control',
+];
 
-const hasClerkKeys = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const requireAuth = process.env.NEXT_PUBLIC_REQUIRE_AUTH === 'true';
 const publicAppEnv = (process.env.NEXT_PUBLIC_APP_ENV || '').toLowerCase();
 const productionLikeFrontend = publicAppEnv === 'production' || publicAppEnv === 'staging';
 const effectiveRequireAuth = requireAuth || productionLikeFrontend;
 
-export default function proxy(request: NextRequest, event: any) {
-  if (hasClerkKeys) {
-    return clerkMiddleware(async (auth, req) => {
-      if (!isPublicRoute(req)) {
-        await auth.protect();
-      }
-    })(request, event);
-  }
+function isElectronRequest(request: NextRequest): boolean {
+  const userAgent = request.headers.get('user-agent') || '';
+  return /Electron|Arceus Code/i.test(userAgent);
+}
 
-  // Mock authentication fallback for demo mode
+function matchesPrefix(pathname: string, prefix: string): boolean {
+  if (prefix === '/') return pathname === '/';
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+function isAllowedWithoutWebSession(request: NextRequest): boolean {
+  const pathname = request.nextUrl.pathname;
+  return publicRoutePrefixes.some((prefix) => matchesPrefix(pathname, prefix))
+    || (isElectronRequest(request) && desktopLocalRoutePrefixes.some((prefix) => matchesPrefix(pathname, prefix)));
+}
+
+export default function proxy(request: NextRequest) {
   if (!effectiveRequireAuth) {
     return NextResponse.next();
   }
 
-  const isProtected = !isPublicRoute(request);
+  const isProtected = !isAllowedWithoutWebSession(request);
   const mockToken = request.cookies.get('my-ai.mock_token')?.value;
   const isApiRoute = request.nextUrl.pathname.startsWith('/api/');
   const hasDemoUserHeader = !!request.headers.get('x-user-id');
 
   if (isProtected && !mockToken && !(isApiRoute && hasDemoUserHeader)) {
     const signInUrl = new URL('/sign-in', request.url);
+    signInUrl.searchParams.set('redirect_url', request.nextUrl.pathname + request.nextUrl.search);
     return NextResponse.redirect(signInUrl);
   }
 

@@ -1,15 +1,12 @@
 'use client';
 
-import { Box, Files, GitBranch, Search, Settings, Target } from 'lucide-react';
+import { Activity, Cloud, FolderKanban, Settings, UserCircle } from 'lucide-react';
 import { useWorkspaceLayoutStore, type PrimarySidebarView } from '../../stores/workspace-layout-store';
 import styles from './AppShell.module.css';
 
-const items: Array<{ id: PrimarySidebarView | 'settings'; label: string; icon: typeof Files }> = [
-  { id: 'explorer', label: 'Explorer', icon: Files },
-  { id: 'search', label: 'Search', icon: Search },
-  { id: 'source-control', label: 'Source Control', icon: GitBranch },
-  { id: 'missions', label: 'Missions', icon: Target },
-  { id: 'extensions', label: 'Extensions', icon: Box },
+const items: Array<{ id: PrimarySidebarView | 'mission-control' | 'settings'; label: string; icon: typeof FolderKanban }> = [
+  { id: 'explorer', label: 'Workspace', icon: FolderKanban },
+  { id: 'mission-control', label: 'Mission Control', icon: Activity },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -20,9 +17,14 @@ export default function ActivityBar() {
 
   return (
     <nav className={styles.activityBar} aria-label="Workspace activity">
+      <div className={styles.navBrand}>
+        <img src="/arceus-logo.svg" alt="" aria-hidden="true" />
+        <strong>Arceus Code</strong>
+      </div>
+      <div className={styles.navSection}>
       {items.map((item) => {
         const Icon = item.icon;
-        const active = item.id !== 'settings' && sidebarVisible && activeSidebarView === item.id;
+        const active = item.id === 'explorer' && sidebarVisible && activeSidebarView === item.id;
         return (
           <button
             key={item.id}
@@ -31,12 +33,32 @@ export default function ActivityBar() {
             data-active={active || undefined}
             title={item.label}
             aria-label={item.label}
-            onClick={() => item.id !== 'settings' && toggleSidebar(item.id)}
+            onClick={() => {
+              if (item.id === 'explorer') toggleSidebar(item.id);
+              if (item.id === 'mission-control') window.location.href = '/mission-control';
+              if (item.id === 'settings') window.location.href = '/settings';
+            }}
           >
             <Icon size={16} />
+            <span>{item.label}</span>
           </button>
         );
       })}
+      </div>
+      <div className={styles.desktopShellMeta} aria-label="Arceus Code status">
+        <button type="button" onClick={() => { window.location.href = '/settings'; }}>
+          <UserCircle size={15} />
+          <span>Account</span>
+        </button>
+        <div>
+          <Cloud size={15} />
+          <span>Connected</span>
+        </div>
+        <div>
+          <span>Version</span>
+          <strong>v1.0.0</strong>
+        </div>
+      </div>
     </nav>
   );
 }

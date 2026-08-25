@@ -5,13 +5,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from services.shared.arceus_core_models import ArceusEvidence, ArceusLessonProposal, ArceusMission, ArceusPerformanceObservation
+from services.shared.arceus_core_models import ArceusEvidence, ArceusLessonProposal, ArceusMission, ArceusParticipant, ArceusPerformanceObservation
 from services.shared.database import get_db
 
 from ..api.dependencies import RequestContext, require_permission
 from ..api.responses import api_response, collection_response
 from ..application.unit_of_work import SqlAlchemyUnitOfWork
 from .api_schemas import (
+    AgentSelectionRequest,
+    AgentSelectionResponse,
+    AgentSkillProfileResponse,
+    CollectiveIntelligenceResponse,
     LearningEvaluateRequest,
     LearningEvaluateResponse,
     LearningHistoryResponse,
@@ -21,13 +25,20 @@ from .api_schemas import (
     LearningRecordRequest,
     LearningRecordResponse,
     LearningScorecardResponse,
+    ModelPerformanceResponse,
+    OrganizationBrainResponse,
 )
 from .service import (
+    build_organization_brain,
+    build_agent_skill_matrix,
     discover_patterns,
     evaluate_learning_record,
     evaluate_promotion,
+    model_performance_matrix,
+    rank_agents_for_capabilities,
     scorecard_from_metrics,
     scorecard_from_observations,
+    synthesize_mission_reflection,
 )
 
 
@@ -250,3 +261,88 @@ def evaluate_learning(
         recorded_observations=recorded,
     )
     return api_response(response.model_dump(mode="json"), request)
+
+
+@router.get("/collective-intelligence/{mission_id}")
+def get_collective_intelligence(
+    mission_id: UUID,
+    request: Request,
+    context: RequestContext = Depends(require_permission("learning.view")),
+    db: Session = Depends(get_db),
+):
+    _mission(db, context.tenant_id, mission_id)
+    lessons = db.query(ArceusLessonProposal).filter(ArceusLessonProposal.tenant_id == context.tenant_id, ArceusLessonProposal.mission_id == mission_id).limit(500).all()
+    evidence = db.query(ArceusEvidence).filter(ArceusEvidence.tenant_id == context.tenant_id, ArceusEvidence.mission_id == mission_id).limit(1000).all()
+    observations = db.query(ArceusPerformanceObservation).filter(ArceusPerformanceObservation.tenant_id == context.tenant_id, ArceusPerformanceObservation.mission_id == mission_id).limit(1000).all()
+    packet = synthesize_mission_reflection(mission_id=mission_id, lessons=lessons, evidence=evidence, observations=observations)
+    return api_response(CollectiveIntelligenceResponse(**packet).model_dump(mode="json"), request)
+
+
+@router.get("/organization-brain")
+def get_organization_brain(
+    request: Request,
+    project_id: UUID | None = Query(default=None),
+    repository_id: UUID | None = Query(default=None),
+    context: RequestContext = Depends(require_permission("learning.view")),
+    db: Session = Depends(get_db),
+):
+    missions_query = db.query(ArceusMission).filter(ArceusMission.tenant_id == context.tenant_id)
+    if project_id:
+        missions_query = missions_query.filter(ArceusMission.project_id == project_id)
+    missions = missions_query.limit(1000).all()
+    lessons = db.query(ArceusLessonProposal).filter(ArceusLessonProposal.tenant_id == context.tenant_id).limit(5000).all()
+    evidence = db.query(ArceusEvidence).filter(ArceusEvidence.tenant_id == context.tenant_id).limit(5000).all()
+    observations = db.query(ArceusPerformanceObservation).filter(ArceusPerformanceObservation.tenant_id == context.tenant_id).limit(10000).all()
+    participants = db.query(ArceusParticipant).filter(ArceusParticipant.tenant_id == context.tenant_id).limit(1000).all()
+    packet = build_organization_brain(
+        missions=missions,
+        lessons=lessons,
+        evidence=evidence,
+        observations=observations,
+        participants=participants,
+        project_id=project_id,
+        repository_id=repository_id,
+    )
+    return api_response(OrganizationBrainResponse(**packet).model_dump(mode="json"), request)
+
+
+@router.get("/skill-matrix")
+def get_agent_skill_matrix(
+    request: Request,
+    context: RequestContext = Depends(require_permission("learning.view")),
+    db: Session = Depends(get_db),
+):
+    participants = db.query(ArceusParticipant).filter(ArceusParticipant.tenant_id == context.tenant_id).limit(500).all()
+    observations = db.query(ArceusPerformanceObservation).filter(ArceusPerformanceObservation.tenant_id == context.tenant_id).limit(5000).all()
+    rows = [AgentSkillProfileResponse(**item).model_dump(mode="json") for item in build_agent_skill_matrix(participants=participants, observations=observations)]
+    return collection_response(rows, request)
+
+
+@router.post("/select-agent")
+def select_learning_backed_agent(
+    payload: AgentSelectionRequest,
+    request: Request,
+    context: RequestContext = Depends(require_permission("learning.view")),
+    db: Session = Depends(get_db),
+):
+    participants = db.query(ArceusParticipant).filter(ArceusParticipant.tenant_id == context.tenant_id).limit(500).all()
+    observations = db.query(ArceusPerformanceObservation).filter(ArceusPerformanceObservation.tenant_id == context.tenant_id).limit(5000).all()
+    matrix = build_agent_skill_matrix(participants=participants, observations=observations)
+    ranked = rank_agents_for_capabilities(required_capabilities=payload.required_capabilities, skill_matrix=matrix, limit=payload.limit)
+    rows = [AgentSelectionResponse(**item).model_dump(mode="json") for item in ranked]
+    return collection_response(rows, request)
+
+
+@router.get("/model-performance")
+def get_model_performance_learning(
+    request: Request,
+    task_type: str | None = Query(default=None, max_length=120),
+    context: RequestContext = Depends(require_permission("learning.view")),
+    db: Session = Depends(get_db),
+):
+    observations = db.query(ArceusPerformanceObservation).filter(ArceusPerformanceObservation.tenant_id == context.tenant_id).limit(5000).all()
+    rows = model_performance_matrix(observations)
+    if task_type:
+        rows = [item for item in rows if item["task_type"] == task_type]
+    response = [ModelPerformanceResponse(**item).model_dump(mode="json") for item in rows]
+    return collection_response(response, request)

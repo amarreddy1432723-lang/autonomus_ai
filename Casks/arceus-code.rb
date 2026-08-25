@@ -2,11 +2,11 @@ cask "arceus-code" do
   version "1.0.0"
   sha256 "REPLACE_WITH_RELEASE_SHA256"
 
-  url "https://github.com/arceus-ai/arceus-code/releases/download/arceus-code-v#{version}/Arceus-Code-#{version}.dmg",
-      verified: "github.com/arceus-ai/arceus-code/"
+  url "https://github.com/amarreddy1432723-lang/autonomus_ai/releases/download/arceus-code-v#{version}/Arceus-Code-#{version}.dmg",
+      verified: "github.com/amarreddy1432723-lang/autonomus_ai/"
   name "Arceus Code"
   desc "Desktop-first AI coding workspace"
-  homepage "https://github.com/arceus-ai/arceus-code"
+  homepage "https://github.com/amarreddy1432723-lang/autonomus_ai"
 
   app "Arceus Code.app"
 

@@ -7,7 +7,6 @@ from typing import Any
 from uuid import UUID
 
 import jwt
-from jwt import PyJWKClient
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -136,64 +135,6 @@ def dev_auth_fallback_enabled() -> bool:
 def production_auth_locked() -> bool:
     return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "local")).lower() in {"staging", "prod", "production"}
 
-def clerk_only_auth_required() -> bool:
-    return production_auth_locked()
-
-def clerk_auth_enabled() -> bool:
-    return bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY"))
-
-def verify_clerk_token(token: str) -> dict:
-    jwks_url = os.getenv("CLERK_JWKS_URL")
-    issuer = os.getenv("CLERK_ISSUER")
-    audience = os.getenv("CLERK_AUDIENCE")
-    if not jwks_url and issuer:
-        jwks_url = issuer.rstrip("/") + "/.well-known/jwks.json"
-    if not jwks_url:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk auth is not configured")
-
-    try:
-        signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(token)
-        kwargs: dict[str, Any] = {"algorithms": ["RS256"]}
-        if issuer:
-            kwargs["issuer"] = issuer
-        if audience:
-            kwargs["audience"] = audience
-        else:
-            kwargs["options"] = {"verify_aud": False}
-        return jwt.decode(token, signing_key.key, **kwargs)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk session token is invalid")
-
-def resolve_clerk_user_id(db, payload: dict) -> UUID:
-    clerk_sub = str(payload.get("sub") or "")
-    if not clerk_sub:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk subject missing")
-    from services.shared.models import User, UserProfile
-
-    user = db.query(User).filter(User.auth_provider == "clerk", User.auth_provider_id == clerk_sub).first()
-    if not user:
-        email = (
-            payload.get("email")
-            or payload.get("primary_email_address")
-            or f"{clerk_sub}@clerk.local"
-        )
-        user = User(
-            email=email,
-            hashed_password="clerk-managed",
-            auth_provider="clerk",
-            auth_provider_id=clerk_sub,
-            is_active=True,
-            is_verified=True,
-        )
-        db.add(user)
-        db.flush()
-        db.add(UserProfile(user_id=user.id))
-        db.commit()
-        db.refresh(user)
-    return user.id
-
 def resolve_user_id_from_auth_or_clerk(
     db,
     authorization: str | None,
@@ -202,28 +143,6 @@ def resolve_user_id_from_auth_or_clerk(
     jwt_algorithm: str = "HS256",
     required_scopes: set[str] | None = None,
 ) -> UUID:
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split("Bearer ", 1)[1].strip()
-        if clerk_auth_enabled():
-            try:
-                payload = verify_clerk_token(token)
-                return resolve_clerk_user_id(db, payload)
-            except HTTPException as exc:
-                if clerk_only_auth_required():
-                    raise exc
-                pass
-
-        if clerk_only_auth_required():
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clerk session token is required")
-        return resolve_user_id_from_auth(authorization, x_user_id, jwt_secret, jwt_algorithm, required_scopes)
-
-    if clerk_only_auth_required():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Clerk session token is required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
     return resolve_user_id_from_auth(authorization, x_user_id, jwt_secret, jwt_algorithm, required_scopes)
 
 def resolve_user_id_from_auth(

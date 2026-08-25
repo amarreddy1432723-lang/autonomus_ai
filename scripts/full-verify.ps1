@@ -149,6 +149,30 @@ Step "Desktop release surface" {
   Pop-Location
 }
 
+Step "Desktop Alpha isolation surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-desktop-isolation.ps1
+  Pop-Location
+}
+
+Step "Alpha release readiness surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-alpha-release.ps1 -StrictExternal:$StrictSmoke
+  Pop-Location
+}
+
+Step "Prototype P0 readiness surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-prototype-p0.ps1
+  Pop-Location
+}
+
+Step "Auth migration surface" {
+  Push-Location $repoRoot
+  .\scripts\verify-auth-migration.ps1
+  Pop-Location
+}
+
 Step "Database operations surface" {
   Push-Location $repoRoot
   .\scripts\verify-database-operations.ps1
@@ -272,6 +296,11 @@ Step "Acceptance surface files exist" {
     "ops/prometheus/prometheus.yml",
     "ops/prometheus/arceus-alerts.yml",
     "ops/grafana/arceus-code-overview.json",
+    "docs/alpha-release.md",
+    "docs/private-alpha-guide.md",
+    "docs/known-issues.md",
+    "docs/feedback.md",
+    "scripts/verify-alpha-release.ps1",
     "scripts/verify-desktop-release.ps1",
     "scripts/verify-database-operations.ps1",
     "scripts/verify-provider-config.ps1",

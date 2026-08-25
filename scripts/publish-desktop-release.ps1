@@ -2,6 +2,7 @@ param(
   [string]$ReleaseVersion = "arceus-code-v1.0.0",
   [string]$OwnerRepo = "",
   [string]$InstallerPath = ".\desktop\dist\Arceus Code-1.0.0-Setup.exe",
+  [string]$AssetName = "",
   [string]$AgentService = "agent",
   [switch]$SetRailwayEnv,
   [switch]$Draft,
@@ -52,7 +53,8 @@ if (-not $OwnerRepo) {
 $installer = Resolve-Path $InstallerPath
 $checksum = (Get-FileHash -Algorithm SHA256 -Path $installer).Hash.ToLowerInvariant()
 $fileName = Split-Path -Leaf $installer
-$encodedFileName = [uri]::EscapeDataString($fileName)
+$publishedFileName = if ($AssetName) { $AssetName } else { $fileName -replace "\s+", "-" }
+$encodedFileName = [uri]::EscapeDataString($publishedFileName)
 $downloadUrl = "https://github.com/$OwnerRepo/releases/download/$ReleaseVersion/$encodedFileName"
 $notesUrl = "https://github.com/$OwnerRepo/releases/tag/$ReleaseVersion"
 $updateFeedUrl = "https://github.com/$OwnerRepo/releases/latest"
@@ -72,7 +74,33 @@ if (-not $releaseExists) {
   & $gh @args
 }
 
-& $gh release upload $ReleaseVersion $installer --repo $OwnerRepo --clobber
+$uploadInstaller = $installer.Path
+$temporaryInstaller = $null
+if ($publishedFileName -ne $fileName) {
+  $temporaryInstaller = Join-Path ([System.IO.Path]::GetTempPath()) $publishedFileName
+  Copy-Item -LiteralPath $installer.Path -Destination $temporaryInstaller -Force
+  $uploadInstaller = $temporaryInstaller
+}
+
+$uploadFiles = @($uploadInstaller)
+$artifactDir = Split-Path -Parent $installer.Path
+$latestPath = Join-Path $artifactDir "latest.yml"
+if (Test-Path $latestPath) {
+  $uploadFiles += $latestPath
+}
+$blockMapSource = "$($installer.Path).blockmap"
+if (Test-Path $blockMapSource) {
+  $publishedBlockMapName = "$publishedFileName.blockmap"
+  if ($publishedBlockMapName -eq (Split-Path -Leaf $blockMapSource)) {
+    $uploadFiles += $blockMapSource
+  } else {
+    $temporaryBlockMap = Join-Path ([System.IO.Path]::GetTempPath()) $publishedBlockMapName
+    Copy-Item -LiteralPath $blockMapSource -Destination $temporaryBlockMap -Force
+    $uploadFiles += $temporaryBlockMap
+  }
+}
+
+& $gh release upload $ReleaseVersion @uploadFiles --repo $OwnerRepo --clobber
 
 Write-Host "Uploaded: $downloadUrl"
 Write-Host "SHA256: $checksum"

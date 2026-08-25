@@ -41,7 +41,7 @@ def test_production_readiness_blocks_demo_and_dev_auth(monkeypatch):
 
     assert checks["demo_user"]["status"] == "fail"
     assert checks["dev_auth_fallback"]["status"] == "fail"
-    assert checks["clerk_auth"]["status"] == "fail"
+    assert checks["arceus_auth"]["status"] == "pass"
     assert readiness["status"] == "blocked"
 
 
@@ -54,18 +54,12 @@ def test_production_startup_refuses_unsafe_auth(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("ALLOW_DEMO_USER", "false")
     monkeypatch.setenv("ALLOW_DEV_AUTH_FALLBACK", "false")
-    monkeypatch.delenv("CLERK_ISSUER", raising=False)
-    monkeypatch.delenv("CLERK_JWKS_URL", raising=False)
-    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
-
-    with pytest.raises(RuntimeError, match="clerk_auth"):
-        enforce_production_startup("test-service")
+    enforce_production_startup("test-service")
 
 
-def test_production_clerk_mode_rejects_x_user_id_fallback(monkeypatch):
+def test_production_rejects_x_user_id_fallback(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("ALLOW_DEV_AUTH_FALLBACK", "true")
-    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.example.test/.well-known/jwks.json")
 
     with pytest.raises(HTTPException) as exc:
         resolve_user_id_from_auth_or_clerk(
@@ -76,34 +70,25 @@ def test_production_clerk_mode_rejects_x_user_id_fallback(monkeypatch):
         )
 
     assert exc.value.status_code == 401
-    assert "Clerk session token" in str(exc.value.detail)
+    assert "Authentication credentials" in str(exc.value.detail)
 
 
-def test_production_clerk_mode_rejects_legacy_local_jwt(monkeypatch):
+def test_production_accepts_first_party_arceus_jwt(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("ALLOW_DEV_AUTH_FALLBACK", "false")
-    monkeypatch.setenv("CLERK_JWKS_URL", "https://clerk.example.test/.well-known/jwks.json")
 
-    def reject_clerk_token(_token):
-        raise HTTPException(status_code=401, detail="Clerk session token is invalid")
-
-    monkeypatch.setattr("services.shared.security.verify_clerk_token", reject_clerk_token)
-    legacy_token = jwt.encode(
+    token = jwt.encode(
         {"type": "access", "sub": str(UUID("00000000-0000-0000-0000-000000000000"))},
         "production-jwt-secret",
         algorithm="HS256",
     )
 
-    with pytest.raises(HTTPException) as exc:
-        resolve_user_id_from_auth_or_clerk(
-            db=None,
-            authorization=f"Bearer {legacy_token}",
-            x_user_id=None,
-            jwt_secret="production-jwt-secret",
-        )
-
-    assert exc.value.status_code == 401
-    assert "Clerk" in str(exc.value.detail)
+    assert resolve_user_id_from_auth_or_clerk(
+        db=None,
+        authorization=f"Bearer {token}",
+        x_user_id=None,
+        jwt_secret="production-jwt-secret",
+    ) == UUID("00000000-0000-0000-0000-000000000000")
 
 
 def test_route_limit_profiles_are_classified_by_product_area():

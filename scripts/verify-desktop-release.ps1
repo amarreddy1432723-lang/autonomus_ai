@@ -89,7 +89,7 @@ foreach ($manifest in @($versionManifest, $installerManifest, $localeManifest)) 
   Require-Text $manifest "PackageVersion: 1.0.0" "winget manifest" "package version"
 }
 Require-Text $installerManifest "InstallerType: nullsoft" "winget installer manifest" "NSIS installer type"
-Require-Text $installerManifest "https://github.com/arceus-ai/arceus-code/releases/download/arceus-code-v1.0.0/" "winget installer manifest" "release download URL"
+Require-Text $installerManifest "https://github.com/amarreddy1432723-lang/autonomus_ai/releases/download/arceus-code-v1.0.0/" "winget installer manifest" "release download URL"
 Require-Text $localeManifest "PackageName: Arceus Code" "winget locale manifest" "package name"
 
 if ($installerManifest.Contains("REPLACE_WITH_RELEASE_SHA256")) {

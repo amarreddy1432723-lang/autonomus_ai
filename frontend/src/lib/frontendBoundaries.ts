@@ -8,6 +8,16 @@ type RouteBoundary = {
   desktopAllowed: boolean;
 };
 
+export const desktopCodeAlphaPrefixes = [
+  '/launch',
+  '/onboarding',
+  '/workspace',
+  '/mission-control',
+  '/settings',
+  '/auth/desktop',
+  '/download',
+] as const;
+
 export const routeBoundaries: RouteBoundary[] = [
   { prefix: '/admin', boundary: 'admin', surfaces: ['admin'], requiresAuth: true, desktopAllowed: false },
   { prefix: '/sign-in', boundary: 'auth', surfaces: ['auth', 'web'], requiresAuth: false, desktopAllowed: false },
@@ -22,22 +32,22 @@ export const routeBoundaries: RouteBoundary[] = [
   { prefix: '/workspace', boundary: 'workspace', surfaces: ['web', 'desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/launch', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
   { prefix: '/onboarding', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/idea-discovery', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/product-intelligence', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/domain-intelligence', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/product-blueprint', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/architecture-strategy', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/technology-stack', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/engineering-roadmap', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/ai-workforce', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/executive-review', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
+  { prefix: '/idea-discovery', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/product-intelligence', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/domain-intelligence', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/product-blueprint', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/architecture-strategy', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/technology-stack', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/engineering-roadmap', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/ai-workforce', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/executive-review', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
   { prefix: '/mission-control', boundary: 'workspace', surfaces: ['desktop', 'web'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/evolution-center', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/knowledge-graph', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/organization-network', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/intelligence-kernel', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
+  { prefix: '/evolution-center', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/knowledge-graph', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/organization-network', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
+  { prefix: '/intelligence-kernel', boundary: 'workspace', surfaces: ['web'], requiresAuth: false, desktopAllowed: false },
   { prefix: '/settings', boundary: 'settings', surfaces: ['web', 'desktop'], requiresAuth: false, desktopAllowed: true },
-  { prefix: '/ui-preview', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: true },
+  { prefix: '/ui-preview', boundary: 'workspace', surfaces: ['desktop'], requiresAuth: false, desktopAllowed: false },
 ];
 
 export function getRouteBoundary(pathname: string): RouteBoundary {
@@ -55,5 +65,8 @@ export function getRouteBoundary(pathname: string): RouteBoundary {
 }
 
 export function isDesktopRouteAllowed(pathname: string) {
-  return getRouteBoundary(pathname).desktopAllowed;
+  if (pathname === '/ui-preview' || pathname.startsWith('/ui-preview/')) {
+    return process.env.NEXT_PUBLIC_ENABLE_UI_PREVIEWS === 'true';
+  }
+  return desktopCodeAlphaPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }

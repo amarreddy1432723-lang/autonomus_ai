@@ -4,7 +4,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from services.agent.arceus_runtime.application.idempotency import calculate_request_hash
 from services.agent.arceus_runtime.application.errors import TaskStateConflict
@@ -15,6 +15,8 @@ from services.agent.arceus_runtime.automation.service import automation_dashboar
 from services.agent.arceus_runtime.capabilities.routes import _capability_response
 from services.agent.arceus_runtime.constitution.service import evaluate_constitution, evaluate_evolution_change, evaluate_fitness, evaluate_lesson_promotion, list_rules
 from services.agent.arceus_runtime.events.routes import sse_event, sse_heartbeat
+from services.agent.arceus_runtime.evidence.api_schemas import TaskChangeSetRequest
+from services.agent.arceus_runtime.evidence.routes import _execute_change_set_payloads, _normalize_change_set_content
 from services.agent.arceus_runtime.experience.service import build_personal_workspace, classify_intent, dashboard, execute_intent, smart_search, timeline, voice_response
 from services.agent.arceus_runtime.gateway.api_schemas import ToolExecutionRequest
 from services.agent.arceus_runtime.gateway.routes import _tool_execution_evidence
@@ -78,6 +80,7 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/tasks/{task_id}/skip", "POST") in routes
     assert ("/api/v1/missions/{mission_id}/runtime/schedule", "POST") in routes
     assert ("/api/v1/workflows/{workflow_id}/graph", "GET") in routes
+
     assert ("/api/v1/tasks/{task_id}/leases", "POST") in routes
     assert ("/api/v1/worker-leases/{lease_id}/heartbeat", "POST") in routes
     assert ("/api/v1/worker-leases/{lease_id}/complete", "POST") in routes
@@ -214,6 +217,141 @@ def test_runtime_installs_spec_mission_routes() -> None:
     assert ("/api/v1/runtime/events", "GET") in routes
     assert ("/api/v1/runtime/missions/{mission_id}/replay", "POST") in routes
     assert ("/api/v1/runtime/metrics", "GET") in routes
+    assert ("/api/v1/missions/{mission_id}/tasks/{task_id}/change-set/execute", "POST") in routes
+
+
+def test_change_set_normalization_preserves_real_diffs_and_reversible_payloads() -> None:
+    mission_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    payload = TaskChangeSetRequest(
+        title="Worker Change Set",
+        summary="Worker completed a small implementation.",
+        changes=[
+            {
+                "operation": "modify",
+                "path": "src\\billing.py",
+                "original_content": "amount = 10\n",
+                "modified_content": "amount = 12\n",
+                "risk": "medium",
+            },
+            {
+                "operation": "create",
+                "path": "tests/test_billing.py",
+                "modified_content": "def test_amount():\n    assert True\n",
+                "risk": "low",
+            },
+            {
+                "operation": "delete",
+                "path": "legacy.txt",
+                "original_content": "old\n",
+            },
+            {
+                "operation": "rename",
+                "old_path": "docs/old.md",
+                "path": "docs/new.md",
+                "diff": "--- docs/old.md\n+++ docs/new.md\n",
+            },
+        ],
+    )
+
+    content = _normalize_change_set_content(payload, mission_id=mission_id, task_id=task_id)
+    changes = content["changes"]
+
+    assert content["mission_id"] == str(mission_id)
+    assert content["task_id"] == str(task_id)
+    assert content["impact"]["files_changed"] == 4
+    assert content["impact"]["diffs_present"] == 4
+    assert content["impact"]["apply_payloads_present"] == 4
+    assert content["impact"]["rollback_payloads_present"] == 4
+    assert changes[0]["path"] == "src/billing.py"
+    assert "-amount = 10" in changes[0]["diff"]
+    assert "+amount = 12" in changes[0]["diff"]
+    assert changes[0]["apply_payload"]["operation"] == "write_file"
+    assert changes[0]["rollback_payload"]["content"] == "amount = 10\n"
+    assert changes[2]["review_required"] is True
+    assert changes[2]["risk"] == "high"
+    assert "-old" in changes[2]["diff"]
+    assert changes[3]["review_required"] is True
+    assert changes[3]["rollback_payload"]["path"] == "docs/old.md"
+
+
+def test_change_set_executor_applies_and_rolls_back_real_payloads(tmp_path) -> None:
+    mission_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    billing_file = tmp_path / "src" / "billing.py"
+    billing_file.parent.mkdir(parents=True)
+    billing_file.write_text("amount = 10\n", encoding="utf-8")
+    payload = TaskChangeSetRequest(
+        title="Apply Safe Changes",
+        changes=[
+            {
+                "operation": "modify",
+                "path": "src/billing.py",
+                "original_content": "amount = 10\n",
+                "modified_content": "amount = 12\n",
+            },
+            {
+                "operation": "create",
+                "path": "tests/test_billing.py",
+                "modified_content": "def test_amount():\n    assert True\n",
+            },
+        ],
+    )
+    content = _normalize_change_set_content(payload, mission_id=mission_id, task_id=task_id)
+
+    apply_results = _execute_change_set_payloads(tmp_path, content["changes"], action="apply")
+
+    assert {item["path"] for item in apply_results} == {"src/billing.py", "tests/test_billing.py"}
+    assert billing_file.read_text(encoding="utf-8") == "amount = 12\n"
+    assert (tmp_path / "tests" / "test_billing.py").read_text(encoding="utf-8") == "def test_amount():\n    assert True\n"
+
+    rollback_results = _execute_change_set_payloads(tmp_path, content["changes"], action="rollback")
+
+    assert {item["status"] for item in rollback_results} == {"rolled_back"}
+    assert billing_file.read_text(encoding="utf-8") == "amount = 10\n"
+    assert not (tmp_path / "tests" / "test_billing.py").exists()
+
+
+def test_change_set_executor_blocks_path_escape(tmp_path) -> None:
+    change = {
+        "operation": "create",
+        "path": "../outside.txt",
+        "apply_payload": {"operation": "write_file", "path": "../outside.txt", "content": "nope"},
+        "rollback_payload": {"operation": "delete_file", "path": "../outside.txt"},
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        _execute_change_set_payloads(tmp_path, [change], action="apply")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"]["code"] == "CHANGE_SET_PATH_ESCAPE"
+    assert not (tmp_path.parent / "outside.txt").exists()
+
+
+def test_change_set_executor_blocks_stale_hash_before_write(tmp_path) -> None:
+    mission_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    target = tmp_path / "src" / "billing.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("amount = 10\n", encoding="utf-8")
+    payload = TaskChangeSetRequest(
+        changes=[
+            {
+                "operation": "modify",
+                "path": "src/billing.py",
+                "original_content": "amount = 10\n",
+                "modified_content": "amount = 12\n",
+            }
+        ],
+    )
+    content = _normalize_change_set_content(payload, mission_id=mission_id, task_id=task_id)
+    target.write_text("amount = 99\n", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        _execute_change_set_payloads(tmp_path, content["changes"], action="apply")
+
+    assert exc.value.detail["error"]["code"] == "CHANGE_SET_HASH_MISMATCH"
+    assert target.read_text(encoding="utf-8") == "amount = 99\n"
 
 
 def test_idempotency_hash_is_stable_and_operation_scoped() -> None:

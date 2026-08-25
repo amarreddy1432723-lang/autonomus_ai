@@ -45,6 +45,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Arceus Code",
       "deleteAppDataOnUninstall": false,
       "artifactName": "${productName}-${version}-Setup.${ext}"
     },
@@ -76,8 +79,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "arceus-ai",
-        "repo": "arceus-code",
+        "owner": "amarreddy1432723-lang",
+        "repo": "autonomus_ai",
         "releaseType": "release"
       }
     ]

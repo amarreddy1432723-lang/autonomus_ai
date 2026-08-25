@@ -50,12 +50,18 @@ class ChangeSetOperation(BaseModel):
     path: str = Field(min_length=1, max_length=1_000)
     old_path: str | None = Field(default=None, max_length=1_000)
     diff: str | None = Field(default=None, max_length=500_000)
+    original_content: str | None = Field(default=None, max_length=1_000_000)
+    modified_content: str | None = Field(default=None, max_length=1_000_000)
     original_sha256: str | None = Field(default=None, max_length=128)
     modified_sha256: str | None = Field(default=None, max_length=128)
+    additions: int = Field(default=0, ge=0)
+    deletions: int = Field(default=0, ge=0)
     risk: str = Field(default="medium", max_length=60)
     review_required: bool = False
     applied: bool = False
     rollback_snapshot_id: str | None = Field(default=None, max_length=200)
+    apply_payload: dict[str, Any] = Field(default_factory=dict)
+    rollback_payload: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -66,6 +72,59 @@ class TaskChangeSetRequest(BaseModel):
     source: str = Field(default="desktop_tool_runtime", max_length=160)
     changes: list[ChangeSetOperation] = Field(min_length=1, max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChangeSetReviewActionRequest(BaseModel):
+    action: Literal["approve", "reject", "apply", "rollback"]
+    artifact_id: UUID | None = None
+    artifact_version_id: UUID | None = None
+    file_paths: list[str] = Field(default_factory=list, max_length=200)
+    reason: str = Field(default="", max_length=2_000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChangeSetReviewActionResponse(BaseModel):
+    mission_id: UUID
+    task_id: UUID
+    action: str
+    review_state: str
+    artifact_id: UUID | None = None
+    artifact_version_id: UUID | None = None
+    affected_files: list[str] = Field(default_factory=list)
+    changed: bool = True
+
+
+class ChangeSetExecutionRequest(BaseModel):
+    action: Literal["apply", "rollback"]
+    artifact_id: UUID | None = None
+    artifact_version_id: UUID | None = None
+    file_paths: list[str] = Field(default_factory=list, max_length=200)
+    workspace_root: str | None = Field(default=None, max_length=2_000)
+    dry_run: bool = False
+    reason: str = Field(default="", max_length=2_000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChangeSetExecutionResult(BaseModel):
+    path: str
+    operation: str
+    status: str
+    sha256: str | None = None
+    bytes: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChangeSetExecutionResponse(BaseModel):
+    mission_id: UUID
+    task_id: UUID
+    action: str
+    review_state: str
+    artifact_id: UUID | None = None
+    artifact_version_id: UUID | None = None
+    affected_files: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+    executed: bool = True
+    results: list[ChangeSetExecutionResult] = Field(default_factory=list)
 
 
 class VerificationRunResponse(BaseModel):

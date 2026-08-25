@@ -1012,6 +1012,11 @@ export default function WorkspacePage() {
     try {
       const data = await apiRequest('/api/v1/code/projects');
       setProjects(data || []);
+      try {
+        localStorage.setItem('nexus.code.projects', JSON.stringify(data || []));
+      } catch {
+        // Mission Control can still use URL and backend metadata roots.
+      }
     } catch {
       setProjects([]);
     }

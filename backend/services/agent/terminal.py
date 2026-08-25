@@ -19,11 +19,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from services.shared.database import SessionLocal
 from services.shared.models import CodeSession
 from services.shared.security import (
-    clerk_auth_enabled,
-    clerk_only_auth_required,
     dev_auth_fallback_enabled,
-    resolve_clerk_user_id,
-    verify_clerk_token,
 )
 
 try:  # Linux/cloud path. Windows local terminals use Electron node-pty.
@@ -116,17 +112,6 @@ def decode_token_user(token: str | None) -> UUID | None:
 
 def resolve_user_id(websocket: WebSocket) -> UUID:
     token = websocket.query_params.get("token")
-    if token and clerk_auth_enabled():
-        db = SessionLocal()
-        try:
-            return resolve_clerk_user_id(db, verify_clerk_token(token))
-        except Exception:
-            if clerk_only_auth_required():
-                raise PermissionError("A valid Clerk session token is required to open a PTY terminal.")
-        finally:
-            db.close()
-    if clerk_only_auth_required():
-        raise PermissionError("A valid Clerk session token is required to open a PTY terminal.")
     user_id = decode_token_user(token)
     if user_id:
         return user_id

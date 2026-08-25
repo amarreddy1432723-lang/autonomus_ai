@@ -245,6 +245,72 @@
   border-color: var(--color-accent-primary);
 }
 
+.accountMenuRoot {
+  position: relative;
+}
+
+.accountMenu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 280;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-overlay);
+  box-shadow: var(--shadow-md);
+}
+
+.accountMenuHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 9px 10px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.accountMenuHeader strong {
+  font-size: var(--text-xs);
+}
+
+.accountMenuHeader span {
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountMenu a,
+.accountMenu button {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-align: left;
+  text-decoration: none;
+}
+
+.accountMenu a:hover,
+.accountMenu button:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
 .notificationBell {
   position: relative;
   cursor: pointer;

@@ -44,6 +44,7 @@ declare global {
     electron?: {
       isDesktop?: boolean;
       openExternal?: (url: string) => Promise<{ ok: boolean; message?: string }>;
+      exportLogs?: (options?: { silent?: boolean; filePath?: string }) => Promise<DesktopIpcResponse<{ exported: boolean; canceled?: boolean; path?: string; fileCount?: number; redacted?: boolean }>>;
       onAuthCode?: (callback: (data: { code?: string }) => void) => () => void;
     };
     arceusDesktop?: {
@@ -80,6 +81,7 @@ declare global {
         close: () => void;
         openExternal: (url: string) => Promise<{ ok: boolean; message?: string }>;
         openRoute: (route: string) => void;
+        exportLogs: (options?: { silent?: boolean; filePath?: string }) => Promise<DesktopIpcResponse<{ exported: boolean; canceled?: boolean; path?: string; fileCount?: number; redacted?: boolean }>>;
         onAuthCode: (callback: (data: { code?: string }) => void) => () => void;
       };
     };

@@ -1,10 +1,13 @@
 
-import { clearDesktopAuthState, readDesktopAuthState } from './desktopAuth';
+import { clearDesktopAuthState, hydrateDesktopAuthState, readDesktopAuthState } from './desktopAuth';
 
 export function getServiceUrl(path: string): string {
   if (typeof window !== 'undefined') {
     const electronBridge = (window as any).electron;
     if (electronBridge?.isDesktop) {
+      if (window.location.protocol === 'https:') {
+        return path;
+      }
       const localAgentUrl = 'http://127.0.0.1:8003';
       const localGoalsUrl = 'http://127.0.0.1:8002';
       if (
@@ -191,27 +194,11 @@ export function createApiHeaders(options: RequestInit = {}): Headers {
   return headers;
 }
 
-async function getClerkToken(): Promise<string | null> {
-  if (typeof window === 'undefined') return null;
-  const clerk = (window as any).Clerk;
-  try {
-    if (clerk?.session?.getToken) {
-      return await clerk.session.getToken();
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 export async function createApiHeadersAsync(options: RequestInit = {}): Promise<Headers> {
-  const headers = createApiHeaders(options);
-  const clerkToken = await getClerkToken();
-  if (clerkToken) {
-    headers.set('Authorization', `Bearer ${clerkToken}`);
-    headers.delete('x-user-id');
+  if (typeof window !== 'undefined' && (window as any).electron?.isDesktop) {
+    await hydrateDesktopAuthState();
   }
-  return headers;
+  return createApiHeaders(options);
 }
 
 export async function apiRequest(path: string, options: RequestInit = {}): Promise<any> {

@@ -35,6 +35,10 @@ export type MissionControlTask = {
   status: string;
   blockedReason?: string | null;
   assignmentStatus?: string | null;
+  ownerRole?: string | null;
+  acceptanceCriteria?: string[];
+  evidenceCount?: number;
+  updatedAt?: string | null;
 };
 
 export type MissionControlEdge = {
@@ -76,6 +80,11 @@ export type MissionControlEvidence = {
   status: string;
   evidenceType?: string;
   createdAt?: string | null;
+  tool?: string | null;
+  inputSummary?: string | null;
+  outputSummary?: string | null;
+  durationMs?: number | null;
+  trustLevel?: string | null;
 };
 
 export type MissionControlMetricsData = {
@@ -91,4 +100,34 @@ export type MissionControlMetricsData = {
   averageQueueSeconds?: number | null;
   missionDurationSeconds?: number | null;
   evidenceCount?: number;
+};
+
+export type MissionControlChangeFile = {
+  path: string;
+  operation: 'create' | 'modify' | 'folder' | 'delete' | 'rename' | string;
+  additions?: number;
+  deletions?: number;
+  risk?: string;
+  reviewRequired?: boolean;
+  applied?: boolean;
+  rollbackSnapshotId?: string | null;
+  diff?: string | null;
+};
+
+export type MissionControlChangeSet = {
+  title: string;
+  summary?: string;
+  reviewState: string;
+  files: MissionControlChangeFile[];
+  rollbackAvailable?: boolean;
+};
+
+export type MissionControlVerificationStep = {
+  id: string;
+  label: string;
+  status: 'queued' | 'running' | 'passed' | 'failed' | 'blocked' | 'not_run' | string;
+  command?: string | null;
+  summary?: string | null;
+  evidenceId?: string | null;
+  durationMs?: number | null;
 };

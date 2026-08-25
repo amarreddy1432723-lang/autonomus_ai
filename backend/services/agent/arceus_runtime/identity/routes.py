@@ -313,8 +313,8 @@ def get_identity_governance_summary(
     return api_response(governance_summary().model_dump(mode="json"), request)
 
 
-@router.post("/providers/sync-clerk")
-def sync_clerk_identity_provider(
+@router.post("/providers/sync")
+def sync_identity_provider(
     payload: IdentityProviderSyncRequest,
     request: Request,
     context: RequestContext = Depends(require_permission("identity.provider.sync")),
@@ -333,7 +333,7 @@ def sync_clerk_identity_provider(
             ]
         )
     )
-    issuer = payload.issuer or os.getenv("CLERK_ISSUER") or request.headers.get("x-clerk-issuer")
+    issuer = payload.issuer or request.headers.get("x-identity-issuer")
     provider = (
         db.query(ArceusIdentityProvider)
         .filter(ArceusIdentityProvider.tenant_id == context.tenant_id, ArceusIdentityProvider.provider_key == payload.provider_key)
@@ -357,9 +357,9 @@ def sync_clerk_identity_provider(
     provider.device_trust_enabled = payload.device_trust_enabled
     provider.metadata_json = {
         **payload.metadata,
-        "clerk_org_id": request.headers.get("x-clerk-org-id"),
-        "clerk_session_id_present": bool(request.headers.get("x-clerk-session-id")),
-        "configured_from_env": bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY")),
+        "organization_id": request.headers.get("x-organization-id"),
+        "session_id_present": bool(request.headers.get("x-session-id")),
+        "configured_from_env": bool(os.getenv("JWT_SECRET") or os.getenv("JWT_SECRET_KEY")),
     }
     db.flush()
     _record_audit(

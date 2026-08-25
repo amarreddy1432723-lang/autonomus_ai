@@ -61,7 +61,6 @@ def production_readiness(service_name: str) -> dict[str, Any]:
     allow_demo_user = os.getenv("ALLOW_DEMO_USER", "true").lower() in {"1", "true", "yes", "on"}
     database_url = os.getenv("DATABASE_URL", "")
     redis_url = os.getenv("REDIS_URL", "")
-    clerk_configured = bool(os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL") or os.getenv("CLERK_SECRET_KEY"))
 
     checks = [
         _check(
@@ -121,11 +120,11 @@ def production_readiness(service_name: str) -> dict[str, Any]:
             "Set ALLOW_DEV_AUTH_FALLBACK=false in production.",
         ),
         _check(
-            "clerk_auth",
-            not is_live_environment() or clerk_configured,
+            "arceus_auth",
+            _configured("JWT_SECRET") or _configured("JWT_SECRET_KEY"),
             "critical",
-            "Clerk auth is configured for live environments.",
-            "Configure CLERK_ISSUER or CLERK_JWKS_URL and disable development auth in staging/production.",
+            "First-party Arceus JWT authentication is configured.",
+            "Configure a strong JWT_SECRET or JWT_SECRET_KEY for Arceus authentication.",
         ),
         _check(
             "demo_user",

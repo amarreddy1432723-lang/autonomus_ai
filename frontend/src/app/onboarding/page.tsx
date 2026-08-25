@@ -1,109 +1,173 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  AlertCircle,
   ArrowRight,
-  Check,
+  CheckCircle2,
   ChevronLeft,
   Cloud,
   FileText,
   FolderOpen,
   GitBranch,
-  Lock,
-  Play,
-  Radar,
+  Loader2,
+  LogIn,
+  SearchCheck,
+  Settings,
   ShieldCheck,
-  Sparkles,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { useMissionStore, type PersistedMission } from '../../stores/mission-store';
 import { useRepositoryStore } from '../../stores/repository-store';
 import { hasDesktopAuthToken } from '../../utils/serviceHealth';
 import styles from './Onboarding.module.css';
 
-type StepKey = 'welcome' | 'terms' | 'account' | 'repository' | 'report' | 'mission';
+type StepKey = 'welcome' | 'account' | 'repository' | 'analysis' | 'summary' | 'mission' | 'plans' | 'approval';
 type RepoMode = 'local' | 'clone' | 'recent';
 
 const STEPS: Array<{ key: StepKey; label: string }> = [
   { key: 'welcome', label: 'Welcome' },
-  { key: 'terms', label: 'Terms' },
   { key: 'account', label: 'Account' },
   { key: 'repository', label: 'Repository' },
-  { key: 'report', label: 'Report' },
+  { key: 'analysis', label: 'Analysis' },
+  { key: 'summary', label: 'Ready' },
   { key: 'mission', label: 'Mission' },
+  { key: 'plans', label: 'Plans' },
+  { key: 'approval', label: 'Approval' },
 ];
 
 const EXAMPLES = [
-  'Implement Google Login',
-  'Fix build failures',
-  'Write missing tests',
-  'Improve accessibility',
-  'Refactor backend service boundaries',
+  'Add Google Login',
+  'Fix failing build',
+  'Create missing tests',
+  'Improve API error handling',
   'Add Stripe subscription billing',
 ];
 
-const CAPABILITIES: Array<[string, LucideIcon]> = [
-  ['AI Repository Analysis', Radar],
-  ['Mission Planning', FileText],
-  ['Multi-Agent Execution', Sparkles],
-  ['Safe Patch Review', ShieldCheck],
-];
+const SCOPE_OPTIONS = ['Entire Project', 'Specific Module', 'Current Folder', 'Selected Files'];
 
-const REPO_MODES: Array<[RepoMode, string, string, LucideIcon]> = [
-  ['local', 'Open Local Folder', 'Use a trusted folder on this computer.', FolderOpen],
-  ['clone', 'Clone Git Repository', 'Paste a GitHub, GitLab, or Bitbucket URL.', GitBranch],
-  ['recent', 'Recent Projects', 'Continue a project already known to Arceus.', Play],
-];
+function getElectron() {
+  if (typeof window === 'undefined') return null;
+  return {
+    desktop: (window as any).arceusDesktop,
+    legacy: (window as any).electron,
+  };
+}
 
 function stepIndex(step: StepKey) {
   return Math.max(0, STEPS.findIndex((item) => item.key === step));
 }
 
-function getElectron() {
-  if (typeof window === 'undefined') return null;
-  return (window as any).electron;
+function projectName(rootPath?: string) {
+  return String(rootPath || '').split(/[\\/]/).filter(Boolean).pop() || 'Repository';
 }
 
-function pathName(value: string) {
-  return value.split(/[\\/]/).filter(Boolean).pop() || 'Repository';
+function errorRecovery(error?: string) {
+  const text = error || 'Repository analysis did not complete.';
+  const lower = text.toLowerCase();
+  if (lower.includes('package.json')) {
+    return {
+      reason: 'package.json not found',
+      suggestions: ['Choose the application root folder', 'Open a repository that has build metadata', 'Continue local-only and add setup notes later'],
+    };
+  }
+  if (lower.includes('unauthorized') || lower.includes('token') || lower.includes('clerk')) {
+    return {
+      reason: 'Account token is missing or expired',
+      suggestions: ['Sign in again', 'Continue locally without cloud missions', 'Retry after backend auth is ready'],
+    };
+  }
+  return {
+    reason: text,
+    suggestions: ['Retry analysis', 'Choose another folder', 'Open documentation'],
+  };
+}
+
+function analysisRows(status: string) {
+  const done = status === 'ready';
+  const failed = status === 'failed';
+  return [
+    ['Loading repository', done || failed ? 'done' : status === 'analyzing' ? 'running' : 'waiting'],
+    ['Analyzing structure', done ? 'done' : status === 'analyzing' ? 'running' : failed ? 'failed' : 'waiting'],
+    ['Discovering languages', done ? 'done' : 'waiting'],
+    ['Building dependency graph', done ? 'done' : 'waiting'],
+    ['Understanding architecture', done ? 'done' : 'waiting'],
+  ] as const;
+}
+
+function planCards(mission: PersistedMission | null) {
+  const tasks = mission?.task_count || 8;
+  const risk = mission?.compiled_plan?.understanding?.risk_level || 'medium';
+  return [
+    {
+      name: 'Plan A',
+      title: 'Minimal changes',
+      effort: '2 hours',
+      risk: 'Low risk',
+      complexity: 'Low',
+      affected: 'Smallest safe surface',
+      summary: 'Limit the work to the minimum patch needed to satisfy the goal.',
+    },
+    {
+      name: 'Plan B',
+      title: 'Balanced implementation',
+      effort: '4 hours',
+      risk: `${risk} risk`,
+      complexity: 'Medium',
+      affected: `${tasks} planned tasks`,
+      summary: 'Recommended path with implementation, tests, and evidence without over-expanding scope.',
+      recommended: true,
+    },
+    {
+      name: 'Plan C',
+      title: 'Architecture-first',
+      effort: '8 hours',
+      risk: 'Higher flexibility',
+      complexity: 'High',
+      affected: 'Broader modules and docs',
+      summary: 'Improve boundaries and supporting docs before the direct implementation work.',
+    },
+  ];
 }
 
 export default function OnboardingPage() {
   const router = useRouter();
   const repository = useRepositoryStore();
+  const missionRuntime = useMissionStore();
   const [step, setStep] = useState<StepKey>('welcome');
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [telemetry, setTelemetry] = useState(true);
   const [repoMode, setRepoMode] = useState<RepoMode>('local');
   const [manualPath, setManualPath] = useState('');
   const [cloneUrl, setCloneUrl] = useState('');
-  const [mission, setMission] = useState('');
-  const [notice, setNotice] = useState('');
+  const [missionGoal, setMissionGoal] = useState('');
+  const [scope, setScope] = useState(SCOPE_OPTIONS[0]);
   const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState('');
+  const [signedIn, setSignedIn] = useState(false);
+
+  useEffect(() => {
+    setSignedIn(hasDesktopAuthToken());
+    try {
+      const mode = new URLSearchParams(window.location.search).get('mode');
+      if (mode === 'clone') setRepoMode('clone');
+      if (mode === 'open') setRepoMode('local');
+    } catch {
+      // Keep defaults.
+    }
+  }, []);
 
   const currentStep = stepIndex(step);
-  const signedIn = hasDesktopAuthToken();
-  const canContinueFromTerms = acceptedTerms;
-  const canContinueFromRepo = repository.status === 'ready' || manualPath.trim().length > 0 || cloneUrl.trim().length > 0;
-  const missionText = mission.trim();
   const progress = Math.round(((currentStep + 1) / STEPS.length) * 100);
-
-  const detectedSignals = useMemo(() => {
-    const rows = [
-      ['Languages', repository.languages.join(', ') || 'Not detected yet'],
-      ['Frameworks', repository.frameworks.join(', ') || 'Not detected yet'],
-      ['Package Manager', repository.packageManagers.join(', ') || 'Not detected yet'],
-      ['Tests', repository.testCommands.join(', ') || 'Not detected yet'],
-      ['Architecture', repository.architectureStyle || 'Not detected yet'],
-      ['Project Size', repository.scannedFiles ? `${repository.scannedFiles} files scanned` : 'Pending scan'],
-    ];
-    return rows;
-  }, [repository]);
-
-  const goNext = () => {
-    const next = STEPS[Math.min(currentStep + 1, STEPS.length - 1)]?.key;
-    if (next) setStep(next);
-  };
+  const repoReady = repository.status === 'ready';
+  const missionReady = Boolean(missionRuntime.mission);
+  const recovery = errorRecovery(repository.error || missionRuntime.error);
+  const detectedSignals = useMemo(() => [
+    ['Repository', projectName(repository.rootPath || repository.name)],
+    ['Languages', repository.languages.join(', ') || 'Not detected'],
+    ['Frameworks', repository.frameworks.join(', ') || 'Not detected'],
+    ['Modules', String(repository.services.length || repository.entryPoints.length || 0)],
+    ['Tests', repository.testCommands.length ? repository.testCommands.join(', ') : 'Not detected'],
+    ['Files', repository.scannedFiles ? String(repository.scannedFiles) : 'Pending'],
+  ], [repository]);
 
   const goBack = () => {
     const previous = STEPS[Math.max(currentStep - 1, 0)]?.key;
@@ -116,20 +180,22 @@ export default function OnboardingPage() {
     try {
       const electron = getElectron();
       let selectedPath = '';
-      if (electron?.workspace?.openDirectory) {
-        const result = await electron.workspace.openDirectory({ trusted: true });
-        selectedPath = result?.data?.rootPath || result?.rootPath || result?.path || '';
-      } else if (electron?.selectDirectory) {
-        selectedPath = await electron.selectDirectory();
+      if (electron?.desktop?.workspace?.openDirectory) {
+        const result = await electron.desktop.workspace.openDirectory({ trusted: true });
+        const payload = result?.ok ? result.result : result;
+        selectedPath = payload?.rootPath || '';
+      } else if (electron?.legacy?.workspace?.openDirectory) {
+        const result = await electron.legacy.workspace.openDirectory({ trusted: true });
+        selectedPath = result?.data?.rootPath || result?.rootPath || '';
+      } else if (electron?.legacy?.selectDirectory) {
+        selectedPath = await electron.legacy.selectDirectory();
       }
-
       if (!selectedPath) {
-        setNotice('Choose a folder, or paste a local path to continue in browser mode.');
+        setNotice('Choose a folder, or paste a local repository path.');
         return;
       }
       setManualPath(selectedPath);
-      await repository.analyzeRepository(selectedPath);
-      setStep('report');
+      await analyzePath(selectedPath);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not open the selected folder.');
     } finally {
@@ -137,55 +203,81 @@ export default function OnboardingPage() {
     }
   };
 
-  const analyzeManualPath = async () => {
-    const rootPath = manualPath.trim();
+  const analyzePath = async (pathValue = manualPath) => {
+    const rootPath = pathValue.trim();
     if (!rootPath) {
-      setNotice('Paste a local repository path first.');
+      setNotice('Paste or choose a repository folder first.');
       return;
     }
-    setBusy('analyze');
+    setStep('analysis');
+    setBusy('analysis');
     setNotice('');
-    try {
-      await repository.analyzeRepository(rootPath);
-      setStep('report');
-    } finally {
-      setBusy('');
-    }
+    await repository.analyzeRepository(rootPath);
+    setBusy('');
+    setStep(repository.status === 'failed' ? 'analysis' : 'summary');
   };
 
-  const startMission = () => {
-    const params = new URLSearchParams();
-    if (repository.repositoryId) params.set('repository_id', repository.repositoryId);
-    if (repository.rootPath) params.set('root_path', repository.rootPath);
-    if (missionText) params.set('idea', missionText);
-    params.set('stage', 'mission');
-    try {
-      window.localStorage.setItem('arceus.onboarding.completed', 'true');
-      window.localStorage.setItem('arceus.telemetry.preference', telemetry ? 'enabled' : 'disabled');
-    } catch {
-      // Ignore storage failures.
+  const createMission = async () => {
+    const goal = missionGoal.trim();
+    if (!goal) {
+      setNotice('Describe your mission before creating plans.');
+      return;
     }
-    router.push(`/workspace?${params.toString()}`);
+    setBusy('mission');
+    setNotice('');
+    const mission = await missionRuntime.createMission(`${goal}\n\nRepository Scope: ${scope}`, repository);
+    setBusy('');
+    if (mission) setStep('plans');
+    else setNotice(missionRuntime.error || 'Could not create mission plans.');
+  };
+
+  const approveMission = async () => {
+    setBusy('approval');
+    const mission = await missionRuntime.approveMission();
+    setBusy('');
+    if (mission) {
+      try {
+        window.localStorage.setItem('arceus.onboarding.completed', 'true');
+      } catch {
+        // Ignore storage failures.
+      }
+      router.push(`/workspace?mission_id=${encodeURIComponent(mission.mission_id)}&root_path=${encodeURIComponent(repository.rootPath || '')}`);
+    }
   };
 
   return (
     <main className={styles.onboarding}>
-      <section className={styles.window} aria-label="Arceus first-run onboarding">
+      <section className={styles.window} aria-label="Arceus first mission onboarding">
         <header className={styles.header}>
-          <button type="button" className={styles.brand} onClick={() => router.push('/launch')} aria-label="Back to Arceus Code">
-            <span><Sparkles size={22} /></span>
+          <button type="button" className={styles.brand} onClick={() => router.push('/launch')}>
+            <span>A</span>
             <div>
               <strong>Arceus Code</strong>
-              <small>First-run setup</small>
+              <small>First mission setup</small>
             </div>
           </button>
-          <div className={styles.progress} aria-label={`Onboarding progress ${progress}%`}>
-            <i><em style={{ width: `${progress}%` }} /></i>
-            <span>{progress}%</span>
+          <div className={styles.accountState}>
+            {signedIn ? (
+              <>
+                <Cloud size={15} />
+                <span>Vamsi Krishna · Pro Plan · Connected</span>
+              </>
+            ) : (
+              <>
+                <LogIn size={15} />
+                <span>Not Signed In</span>
+                <button type="button" onClick={() => router.push('/auth/desktop')}>Sign In</button>
+              </>
+            )}
           </div>
         </header>
 
-        <nav className={styles.steps} aria-label="Setup stages">
+        <div className={styles.progressBar} aria-label={`Setup progress ${progress}%`}>
+          <i><em style={{ width: `${progress}%` }} /></i>
+          <span>{progress}%</span>
+        </div>
+
+        <nav className={styles.steps} aria-label="Onboarding stages">
           {STEPS.map((item, index) => (
             <button
               type="button"
@@ -194,7 +286,7 @@ export default function OnboardingPage() {
               onClick={() => index <= currentStep && setStep(item.key)}
               disabled={index > currentStep}
             >
-              <span>{index < currentStep ? <Check size={13} /> : index + 1}</span>
+              {index < currentStep ? <CheckCircle2 size={14} /> : index + 1}
               {item.label}
             </button>
           ))}
@@ -204,49 +296,27 @@ export default function OnboardingPage() {
 
         <section className={styles.body}>
           {step === 'welcome' && (
-            <div className={styles.heroStep}>
-              <p>Autonomous Software Engineering Platform</p>
-              <h1>Welcome to Arceus.</h1>
-              <strong>Connect a repository, understand it, choose a plan, and watch your AI engineering team execute with evidence.</strong>
-              <div className={styles.capabilities}>
-                {CAPABILITIES.map(([label, Icon]) => <span key={label}><Icon size={16} /> {label}</span>)}
+            <div className={styles.centerStep}>
+              <h1>Welcome to Arceus</h1>
+              <p>Build software with an AI engineering team. Start by opening a repository and creating one clear mission.</p>
+              <div className={styles.heroActions}>
+                <button type="button" className={styles.primary} onClick={() => setStep('repository')}>
+                  <FolderOpen size={18} /> Open Folder
+                </button>
+                <button type="button" className={styles.secondary} onClick={() => { setRepoMode('clone'); setStep('repository'); }}>
+                  <GitBranch size={18} /> Clone Repository
+                </button>
               </div>
-              <button type="button" className={styles.primary} onClick={goNext}>
-                Start <ArrowRight size={18} />
-              </button>
-            </div>
-          )}
-
-          {step === 'terms' && (
-            <div className={styles.twoColumn}>
-              <article className={styles.card}>
-                <Lock size={24} />
-                <h2>Workspace trust</h2>
-                <p>Arceus reads the repository you select. File writes, terminal commands, dependency installs, commits, and PRs remain governed by review and policy gates.</p>
-                <label className={styles.checkRow}>
-                  <input type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} />
-                  <span>I understand Arceus will operate only inside trusted workspaces and governed actions.</span>
-                </label>
-              </article>
-              <article className={styles.card}>
-                <Cloud size={24} />
-                <h2>Telemetry preference</h2>
-                <p>Help improve reliability by sharing product diagnostics. Source code, prompts, secrets, and repository content are not sent as telemetry.</p>
-                <label className={styles.toggleRow}>
-                  <span>{telemetry ? 'Diagnostics enabled' : 'Diagnostics disabled'}</span>
-                  <input type="checkbox" checked={telemetry} onChange={(event) => setTelemetry(event.target.checked)} />
-                </label>
-              </article>
             </div>
           )}
 
           {step === 'account' && (
             <div className={styles.centerStep}>
-              <h1>{signedIn ? 'Account connected.' : 'Connect your account.'}</h1>
-              <p>{signedIn ? 'Your desktop session has an account token. You can continue to repository setup.' : 'Sign in unlocks cloud missions, GitHub PR flow, billing, and synced mission history. Local folder mode still works without cloud actions.'}</p>
-              <div className={styles.buttonRow}>
-                {!signedIn && <button type="button" className={styles.secondary} onClick={() => router.push('/auth/desktop')}>Connect account</button>}
-                <button type="button" className={styles.primary} onClick={goNext}>Continue <ArrowRight size={18} /></button>
+              <h1>{signedIn ? 'Account connected.' : 'Sign in or continue locally.'}</h1>
+              <p>Sign in unlocks cloud sync, GitHub PRs, billing, and shared mission history. Local folder, editor, and terminal can still work without cloud actions.</p>
+              <div className={styles.heroActions}>
+                {!signedIn && <button type="button" className={styles.primary} onClick={() => router.push('/auth/desktop')}>Sign In</button>}
+                <button type="button" className={styles.secondary} onClick={() => setStep('repository')}>Continue Local</button>
               </div>
             </div>
           )}
@@ -254,30 +324,31 @@ export default function OnboardingPage() {
           {step === 'repository' && (
             <div className={styles.repositoryStep}>
               <div className={styles.sectionTitle}>
-                <p>Repository Connection</p>
+                <p>Repository Selection</p>
                 <h1>Choose the codebase Arceus should understand.</h1>
               </div>
               <div className={styles.repoModes}>
-                {REPO_MODES.map(([id, title, detail, Icon]) => {
-                  return (
-                    <button type="button" key={id} data-active={repoMode === id} onClick={() => setRepoMode(id)}>
-                      <Icon size={22} />
-                      <strong>{title}</strong>
-                      <small>{detail}</small>
-                    </button>
-                  );
-                })}
+                {[
+                  ['local', 'Open Folder', 'Use a trusted local repository.', FolderOpen],
+                  ['clone', 'Clone Git Repository', 'GitHub, GitLab, or Bitbucket.', GitBranch],
+                  ['recent', 'Recent Projects', 'Continue a known workspace.', FileText],
+                ].map(([id, title, detail, Icon]) => (
+                  <button type="button" key={String(id)} data-active={repoMode === id} onClick={() => setRepoMode(id as RepoMode)}>
+                    <Icon size={22} />
+                    <strong>{String(title)}</strong>
+                    <small>{String(detail)}</small>
+                  </button>
+                ))}
               </div>
 
               {repoMode === 'local' && (
                 <div className={styles.repoForm}>
                   <button type="button" className={styles.primary} onClick={chooseLocalFolder} disabled={!!busy}>
-                    <FolderOpen size={18} /> {busy === 'folder' ? 'Opening...' : 'Choose Folder'}
+                    <FolderOpen size={18} /> {busy === 'folder' ? 'Opening...' : 'Open Folder'}
                   </button>
-                  <div className={styles.orLine}>or paste a path</div>
-                  <input value={manualPath} onChange={(event) => setManualPath(event.target.value)} placeholder="C:\Users\you\Projects\my-app" />
-                  <button type="button" className={styles.secondary} onClick={analyzeManualPath} disabled={!!busy || !manualPath.trim()}>
-                    {busy === 'analyze' ? 'Scanning Repository...' : 'Analyze Repository'}
+                  <input value={manualPath} onChange={(event) => setManualPath(event.target.value)} placeholder="Paste a local repository path" />
+                  <button type="button" className={styles.secondary} onClick={() => void analyzePath()} disabled={!!busy || !manualPath.trim()}>
+                    Analyze Repository
                   </button>
                 </div>
               )}
@@ -285,7 +356,6 @@ export default function OnboardingPage() {
               {repoMode === 'clone' && (
                 <div className={styles.repoForm}>
                   <input value={cloneUrl} onChange={(event) => setCloneUrl(event.target.value)} placeholder="https://github.com/company/project.git" />
-                  <p>Clone execution will open the workspace Git drawer. Arceus will never push without confirmation.</p>
                   <button type="button" className={styles.primary} onClick={() => router.push(`/workspace?drawer=git&action=clone&repo=${encodeURIComponent(cloneUrl.trim())}`)} disabled={!cloneUrl.trim()}>
                     Continue to Clone <ArrowRight size={18} />
                   </button>
@@ -294,26 +364,52 @@ export default function OnboardingPage() {
 
               {repoMode === 'recent' && (
                 <div className={styles.repoForm}>
-                  <p>Recent projects appear after you open a trusted folder. Continue to workspace to choose one.</p>
-                  <button type="button" className={styles.primary} onClick={() => router.push('/workspace')}>
-                    Open Workspace <ArrowRight size={18} />
-                  </button>
+                  <p>Recent projects are shown on the welcome screen after you open a trusted folder.</p>
+                  <button type="button" className={styles.primary} onClick={() => router.push('/workspace')}>Open Workspace</button>
                 </div>
               )}
             </div>
           )}
 
-          {step === 'report' && (
+          {step === 'analysis' && (
+            <div className={styles.analysisStep}>
+              <div className={styles.sectionTitle}>
+                <p>Repository Analysis</p>
+                <h1>{repository.status === 'failed' ? 'Could not analyze repository.' : 'Understanding your repository.'}</h1>
+              </div>
+              <div className={styles.analysisList}>
+                {analysisRows(repository.status).map(([label, state]) => (
+                  <article key={label} data-state={state}>
+                    {state === 'done' ? <CheckCircle2 size={18} /> : state === 'failed' ? <AlertCircle size={18} /> : state === 'running' ? <Loader2 size={18} className={styles.spin} /> : <SearchCheck size={18} />}
+                    <span>{label}</span>
+                    <small>{state}</small>
+                  </article>
+                ))}
+              </div>
+              {repository.status === 'failed' && (
+                <div className={styles.errorBox}>
+                  <strong>Reason</strong>
+                  <p>{recovery.reason}</p>
+                  <strong>Suggestions</strong>
+                  <div>
+                    {recovery.suggestions.map((suggestion) => <span key={suggestion}>{suggestion}</span>)}
+                  </div>
+                  <div className={styles.heroActions}>
+                    <button type="button" className={styles.primary} onClick={() => void analyzePath()} disabled={!manualPath.trim()}>Retry</button>
+                    <button type="button" className={styles.secondary} onClick={() => setStep('repository')}>Choose another folder</button>
+                    <button type="button" className={styles.secondary} onClick={() => router.push('/docs')}>Open Documentation</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 'summary' && (
             <div className={styles.reportStep}>
               <div className={styles.sectionTitle}>
-                <p>AI Repository Report</p>
-                <h1>{repository.status === 'ready' ? pathName(repository.rootPath || repository.name || 'Repository') : 'Repository scan'}</h1>
+                <p>Mission Ready</p>
+                <h1>{projectName(repository.rootPath || repository.name)} is ready.</h1>
               </div>
-              <article className={styles.reportSummary} data-state={repository.status}>
-                <strong>{repository.status === 'analyzing' ? 'Scanning Repository...' : repository.status === 'failed' ? 'Analysis needs attention' : 'Repository analyzed'}</strong>
-                <p>{repository.summary || repository.error || 'Arceus is detecting languages, frameworks, tests, package managers, and project structure.'}</p>
-                {repository.status === 'analyzing' && <i><em /></i>}
-              </article>
               <div className={styles.signalGrid}>
                 {detectedSignals.map(([label, value]) => (
                   <div key={label}>
@@ -322,19 +418,12 @@ export default function OnboardingPage() {
                   </div>
                 ))}
               </div>
-              <div className={styles.insightGrid}>
-                <article>
-                  <h3>Detected risks</h3>
-                  <p>{repository.skippedFiles > 0 ? `${repository.skippedFiles} files skipped by repository policy.` : 'No major scan risks detected yet.'}</p>
-                </article>
-                <article>
-                  <h3>Suggested improvements</h3>
-                  <p>{repository.testCommands.length ? 'Use the detected test command as mission verification evidence.' : 'Add or document a test command so Arceus can verify changes.'}</p>
-                </article>
-                <article>
-                  <h3>Next best action</h3>
-                  <p>Describe one feature, fix, or refactor. Arceus will generate implementation strategies before changing code.</p>
-                </article>
+              <div className={styles.readyBox}>
+                <ShieldCheck size={20} />
+                <div>
+                  <strong>Ready</strong>
+                  <p>Arceus can now create a mission plan with scope, tasks, risk, and approval before execution.</p>
+                </div>
               </div>
             </div>
           )}
@@ -342,24 +431,61 @@ export default function OnboardingPage() {
           {step === 'mission' && (
             <div className={styles.missionStep}>
               <div className={styles.sectionTitle}>
-                <p>Mission Creation</p>
-                <h1>What would you like Arceus to do?</h1>
+                <p>Mission Composer</p>
+                <h1>Describe your goal.</h1>
               </div>
-              <textarea value={mission} onChange={(event) => setMission(event.target.value)} placeholder='Example: "Implement Google Login"' />
-              <div className={styles.examples}>
-                {EXAMPLES.map((example) => (
-                  <button type="button" key={example} onClick={() => setMission(example)}>{example}</button>
+              <textarea value={missionGoal} onChange={(event) => setMissionGoal(event.target.value)} placeholder="Add Google Authentication" />
+              <div className={styles.scopeRow}>
+                {SCOPE_OPTIONS.map((option) => (
+                  <button type="button" key={option} data-active={scope === option} onClick={() => setScope(option)}>{option}</button>
                 ))}
               </div>
+              <div className={styles.examples}>
+                {EXAMPLES.map((example) => (
+                  <button type="button" key={example} onClick={() => setMissionGoal(example)}>{example}</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === 'plans' && (
+            <div className={styles.plansStep}>
+              <div className={styles.sectionTitle}>
+                <p>Three Engineering Plans</p>
+                <h1>Choose the implementation strategy.</h1>
+              </div>
               <div className={styles.planPreview}>
-                {[1, 2, 3].map((plan) => (
-                  <article key={plan}>
-                    <span>Strategy {plan}</span>
-                    <strong>{plan === 1 ? 'Small safe patch' : plan === 2 ? 'Balanced implementation' : 'Full production path'}</strong>
-                    <p>{plan === 1 ? 'Lowest risk, limited scope.' : plan === 2 ? 'Best trade-off for most missions.' : 'Broader tests, docs, and integration.'}</p>
+                {planCards(missionRuntime.mission).map((plan) => (
+                  <article key={plan.name} data-recommended={plan.recommended || undefined}>
+                    <span>{plan.name}</span>
+                    <strong>{plan.title}</strong>
+                    <p>{plan.summary}</p>
+                    <div>
+                      <small>{plan.effort}</small>
+                      <small>{plan.risk}</small>
+                      <small>{plan.complexity}</small>
+                      <small>{plan.affected}</small>
+                    </div>
                   </article>
                 ))}
               </div>
+            </div>
+          )}
+
+          {step === 'approval' && (
+            <div className={styles.approvalStep}>
+              <div className={styles.sectionTitle}>
+                <p>Mission Approval</p>
+                <h1>{missionRuntime.mission?.goal.split('\n')[0] || missionGoal || 'Mission'}</h1>
+              </div>
+              <div className={styles.approvalCard}>
+                <div><small>Areas</small><strong>Backend · Frontend · Tests · Documentation</strong></div>
+                <div><small>Estimated Files</small><strong>{Math.max(4, missionRuntime.mission?.task_count || 8)}</strong></div>
+                <div><small>Estimated Tasks</small><strong>{missionRuntime.mission?.task_count || 8}</strong></div>
+                <div><small>Estimated Risk</small><strong>{missionRuntime.mission?.compiled_plan?.understanding?.risk_level || 'Medium'}</strong></div>
+                <div><small>Approval</small><strong>{missionReady ? 'Required before execution' : 'Create mission first'}</strong></div>
+              </div>
+              {missionRuntime.error && <div className={styles.notice}>{missionRuntime.error}</div>}
             </div>
           )}
         </section>
@@ -368,19 +494,15 @@ export default function OnboardingPage() {
           <button type="button" className={styles.secondary} onClick={goBack} disabled={currentStep === 0}>
             <ChevronLeft size={18} /> Back
           </button>
-          {step === 'terms' ? (
-            <button type="button" className={styles.primary} onClick={goNext} disabled={!canContinueFromTerms}>Accept and Continue <ArrowRight size={18} /></button>
-          ) : step === 'repository' ? (
-            <button type="button" className={styles.primary} onClick={() => canContinueFromRepo ? setStep('report') : setNotice('Choose or enter a repository first.')} disabled={!canContinueFromRepo}>Continue <ArrowRight size={18} /></button>
-          ) : step === 'report' ? (
-            <button type="button" className={styles.primary} onClick={() => setStep('mission')} disabled={repository.status === 'analyzing'}>Create Mission <ArrowRight size={18} /></button>
-          ) : step === 'mission' ? (
-            <button type="button" className={styles.primary} onClick={startMission} disabled={!missionText}>Analyze Mission <ArrowRight size={18} /></button>
-          ) : step !== 'welcome' ? (
-            <button type="button" className={styles.primary} onClick={goNext}>Continue <ArrowRight size={18} /></button>
-          ) : (
-            <span />
-          )}
+
+          {step === 'welcome' && <button type="button" className={styles.primary} onClick={() => setStep('account')}>Continue <ArrowRight size={18} /></button>}
+          {step === 'account' && <button type="button" className={styles.primary} onClick={() => setStep('repository')}>Continue <ArrowRight size={18} /></button>}
+          {step === 'repository' && repoMode !== 'clone' && <button type="button" className={styles.primary} onClick={() => manualPath.trim() ? void analyzePath() : setNotice('Choose or paste a repository first.')} disabled={repoMode === 'local' && !manualPath.trim()}>Analyze Repository <ArrowRight size={18} /></button>}
+          {step === 'analysis' && repoReady && <button type="button" className={styles.primary} onClick={() => setStep('summary')}>View Summary <ArrowRight size={18} /></button>}
+          {step === 'summary' && <button type="button" className={styles.primary} onClick={() => setStep('mission')}>Create Mission <ArrowRight size={18} /></button>}
+          {step === 'mission' && <button type="button" className={styles.primary} onClick={createMission} disabled={!missionGoal.trim() || !repoReady || busy === 'mission'}>{busy === 'mission' ? 'Compiling Mission' : 'Create Plans'} <ArrowRight size={18} /></button>}
+          {step === 'plans' && <button type="button" className={styles.primary} onClick={() => setStep('approval')}>Select Recommended Plan <ArrowRight size={18} /></button>}
+          {step === 'approval' && <button type="button" className={styles.primary} onClick={approveMission} disabled={!missionReady || busy === 'approval'}>{busy === 'approval' ? 'Approving' : 'Approve Mission'} <ArrowRight size={18} /></button>}
         </footer>
       </section>
     </main>

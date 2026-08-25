@@ -8,70 +8,64 @@ import {
   Settings, ChevronLeft, ChevronRight, Bell, Search, Activity, Cpu, X, Code2,
   LogIn, UserPlus, LogOut, PanelLeft, ShieldCheck, MonitorCheck
 } from 'lucide-react';
-import { UserButton, useAuth } from '@clerk/nextjs';
 import { useAppStore } from '../store';
-import { isDesktopRouteAllowed } from '../lib/frontendBoundaries';
-import { onDesktopAuthChanged, readDesktopAuthState } from '../utils/desktopAuth';
+import { desktopCodeAlphaPrefixes, isDesktopRouteAllowed } from '../lib/frontendBoundaries';
+import { clearDesktopAuthState, hydrateDesktopAuthState, onDesktopAuthChanged, readDesktopAuthState } from '../utils/desktopAuth';
 import { isElectronRuntime, probeServiceHealth, serviceHealthCopy, type ServiceHealthSnapshot } from '../utils/serviceHealth';
 import styles from './AppShell.module.css';
 
-function useOptionalClerkAuth() {
-  try {
-    const auth = useAuth();
-    return { isSignedIn: auth.isSignedIn === true, clerkReady: true };
-  } catch {
-    return { isSignedIn: false, clerkReady: false };
-  }
-}
-
-function ClerkUserSection() {
-  const { isSignedIn, clerkReady } = useOptionalClerkAuth();
-  if (isSignedIn) {
-    return (
-      <div className={styles.avatar}>
-        <UserButton />
-      </div>
-    );
-  }
-  return (
-    <>
-      <Link href="/sign-in" className={styles.authLink}>
-        <LogIn size={15} />
-        <span>Login</span>
-      </Link>
-      <Link href="/sign-up" className={`${styles.authLink} ${styles.authLinkPrimary}`}>
-        <UserPlus size={15} />
-        <span>Sign up</span>
-      </Link>
-    </>
-  );
-}
-
 function DesktopAccountSection() {
-  const { isSignedIn, clerkReady } = useOptionalClerkAuth();
   const [desktopAuth, setDesktopAuth] = useState(() => readDesktopAuthState());
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     setDesktopAuth(readDesktopAuthState());
+    void hydrateDesktopAuthState().then(setDesktopAuth);
     return onDesktopAuthChanged(setDesktopAuth);
   }, []);
 
-  if (isSignedIn || desktopAuth.connected) {
+  const handleSignOut = () => {
+    clearDesktopAuthState();
+    setDesktopAuth(readDesktopAuthState());
+    setMenuOpen(false);
+  };
+
+  if (desktopAuth.connected) {
     return (
-      isSignedIn && clerkReady ? (
-        <div className={styles.avatar}>
-          <UserButton />
-        </div>
-      ) : (
-        <Link href="/auth/desktop" className={styles.authLink} title="Refresh desktop account session">
+      <div className={styles.accountMenuRoot}>
+        <button
+          type="button"
+          className={styles.authLink}
+          title="Desktop account connected"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((value) => !value)}
+        >
           <MonitorCheck size={15} />
-          <span>{desktopAuth.userId ? 'Connected' : 'Re-authenticate'}</span>
-        </Link>
-      )
+          <span>Connected</span>
+        </button>
+        {menuOpen && (
+          <div className={styles.accountMenu} role="menu">
+            <div className={styles.accountMenuHeader}>
+              <strong>Arceus account</strong>
+              <span>{desktopAuth.userId || 'Desktop session active'}</span>
+            </div>
+            <Link href="/auth/desktop" role="menuitem" onClick={() => setMenuOpen(false)}>
+              <MonitorCheck size={15} />
+              <span>Re-authenticate</span>
+            </Link>
+            <button type="button" role="menuitem" onClick={handleSignOut}>
+              <LogOut size={15} />
+              <span>Sign out</span>
+            </button>
+          </div>
+        )}
+      </div>
     );
   }
+
   return (
-    <Link href="/auth/desktop" className={styles.authLink} title="Connect your Arceus account to enable protected Code actions">
+    <Link href="/sign-in?redirect_url=/auth/desktop" className={styles.authLink} title="Connect your Arceus account to enable protected Code actions">
       <MonitorCheck size={15} />
       <span>Connect account</span>
     </Link>
@@ -89,20 +83,7 @@ const DESKTOP_FULLSCREEN_PREFIXES = [
   '/launch',
   '/onboarding',
   '/workspace',
-  '/idea-discovery',
-  '/product-intelligence',
-  '/domain-intelligence',
-  '/product-blueprint',
-  '/architecture-strategy',
-  '/technology-stack',
-  '/engineering-roadmap',
-  '/ai-workforce',
-  '/executive-review',
   '/mission-control',
-  '/evolution-center',
-  '/knowledge-graph',
-  '/organization-network',
-  '/intelligence-kernel',
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -129,6 +110,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const refreshServiceHealth = async () => {
     if (typeof window === 'undefined') return;
+    if (isElectronRuntime()) {
+      await hydrateDesktopAuthState();
+    }
     const snapshot = await probeServiceHealth();
     setServiceHealth(snapshot);
   };
@@ -153,7 +137,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!clientReady || !isElectron) return;
     setProductMenuOpen(false);
-    if (!isDesktopRouteAllowed(pathname)) router.replace('/launch');
+    if (!isDesktopRouteAllowed(pathname)) router.replace('/workspace');
   }, [clientReady, isElectron, pathname, router]);
 
   const handleDemoSignOut = () => {
@@ -163,8 +147,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   };
 
   const products = useMemo(() => {
+    const codeProductMatches = desktopCodeAlphaPrefixes.filter((prefix) => !['/settings', '/auth/desktop', '/download'].includes(prefix));
     const codeProducts = [
-      { label: 'Arceus Code', href: '/workspace', match: ['/workspace', '/studio', '/chat', '/design', '/deploy', '/internet', '/intelligence'], icon: Code2 },
+      { label: 'Arceus Code', href: '/workspace', match: [...codeProductMatches], icon: Code2 },
+      { label: 'Mission Control', href: '/mission-control', match: ['/mission-control'], icon: Activity },
       { label: 'Settings', href: '/settings', match: ['/settings'], icon: Settings },
     ];
     return isElectron ? codeProducts : [
@@ -175,7 +161,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const allNavItems = useMemo(() => {
     const codeItems = [
-      { label: 'Arceus Code', icon: Code2, href: '/workspace' },
+      { label: 'Workspace', icon: Code2, href: '/workspace' },
+      { label: 'Mission Control', icon: Activity, href: '/mission-control' },
       { label: 'Settings', icon: Settings, href: '/settings' },
     ];
     return isElectron ? codeItems : [...codeItems, { label: 'Admin', icon: ShieldCheck, href: '/admin' }];
@@ -193,6 +180,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (isElectron) {
       return [
         { label: 'Workspace', icon: Code2, href: '/workspace' },
+        { label: 'Mission Control', icon: Activity, href: '/mission-control' },
+        { label: 'Settings', icon: Settings, href: '/settings' },
       ];
     }
     return [
@@ -392,8 +381,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           {isElectron ? (
             <DesktopAccountSection />
-          ) : typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? (
-            <ClerkUserSection />
           ) : (
             <>
               {isDemoSignedIn ? (
@@ -425,7 +412,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <span className={styles.notificationBadge}>{pendingApprovalCount}</span>
             )}
           </div>
-          {!(typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && isDemoSignedIn && (
+          {isDemoSignedIn && (
             <div className={styles.avatar} title="Demo User">DU</div>
           )}
         </div>

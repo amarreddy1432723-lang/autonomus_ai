@@ -63,7 +63,15 @@ def test_desktop_auth_handoff_lifecycle():
     assert "refresh_token" in token_data
     assert token_data["token_type"] == "bearer"
 
-    # 4. Exchange desktop auth code (fails with invalid code)
+    # 4. Exchange desktop auth code a second time (fails because codes are one-time)
+    reused_response = client.post(
+        "/api/v1/auth/desktop/exchange",
+        json={"code": code}
+    )
+    assert reused_response.status_code == 401
+    assert "already used" in reused_response.json()["detail"]
+
+    # 5. Exchange desktop auth code (fails with invalid code)
     invalid_response = client.post(
         "/api/v1/auth/desktop/exchange",
         json={"code": "invalid_code_payload"}

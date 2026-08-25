@@ -25,6 +25,11 @@ export function isElectronRuntime() {
   return Boolean(electronBridge?.isDesktop || electronBridge || userAgent.includes('Electron'));
 }
 
+export function isHostedElectronRuntime() {
+  if (typeof window === 'undefined') return false;
+  return isElectronRuntime() && window.location.protocol === 'https:';
+}
+
 export function hasDesktopAuthToken() {
   if (typeof window === 'undefined') return false;
   return readDesktopAuthState().connected;
@@ -53,7 +58,9 @@ export async function probeServiceHealth(options: { isSignedIn?: boolean; timeou
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 4500);
   let online = false;
   let dependenciesOk = true;
-  const readyUrl = isElectronRuntime() ? 'http://127.0.0.1:8003/api/v1/ready' : '/api/v1/ready';
+  const readyUrl = isElectronRuntime() && !isHostedElectronRuntime()
+    ? 'http://127.0.0.1:8003/api/v1/ready'
+    : '/api/v1/ready';
 
   try {
     const response = await fetch(readyUrl, {

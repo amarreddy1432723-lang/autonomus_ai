@@ -11,7 +11,7 @@ UpgradeBehavior: install
 ReleaseDate: 2026-07-13
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/arceus-ai/arceus-code/releases/download/arceus-code-v1.0.0/Arceus-Code-1.0.0-Setup.exe
-    InstallerSha256: REPLACE_WITH_RELEASE_SHA256
+    InstallerUrl: https://github.com/amarreddy1432723-lang/autonomus_ai/releases/download/arceus-code-v1.0.0/Arceus-Code-1.0.0-Setup.exe
+    InstallerSha256: 19E3FC1815BDF000013F165A793FEC276E5065DAEDEA5F77109F89B8D7989D75
 ManifestType: installer
 ManifestVersion: 1.6.0

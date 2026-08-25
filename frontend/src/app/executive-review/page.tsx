@@ -49,7 +49,7 @@ const SUMMARY_CARDS = [
     title: 'Technology',
     icon: 'TS',
     confidence: '95%',
-    items: ['Next.js frontend', 'FastAPI backend', 'PostgreSQL database', 'Docker + Railway deployment', 'AI model router', 'Clerk authentication'],
+    items: ['Next.js frontend', 'FastAPI backend', 'PostgreSQL database', 'Docker + Railway deployment', 'AI model router', 'Arceus authentication'],
     note: 'Stack choices are production-friendly and founder-speed appropriate.',
     tone: 'green',
   },
