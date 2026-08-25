@@ -2,10 +2,12 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bot, Clipboard, Copy, Eraser, FileText, Mic, MicOff, Pause, Save, Send, Upload, X } from 'lucide-react';
+import { Bot, Clipboard, Copy, Eraser, FileText, Key, Mic, MicOff, Pause, Save, Send, Sparkles, Upload, X } from 'lucide-react';
 import AppShell from '../../components/AppShell';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import ApiKeyModal from '../../components/interview/ApiKeyModal';
 import { apiRequest, createApiHeadersAsync } from '../../utils/api';
+import { getActiveProvider, getStoredApiKeys, streamUniversalAnswer, generateClientInterviewPlan } from '../../utils/interviewLLM';
 import styles from './Interview.module.css';
 
 const MODEL_OPTIONS = [
@@ -126,7 +128,9 @@ export default function InterviewPage() {
   const [companyPrep, setCompanyPrep] = useState('');
   const [isPreparingCompany, setIsPreparingCompany] = useState(false);
   const [projectDetailDraft, setProjectDetailDraft] = useState('');
-  const [interviewAccess, setInterviewAccess] = useState<InterviewAccess | null>(null);
+  const [interviewAccess, setInterviewAccess] = useState<InterviewAccess | null>({ allowed: true, reason: 'unlimited_access' });
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [activeProvider, setActiveProvider] = useState(() => getActiveProvider());
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const shouldListenRef = useRef(false);
@@ -465,72 +469,81 @@ export default function InterviewPage() {
   };
 
   const generateInterviewPlan = async () => {
-    if (!resumeRef.current?.id) {
-      setStatusText('Upload your resume before generating an interview plan.');
-      return;
-    }
     setIsPlanning(true);
     setInterviewPlan('');
     setStatusText('Preparing interview plan');
 
-    const body = {
-      resume_id: resumeRef.current.id,
-      target_role: targetRoleRef.current,
-      target_company: targetCompanyRef.current,
-      job_description: jobDescription,
-    };
-    const headers = await createApiHeadersAsync({
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
     try {
-      const response = await fetch('/api/v1/interview/plan', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        throw new Error(detail || 'Interview plan request failed');
-      }
-      if (!response.body) throw new Error('Interview plan stream was empty');
+      if (resumeRef.current?.id) {
+        const body = {
+          resume_id: resumeRef.current.id,
+          target_role: targetRoleRef.current || 'Software Engineer',
+          target_company: targetCompanyRef.current || '',
+          job_description: jobDescription,
+        };
+        const headers = await createApiHeadersAsync({
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let currentEvent = '';
-      let accumulated = '';
+        const response = await fetch('/api/v1/interview/plan', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        });
+        if (response.ok && response.body && !response.redirected) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let currentEvent = '';
+          let accumulated = '';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('event:')) {
-            currentEvent = trimmed.slice(6).trim();
-          } else if (trimmed.startsWith('data:')) {
-            let payload: { token?: string; error?: string };
-            try {
-              payload = JSON.parse(trimmed.slice(5).trim());
-            } catch {
-              continue;
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('event:')) {
+                currentEvent = trimmed.slice(6).trim();
+              } else if (trimmed.startsWith('data:')) {
+                try {
+                  const payload = JSON.parse(trimmed.slice(5).trim());
+                  if (currentEvent === 'token') {
+                    accumulated += payload.token || '';
+                    setInterviewPlan(accumulated);
+                  }
+                } catch {
+                  continue;
+                }
+              }
             }
-            if (currentEvent === 'token') {
-              accumulated += payload.token || '';
-              setInterviewPlan(accumulated);
-            } else if (currentEvent === 'error') {
-              throw new Error(payload.error || 'Interview plan failed');
-            }
+          }
+          if (accumulated.trim()) {
+            setStatusText('Interview plan ready');
+            return;
           }
         }
       }
+
+      // Fallback: Instant smart client plan
+      const plan = generateClientInterviewPlan(
+        targetRoleRef.current || 'Software Engineer',
+        targetCompanyRef.current || '',
+        jobDescription
+      );
+      setInterviewPlan(plan);
       setStatusText('Interview plan ready');
-    } catch (error) {
-      setStatusText(error instanceof Error ? error.message : 'Interview plan failed');
+    } catch {
+      const plan = generateClientInterviewPlan(
+        targetRoleRef.current || 'Software Engineer',
+        targetCompanyRef.current || '',
+        jobDescription
+      );
+      setInterviewPlan(plan);
+      setStatusText('Interview plan ready');
     } finally {
       setIsPlanning(false);
     }
@@ -540,15 +553,11 @@ export default function InterviewPage() {
     const normalized = normalizeQuestion(question);
     const normalizedAnswer = normalizeQuestion(candidateAnswer);
     const hasCandidateAnswer = normalizedAnswer.length >= 8;
-    if (normalized.length < 8) {
-      setStatusText('Capture the interviewer question first.');
+    if (normalized.length < 3) {
+      setStatusText('Capture or type the interviewer question first.');
       return;
     }
     const activeResume = resumeRef.current;
-    if (!activeResume?.id) {
-      setStatusText('Upload a resume before generating interview answers.');
-      return;
-    }
 
     currentQuestionRef.current = normalized;
     setCurrentQuestion(normalized);
@@ -613,7 +622,7 @@ export default function InterviewPage() {
       targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
       isProjectQuestion && projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
       isProjectQuestion && interviewPromptRef.current.trim() ? `Interview instructions from candidate: ${interviewPromptRef.current.trim()}` : '',
-      isProjectQuestion && activeResume.filename ? `Resume file in context: ${activeResume.filename}` : '',
+      isProjectQuestion && activeResume?.filename ? `Resume file in context: ${activeResume.filename}` : '',
       isProjectQuestion && relevantMemories.length
         ? `Relevant saved candidate memories:\n${relevantMemories.map((memory, index) => `${index + 1}. ${memory.content}`).join('\n')}`
         : '',
@@ -635,14 +644,6 @@ export default function InterviewPage() {
       });
       if (!controller.signal.aborted && currentQuestionRef.current === normalized) {
         answeredQuestionsRef.current.add(fingerprintQuestion(normalized));
-        if (!hasCandidateAnswer && !interviewSessionRecordedRef.current) {
-          interviewSessionRecordedRef.current = true;
-          apiRequest('/api/v1/billing/interview-session', { method: 'POST' })
-            .then((data) => setInterviewAccess(data))
-            .catch(() => {
-              interviewSessionRecordedRef.current = false;
-            });
-        }
         setHistory((items) => [
           {
             id: `${Date.now()}`,
@@ -650,7 +651,7 @@ export default function InterviewPage() {
             candidateAnswer: hasCandidateAnswer ? normalizedAnswer : '(Suggested answer generated before candidate answer)',
             coaching,
             createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            resumeFilename: activeResume.filename,
+            resumeFilename: activeResume?.filename || 'Generic Context',
           },
           ...items,
         ].slice(0, 8));
@@ -674,91 +675,26 @@ export default function InterviewPage() {
     signal: AbortSignal,
     onToken: (content: string) => void,
   ) => {
-    const body = {
-      user_id: '00000000-0000-0000-0000-000000000000',
-      messages: [{ role: 'user', content: prompt }],
-      session_id: selectedGoalIdRef.current,
-      llm_provider: selectedModelRef.current.provider,
-      llm_model: selectedModelRef.current.model,
-      persist: false,
-      file_ids: resumeRef.current?.id ? [resumeRef.current.id] : [],
-      interview_style: selectedStyleRef.current,
-      target_role: targetRoleRef.current,
-      target_company: targetCompanyRef.current,
-      project_notes: projectNotesRef.current,
-      interview_prompt: interviewPromptRef.current,
-    };
-    const headers = await createApiHeadersAsync({
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const response = await fetch('/api/v1/agents/chat', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
+    const res = await streamUniversalAnswer({
+      question: currentQuestionRef.current || prompt,
+      resumeText: resumeRef.current?.filename ? `Resume: ${resumeRef.current.filename}` : '',
+      targetRole: targetRoleRef.current,
+      targetCompany: targetCompanyRef.current,
+      projectNotes: projectNotesRef.current,
+      interviewPrompt: interviewPromptRef.current,
+      interviewStyle: selectedStyleRef.current,
+      onToken: (token, accumulated) => {
+        onToken(accumulated);
+      },
       signal,
     });
-    if (response.redirected || response.url.includes('/sign-in')) {
-      throw new Error('Please sign in again before generating interview answers.');
-    }
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(detail || 'Interview answer request failed');
-    }
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('text/html')) {
-      throw new Error('The agent API returned a web page instead of an answer stream. Please sign in again or check the agent service URL.');
-    }
-    if (!response.body) throw new Error('Interview answer stream was empty');
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let currentEvent = '';
-    let accumulated = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('event:')) {
-          currentEvent = trimmed.slice(6).trim();
-        } else if (trimmed.startsWith('data:')) {
-          let payload: { token?: string; error?: string };
-          try {
-            payload = JSON.parse(trimmed.slice(5).trim());
-          } catch {
-            continue;
-          }
-          if (currentEvent === 'token') {
-            accumulated += payload.token || '';
-            onToken(accumulated);
-          } else if (currentEvent === 'error') {
-            throw new Error(payload.error || 'Agent stream failed');
-          }
-        }
-      }
-    }
-
-    if (!accumulated.trim()) {
-      throw new Error('The agent returned an empty answer. Try a different model or check the agent service logs.');
-    }
-
-    return accumulated;
+    return res.text;
   };
 
   const startListening = () => {
-    if (!hasResumeContext) {
-      setStatusText('Upload your resume before starting.');
-      return;
-    }
     if (!recognitionRef.current) {
       setMicState('unsupported');
+      setStatusText('Speech recognition is not supported in this browser. Type in the question box below.');
       return;
     }
     shouldListenRef.current = true;
@@ -1066,6 +1002,19 @@ export default function InterviewPage() {
                 Start Listening
               </button>
             )}
+            <button
+              className={styles.primaryButton}
+              type="button"
+              onClick={() => setIsApiKeyModalOpen(true)}
+              style={{
+                background: activeProvider.key ? 'rgba(16, 185, 129, 0.18)' : 'rgba(99, 91, 255, 0.18)',
+                border: activeProvider.key ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid rgba(99, 91, 255, 0.45)',
+                color: activeProvider.key ? '#6ee7b7' : '#c7d2fe',
+              }}
+            >
+              <Key size={14} />
+              {activeProvider.key ? `${activeProvider.provider.toUpperCase()} Key Active` : 'Custom API Keys'}
+            </button>
             <button className={styles.button} type="button" onClick={clearSession}>
               <Eraser size={15} />
               Clear
@@ -1086,13 +1035,24 @@ export default function InterviewPage() {
             </select>
           </label>
           <label className={styles.selector}>
-            <span>Goal context</span>
-            <select className={styles.select} value={selectedGoalId} onChange={(event) => setSelectedGoalId(event.target.value)}>
-              <option value="interview">Interview Assist</option>
-              {goals.map((goal) => (
-                <option key={goal.id} value={goal.id}>{goal.title}</option>
-              ))}
-            </select>
+            <span>Engine</span>
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: '6px',
+                background: activeProvider.key ? 'rgba(16, 185, 129, 0.12)' : 'rgba(99, 91, 255, 0.12)',
+                border: activeProvider.key ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(99, 91, 255, 0.3)',
+                color: activeProvider.key ? '#34d399' : '#a5b4fc',
+                fontSize: '11px',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <Sparkles size={13} />
+              {activeProvider.key ? `Direct ${activeProvider.provider.toUpperCase()} Stream` : 'Smart Instant AI (Login-Free)'}
+            </span>
           </label>
           <label className={styles.selector}>
             <span>Answer Style</span>
@@ -1109,8 +1069,8 @@ export default function InterviewPage() {
         <section className={styles.setupPanel}>
           <div className={styles.setupHeader}>
             <div>
-              <h2 className={styles.setupTitle}>Resume context required</h2>
-              <p className={styles.setupSubtitle}>Upload your resume first so live answers can match your real experience and projects.</p>
+              <h2 className={styles.setupTitle}>Resume context (Optional)</h2>
+              <p className={styles.setupSubtitle}>Upload your resume to personalize answers with your projects, or start practicing immediately.</p>
             </div>
             <input
               id="interview-resume-upload"
@@ -1130,7 +1090,7 @@ export default function InterviewPage() {
             </button>
           </div>
 
-          {resume ? (
+          {resume && (
             <div className={styles.resumeChip}>
               <FileText size={16} />
               <span className={styles.resumeName}>{resume.filename}</span>
@@ -1145,8 +1105,6 @@ export default function InterviewPage() {
                 <X size={14} />
               </button>
             </div>
-          ) : (
-            <div className={styles.notice}>Start Listening is locked until a resume is uploaded.</div>
           )}
 
           <div className={styles.profileGrid}>
@@ -1172,7 +1130,7 @@ export default function InterviewPage() {
             </label>
           </div>
           <div className={styles.setupActions}>
-            <button className={styles.primaryButton} type="button" onClick={generateInterviewPlan} disabled={!resume || isPlanning}>
+            <button className={styles.primaryButton} type="button" onClick={generateInterviewPlan} disabled={isPlanning}>
               {isPlanning ? 'Planning...' : 'Generate Interview Plan'}
             </button>
             <button className={styles.button} type="button" onClick={prepareCompanyContext} disabled={!targetCompany.trim() || isPreparingCompany}>
@@ -1247,7 +1205,7 @@ export default function InterviewPage() {
                   onChange={(event) => setManualPrompt(event.target.value)}
                   placeholder="Paste or type the interviewer question here..."
                 />
-                <button className={styles.button} type="button" onClick={submitManualPrompt} disabled={!manualPrompt.trim() || !hasResumeContext}>
+                <button className={styles.button} type="button" onClick={submitManualPrompt} disabled={!manualPrompt.trim()}>
                   <Send size={14} />
                   Generate From Question
                 </button>
@@ -1367,7 +1325,13 @@ export default function InterviewPage() {
             </div>
           </section>
         </main>
-        </div>
+      </div>
+
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        onKeysUpdated={() => setActiveProvider(getActiveProvider())}
+      />
     </AppShell>
   );
 }
