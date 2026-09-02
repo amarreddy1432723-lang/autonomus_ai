@@ -14,8 +14,9 @@ from datetime import datetime, UTC
 
 logger = logging.getLogger("arceus-sandbox")
 SECRET_OUTPUT_PATTERNS = (
-    re.compile(r"(?i)(api[_-]?key|secret|token|password|authorization|bearer)\s*[:=]\s*([^\s'\"`]+)"),
-    re.compile(r"(?i)(Bearer\s+)([^\s'\"`]+)"),
+    re.compile(r"(?i)(authorization:\s*bearer\s+)([^\s'\"`]+)"),
+    re.compile(r"(?i)(bearer\s+)([^\s'\"`]+)"),
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|auth|authorization)\s*[:=]\s*([^\s'\"`]+)"),
     re.compile(r"(?i)((?:password|token|secret)=)([^\s'\"`]+)"),
     re.compile(r"(?i)(sk-[A-Za-z0-9_\-]{12,})"),
     re.compile(r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,})"),

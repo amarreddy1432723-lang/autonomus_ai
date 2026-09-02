@@ -68,15 +68,17 @@ export default function ApiKeyModal({ isOpen, onClose, onKeysUpdated }: ApiKeyMo
       <div
         style={{
           width: 'min(520px, 100%)',
+          maxHeight: '90dvh',
+          overflowY: 'auto',
           backgroundColor: '#11131a',
           border: '1px solid rgba(148, 163, 184, 0.22)',
           borderRadius: '12px',
-          padding: '24px',
+          padding: '20px 16px',
           boxShadow: '0 20px 40px rgba(0, 0, 0, 0.5)',
           color: '#f8fafc',
           display: 'flex',
           flexDirection: 'column',
-          gap: '20px',
+          gap: '18px',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

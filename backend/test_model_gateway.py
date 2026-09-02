@@ -4,8 +4,8 @@ from decimal import Decimal
 
 from services.shared.arceus_core_models import ArceusModelProfile, ArceusProviderProfile
 
-from backend.services.agent.arceus_runtime.model_gateway.api_schemas import ModelGatewayRequest
-from backend.services.agent.arceus_runtime.model_gateway.service import (
+from services.agent.arceus_runtime.model_gateway.api_schemas import ModelGatewayRequest
+from services.agent.arceus_runtime.model_gateway.service import (
     estimate_gateway_cost,
     model_hard_exclusions,
     provider_health,
@@ -120,4 +120,5 @@ def test_no_candidate_when_required_capability_missing() -> None:
 
     assert routing.selected_model_key is None
     assert "text-only" in routing.hard_exclusions
+
 

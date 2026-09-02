@@ -29,6 +29,76 @@ services:
       timeout: 5s
       retries: 5
 
+  auth-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: my-ai-auth-service
+    command: python railway_start.py
+    ports:
+      - "8001:8001"
+    environment:
+      APP_SERVICE: auth
+      PORT: "8001"
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "true"
+      JWT_SECRET: ${JWT_SECRET:-supersecretkeyforlocaldevelopmentonlychangeinprod!}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  goals-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: my-ai-goals-service
+    command: python railway_start.py
+    ports:
+      - "8002:8002"
+    environment:
+      APP_SERVICE: goals
+      PORT: "8002"
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-supersecretkeyforlocaldevelopmentonlychangeinprod!}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
+  agent-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: my-ai-agent-service
+    command: python railway_start.py
+    ports:
+      - "8003:8003"
+    environment:
+      APP_SERVICE: agent
+      PORT: "8003"
+      DATABASE_URL: postgresql+psycopg://postgres:postgrespassword@postgres:5432/my_ai_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-supersecretkeyforlocaldevelopmentonlychangeinprod!}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
   agent-worker:
     build:
       context: ./backend
@@ -68,6 +138,33 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_AUTH_URL: http://localhost:8001
+        NEXT_PUBLIC_GOALS_URL: http://localhost:8002
+        NEXT_PUBLIC_AGENT_URL: http://localhost:8003
+        NEXT_PUBLIC_APP_ENV: production
+        NEXT_PUBLIC_REQUIRE_AUTH: "true"
+    container_name: my-ai-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      NEXT_PUBLIC_AUTH_URL: http://localhost:8001
+      NEXT_PUBLIC_GOALS_URL: http://localhost:8002
+      NEXT_PUBLIC_AGENT_URL: http://localhost:8003
+    depends_on:
+      auth-service:
+        condition: service_started
+      goals-service:
+        condition: service_started
+      agent-service:
+        condition: service_started
 
   flower:
     build:

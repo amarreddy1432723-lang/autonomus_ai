@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import redis
@@ -121,7 +121,7 @@ def success_response(data: Any, request_id: str | None = None, meta: dict[str, A
         "data": data,
         "meta": {
             "request_id": request_id or str(uuid.uuid4()),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
             **(meta or {}),
         },
     }
@@ -153,7 +153,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "status": "ok",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/ready")
@@ -195,7 +195,7 @@ def register_health_routes(app: FastAPI, service_name: str):
                 "service": service_name,
                 "status": status,
                 "dependencies": dependencies,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
             },
         )
 
@@ -205,7 +205,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "stack": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/roadmap")
@@ -214,7 +214,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "roadmap": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/competitive-position")
@@ -223,7 +223,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "competitive_position": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/architecture/system")
@@ -232,7 +232,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "architecture": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/architecture/ai")
@@ -241,7 +241,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "architecture": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/evaluation/status")
@@ -250,7 +250,7 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "evaluation": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/future-roadmap")
@@ -259,14 +259,14 @@ def register_health_routes(app: FastAPI, service_name: str):
         return {
             "service": service_name,
             "future_roadmap": manifest,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
     @app.get("/api/v1/production/readiness")
     def readiness():
         return {
             **production_readiness(service_name),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         }
 
 

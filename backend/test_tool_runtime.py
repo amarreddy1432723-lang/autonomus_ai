@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.services.agent.arceus_runtime.tool_runtime.api_schemas import ToolAuthorizationRequest, ToolExecutionReceipt, ToolRuntimeProfile
-from backend.services.agent.arceus_runtime.tool_runtime.service import (
+from services.agent.arceus_runtime.tool_runtime.api_schemas import ToolAuthorizationRequest, ToolExecutionReceipt, ToolRuntimeProfile
+from services.agent.arceus_runtime.tool_runtime.service import (
     authorize_tool_request,
     classify_tool_action,
     idempotency_fingerprint,
@@ -90,3 +90,4 @@ def test_receipt_verification_rejects_succeeded_denied_receipt() -> None:
 
     assert valid is False
     assert any("allow decision" in reason for reason in reasons)
+

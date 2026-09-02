@@ -2,7 +2,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import httpx
@@ -415,13 +415,13 @@ class PostgresMemoryStore:
         memory.importance = max(memory.importance or 5, data.importance)
         memory.confidence = max(memory.confidence or 0.8, data.confidence)
         memory.access_count = (memory.access_count or 0) + 1
-        memory.last_accessed_at = datetime.utcnow()
+        memory.last_accessed_at = datetime.now(timezone.utc)
         memory.vector = vector
         memory.content_vector = vector
         memory.tags = sorted(set((memory.tags or []) + (data.tags or [])))
         meta = memory.meta_data or {}
         meta.update(data.meta_data or {})
-        meta["deduplicated_at"] = datetime.utcnow().isoformat() + "Z"
+        meta["deduplicated_at"] = datetime.now(timezone.utc).isoformat()
         memory.meta_data = meta
         flag_modified(memory, "meta_data")
         self._queue_embedding_job(memory, provider="pgvector", status="completed")
@@ -487,7 +487,7 @@ class PostgresMemoryStore:
             similarity = 1.0 - cosine_distance_py(query_vector, _as_vector(memory.vector))
             final_score = self._final_score(memory, similarity, rrf_score, max_access)
             memory.access_count = (memory.access_count or 0) + 1
-            memory.last_accessed_at = datetime.utcnow()
+            memory.last_accessed_at = datetime.now(timezone.utc)
             results.append(_memory_to_dict(memory, score=final_score, similarity=similarity))
 
         self.db.commit()
@@ -517,8 +517,11 @@ class PostgresMemoryStore:
         return sorted(ranked, key=lambda item: item[1], reverse=True)
 
     def _final_score(self, memory: Memory, similarity: float, rrf_score: float, max_access: int) -> float:
-        created_naive = memory.created_at.replace(tzinfo=None) if memory.created_at else datetime.utcnow()
-        days_ago = max((datetime.utcnow() - created_naive).days, 0)
+        now = datetime.now(timezone.utc)
+        created = memory.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        days_ago = max((now - (created or now)).days, 0)
         recency = math.exp(-0.05 * days_ago)
         importance = (memory.importance or 5) / 10.0
         access_freq = math.log(1 + (memory.access_count or 0)) / math.log(1 + max_access)
@@ -562,7 +565,7 @@ class PostgresMemoryStore:
     def archive_memory(self, memory: Memory) -> Memory:
         memory.is_archived = True
         meta = memory.meta_data or {}
-        meta["archived_at"] = datetime.utcnow().isoformat() + "Z"
+        meta["archived_at"] = datetime.now(timezone.utc).isoformat()
         memory.meta_data = meta
         flag_modified(memory, "meta_data")
         self.db.commit()

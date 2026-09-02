@@ -80,11 +80,22 @@ export async function probeServiceHealth(options: { isSignedIn?: boolean; timeou
     window.clearTimeout(timeout);
   }
 
+  let hasClientKeys = false;
+  try {
+    if (typeof window !== 'undefined') {
+      const keys = localStorage.getItem('arceus_interview_api_keys');
+      hasClientKeys = Boolean(keys && keys !== '{}');
+    }
+  } catch {
+    hasClientKeys = false;
+  }
+
   let state: ServiceHealthState;
   if (online && authReady && dependenciesOk) state = 'online';
   else if (online && !authReady) state = 'auth_required';
   else if (online && authReady && !dependenciesOk) state = 'partially_online';
-  else state = isElectronRuntime() ? 'offline_local_only' : 'agent_offline';
+  else if (hasClientKeys) state = 'online';
+  else state = isElectronRuntime() ? 'offline_local_only' : 'partially_online';
 
   const copy = serviceHealthCopy(state);
   return {

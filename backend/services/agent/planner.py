@@ -1,7 +1,7 @@
 import json
 from uuid import UUID
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from langchain_core.messages import SystemMessage, HumanMessage
 from .llm_router import get_chat_llm
 from .config import settings
@@ -306,7 +306,7 @@ def calculate_priority_scores(tasks: List[Dict[str, Any]], goal_deadline: dateti
     cpm_res = calculate_cpm(tasks)
     critical_tasks = cpm_res.get("critical_path", [])
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     for t in tasks:
         title = t["title"]
@@ -423,7 +423,7 @@ def generate_roadmap(
     goal_desc: str | None = None,
     goal_deadline: datetime | None = None,
 ) -> List[Dict[str, Any]]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if goal_deadline:
         total_days = max(7, (goal_deadline.replace(tzinfo=None) - now).days)
     else:
@@ -492,7 +492,7 @@ def build_structured_plan(
     risk_flags = []
     if formal_goal["ambiguity_score"] > 0.6:
         risk_flags.append("Goal description is broad; early clarification task is important")
-    if goal_deadline and estimated_hours_total / 4.0 > max(1, (goal_deadline.replace(tzinfo=None) - datetime.utcnow()).days):
+    if goal_deadline and estimated_hours_total / 4.0 > max(1, (goal_deadline.replace(tzinfo=None) - datetime.now(timezone.utc).replace(tzinfo=None)).days):
         risk_flags.append("Estimated effort may be tight for the deadline")
 
     return {
@@ -505,7 +505,7 @@ def build_structured_plan(
         "plan_health_score": health["score"],
         "risk_flags": risk_flags,
         "assumptions": formal_goal["assumptions"],
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -588,6 +588,6 @@ def propose_replan(goal: Any, tasks: List[Any], trigger: str, strategy: str = "h
             "Move highest priority critical-path tasks to the next execution batch",
             "Schedule a checkpoint after the next completed task",
         ],
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "goal_id": str(getattr(goal, "id", "")),
     }

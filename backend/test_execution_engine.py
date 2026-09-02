@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from backend.services.agent.arceus_runtime.execution_engine.api_schemas import (
+from services.agent.arceus_runtime.execution_engine.api_schemas import (
     EffectReservationRequest,
     LeasePlanRequest,
     MissionTransitionRequest,
@@ -14,7 +14,7 @@ from backend.services.agent.arceus_runtime.execution_engine.api_schemas import (
     WorkflowEdgeSpec,
     WorkflowNodeSpec,
 )
-from backend.services.agent.arceus_runtime.execution_engine.service import (
+from services.agent.arceus_runtime.execution_engine.service import (
     compile_workflow,
     mission_progress,
     plan_lease,
@@ -133,3 +133,4 @@ def test_weighted_progress_counts_running_as_partial() -> None:
     progress = mission_progress(workflow, [NodeState(node_id="a", status="succeeded"), NodeState(node_id="b", status="running")])
 
     assert progress == 50.0
+

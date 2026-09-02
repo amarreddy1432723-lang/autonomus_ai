@@ -45,7 +45,7 @@ SECRET_PATTERNS = (
 
 DANGEROUS_PATTERNS = (
     re.compile(r"rm\s+-[^\n\r;|&]*r[^\n\r;|&]*\s+/", re.IGNORECASE),
-    re.compile(r"del\s+/[sq]\s+[a-z]:\\", re.IGNORECASE),
+    re.compile(r"(?:del|rmdir|rd)\s+(?:/[a-z0-9]+\s+)*[a-z]:\\", re.IGNORECASE),
     re.compile(r"format\s+[a-z]:", re.IGNORECASE),
     re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;", re.IGNORECASE),
     re.compile(r"while\s+true\s*;\s*do\s+.*done", re.IGNORECASE | re.DOTALL),

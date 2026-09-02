@@ -12,6 +12,8 @@ GovernanceDecision = str
 
 
 class GovernanceModelResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     model_key: str
     provider_key: str
     display_name: str
@@ -36,6 +38,8 @@ class GovernancePolicyResponse(BaseModel):
 
 
 class GovernanceEvaluateRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     action: str = Field(min_length=2, max_length=160)
     object_type: str = Field(min_length=2, max_length=120)
     object_id: str | None = Field(default=None, max_length=240)
@@ -102,6 +106,8 @@ class GovernanceComplianceResponse(BaseModel):
 
 
 class GovernanceDashboardResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     status: str
     risk: dict[str, Any]
     compliance: dict[str, Any]

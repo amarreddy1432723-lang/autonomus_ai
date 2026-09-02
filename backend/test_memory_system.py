@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from services.shared.arceus_core_models import ArceusMemoryItem
 
-from backend.services.agent.arceus_runtime.memory_fabric.service import (
+from services.agent.arceus_runtime.memory_fabric.service import (
     apply_memory_feedback,
     detect_memory_conflicts,
     extract_memory_facts,
@@ -85,3 +85,4 @@ def test_search_prefers_verified_high_confidence_memory() -> None:
     )
 
     assert result["results"][0]["memory"]["id"] == strong.id
+

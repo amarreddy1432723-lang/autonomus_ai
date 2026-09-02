@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.services.agent.arceus_runtime.multi_agent.service import score_agent_candidate, select_best_agent
+from services.agent.arceus_runtime.multi_agent.service import score_agent_candidate, select_best_agent
 
 
 def test_agent_candidate_scoring_prefers_capability_match() -> None:
@@ -63,3 +63,4 @@ def test_select_best_agent_uses_workload_as_tiebreaker() -> None:
 
     assert selected is not None
     assert selected["agent_id"] == "calm"
+

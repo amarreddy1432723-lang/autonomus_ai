@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from backend.services.agent.arceus_runtime.planning_intelligence.api_schemas import (
+from services.agent.arceus_runtime.planning_intelligence.api_schemas import (
     PlanningBudget,
     PlanningConstraint,
     PlanningIntelligenceRequest,
     ReplanRequest,
     SuccessCriterion,
 )
-from backend.services.agent.arceus_runtime.planning_intelligence.service import (
+from services.agent.arceus_runtime.planning_intelligence.service import (
     build_planning_decision,
     interpret_goal,
     replan_from_evidence,
@@ -85,4 +85,5 @@ def test_replan_triggers_on_failed_task_and_policy_block() -> None:
 
     assert response.should_replan is True
     assert len(response.recommended_adjustments) >= 2
+
 

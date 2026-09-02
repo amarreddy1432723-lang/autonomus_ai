@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.services.agent.arceus_runtime.mission_runtime.api_schemas import RuntimeTaskSpec
-from backend.services.agent.arceus_runtime.mission_runtime.service import validate_task_dag, weighted_progress
+from services.agent.arceus_runtime.mission_runtime.api_schemas import RuntimeTaskSpec
+from services.agent.arceus_runtime.mission_runtime.service import validate_task_dag, weighted_progress
 
 
 def test_validate_task_dag_reports_topology_and_critical_path() -> None:
@@ -54,3 +54,4 @@ def test_weighted_progress_counts_running_as_partial_progress() -> None:
     ]
 
     assert weighted_progress(tasks) == 25.0
+

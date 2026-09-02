@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from backend.services.agent.arceus_runtime.verification_engine.api_schemas import (
+from services.agent.arceus_runtime.verification_engine.api_schemas import (
     EvidenceInput,
     EvidenceProducerRequest,
     MissionControlReleaseGateResponse,
@@ -14,7 +14,7 @@ from backend.services.agent.arceus_runtime.verification_engine.api_schemas impor
     VerificationRunRequest,
     VerificationTestDiscoveryRequest,
 )
-from backend.services.agent.arceus_runtime.verification_engine.service import (
+from services.agent.arceus_runtime.verification_engine.service import (
     discover_tests,
     evaluate_quality_gate,
     evaluate_release_readiness,
@@ -312,3 +312,4 @@ def test_worker_handler_github_checks_and_playwright_reports_block_failures() ->
     assert github.payload["failed"] == 1
     assert preview.status == "failed"
     assert preview.payload["blank_page"] is True
+

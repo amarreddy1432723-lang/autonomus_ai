@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from backend.services.agent.arceus_runtime.context_engine.api_schemas import Citation, ContextItem, ContextPackage
-from backend.services.agent.arceus_runtime.prompt_compiler.api_schemas import OutputContract, PromptBudget, PromptCompilationRequest
-from backend.services.agent.arceus_runtime.prompt_compiler.service import compile_prompt, detect_prompt_injection, resolve_policy_conflicts
+from services.agent.arceus_runtime.context_engine.api_schemas import Citation, ContextItem, ContextPackage
+from services.agent.arceus_runtime.prompt_compiler.api_schemas import OutputContract, PromptBudget, PromptCompilationRequest
+from services.agent.arceus_runtime.prompt_compiler.service import compile_prompt, detect_prompt_injection, resolve_policy_conflicts
 
 
 def _context_package(content: str, score: float = 0.9) -> ContextPackage:
@@ -126,3 +126,4 @@ def test_detect_prompt_injection_returns_none_for_safe_blocks() -> None:
     assessment = detect_prompt_injection(response.ir.blocks)
     assert assessment.detected is False
     assert assessment.severity == "none"
+

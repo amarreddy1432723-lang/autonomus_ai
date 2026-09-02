@@ -26,6 +26,8 @@ class ComputePlanRequest(BaseModel):
 
 
 class ComputeResourceResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     resource_id: str
     provider_key: str
     model_key: str

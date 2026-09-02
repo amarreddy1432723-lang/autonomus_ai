@@ -1,85 +1,26 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Bot, Clipboard, Copy, Eraser, FileText, Key, Mic, MicOff, Pause, Save, Send, Sparkles, Upload, X } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Copy, Download, Key, Mic, MicOff, Paperclip, Send, Settings, Sparkles, Trash2, UploadCloud, X } from 'lucide-react';
 import AppShell from '../../components/AppShell';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
-import ApiKeyModal from '../../components/interview/ApiKeyModal';
-import { apiRequest, createApiHeadersAsync } from '../../utils/api';
-import { getActiveProvider, getStoredApiKeys, streamUniversalAnswer, generateClientInterviewPlan } from '../../utils/interviewLLM';
+import { autoCorrectInterviewInput, getActiveProvider, getStoredApiKeys, saveApiKey, streamUniversalAnswer } from '../../utils/interviewLLM';
 import styles from './Interview.module.css';
 
-const MODEL_OPTIONS = [
-  { id: 'autonomus-ai-v1', label: 'Autonomus AI', provider: 'autonomus', model: 'autonomus-ai-v1' },
-  { id: 'nexus-fast', label: 'Arceus Fast', provider: 'nexus', model: 'nexus-fast' },
-  { id: 'nexus-reasoning', label: 'Arceus Reasoning', provider: 'nexus', model: 'nexus-reasoning' },
-  { id: 'nexus-code', label: 'Arceus Code', provider: 'nexus', model: 'nexus-code' },
-  { id: 'groq-llama-3.3', label: 'Groq Llama 3.3', provider: 'groq', model: 'llama-3.3-70b-versatile' },
-  { id: 'openai-gpt-4o-mini', label: 'OpenAI GPT-4o mini', provider: 'openai', model: 'gpt-4o-mini' },
-  { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', provider: 'google', model: 'gemini-1.5-flash' }
-] as const;
+// ── Types ──────────────────────────────────────────────────
+type MicState = 'idle' | 'listening' | 'paused' | 'unsupported' | 'permission-denied';
 
-const PLAN_TABS = [
-  { id: 'behavioral', label: 'Behavioral', heading: '## Behavioral / HR' },
-  { id: 'technical', label: 'Technical', heading: '## Technical' },
-  { id: 'company', label: 'Company', heading: '## Company-Specific' },
-  { id: 'questions', label: 'Questions', heading: '## Questions To Ask The Interviewer' },
-] as const;
-
-const extractPlanSection = (content: string, heading: string) => {
-  if (!content.trim()) return '';
-  const start = content.indexOf(heading);
-  if (start < 0) return content;
-  const next = content.indexOf('\n## ', start + heading.length);
-  return content.slice(start, next > start ? next : undefined).trim();
+type ChatMessage = {
+  id: string;
+  role: 'question' | 'answer' | 'system';
+  text: string;
+  streaming?: boolean;
+  ts: number;
 };
 
-type ModelOption = typeof MODEL_OPTIONS[number];
-type MicState = 'idle' | 'listening' | 'paused' | 'unsupported' | 'permission-denied' | 'error';
-type TurnState = 'waiting_for_question' | 'question_detected' | 'listening_to_candidate_answer' | 'generating_feedback' | 'ready_for_next_question';
-type CaptureTarget = 'question' | 'answer';
-
-type InterviewTurn = {
-  id: string;
-  question: string;
-  candidateAnswer: string;
-  coaching: string;
-  createdAt: string;
-  resumeFilename?: string;
-};
-
-type UploadedResume = {
-  id: string;
+type ResumeInfo = {
   filename: string;
-  content_type?: string;
-  size_bytes?: number;
-  extraction?: { chunk_count?: number; token_count?: number; candidate_profile_stored?: boolean };
-  metadata?: {
-    candidate_profile?: { status?: string };
-    token_count?: number;
-    chunk_count?: number;
-  };
-};
-
-type CandidateMemory = {
-  id?: string;
-  content: string;
-  memory_type?: string;
-  type?: string;
-  importance?: number;
-  score?: number;
-  tags?: string[];
-};
-
-type InterviewAccess = {
-  allowed: boolean;
-  reason: string;
-  plan?: string;
-  used?: number;
-  limit?: number;
-  remaining?: number | null;
-  upgrade_target?: string;
+  text: string;
 };
 
 type SpeechRecognitionLike = {
@@ -89,1249 +30,827 @@ type SpeechRecognitionLike = {
   start: () => void;
   stop: () => void;
   abort: () => void;
-  onresult: ((event: any) => void) | null;
-  onerror: ((event: any) => void) | null;
+  onresult: ((e: any) => void) | null;
+  onerror: ((e: any) => void) | null;
   onend: (() => void) | null;
 };
 
+// ── PDF text extractor ─────────────────────────────────────
+async function extractResumeText(file: File): Promise<string> {
+  const name = file.name.toLowerCase();
+
+  // Plain text / markdown
+  if (file.type === 'text/plain' || name.endsWith('.txt') || name.endsWith('.md')) {
+    return file.text();
+  }
+
+  // DOCX via mammoth
+  if (name.endsWith('.docx')) {
+    try {
+      const mammoth = await import('mammoth');
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      return result.value.trim();
+    } catch {
+      return file.text().catch(() => '');
+    }
+  }
+
+  // PDF via pdfjs-dist
+  if (name.endsWith('.pdf') || file.type === 'application/pdf') {
+    try {
+      const pdfjs = await import('pdfjs-dist');
+      // Use the bundled worker
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      const pages: string[] = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items
+          .map((item: any) => ('str' in item ? item.str : ''))
+          .join(' ')
+          .replace(/\s{3,}/g, '  ');
+        pages.push(pageText);
+      }
+      return pages.join('\n\n').trim();
+    } catch (err) {
+      console.warn('pdf.js failed, falling back to byte read:', err);
+      // Last resort: byte extraction
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      const raw = new TextDecoder('latin1').decode(bytes);
+      const strings = raw.match(/[\x20-\x7E\n\r\t]{5,}/g) || [];
+      return strings
+        .filter(s => !/^\s*$/.test(s) && !/obj|endobj|stream|xref/i.test(s))
+        .join(' ')
+        .replace(/\s{3,}/g, '  ')
+        .slice(0, 8000);
+    }
+  }
+
+  return '';
+}
+
+// ── Helpers ────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2);
+
+const formatTime = (ts: number) =>
+  new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+const SAMPLE_QUESTIONS = [
+  'Tell me about yourself',
+  'Why do you want to work at Google?',
+  "What's your greatest technical achievement?",
+  'Describe a time you failed and what you learned',
+  'How do you handle disagreement with a teammate?',
+];
+
+// ── Component ──────────────────────────────────────────────
 export default function InterviewPage() {
-  const router = useRouter();
-  const [selectedModelId, setSelectedModelId] = useState<ModelOption['id']>('autonomus-ai-v1');
-  const [goals, setGoals] = useState<any[]>([]);
-  const [selectedGoalId, setSelectedGoalId] = useState('interview');
+  // Chat
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: uid(),
+      role: 'system',
+      text: '👋 Hi! I\'m your AI interview coach. Upload your resume & set your target role to get personalized answers. Or just start asking questions right now!',
+      ts: Date.now(),
+    },
+  ]);
+  const [input, setInput] = useState('');
+
+  // Speech
   const [micState, setMicState] = useState<MicState>('idle');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [turnState, setTurnState] = useState<TurnState>('waiting_for_question');
-  const [captureTarget, setCaptureTarget] = useState<CaptureTarget>('question');
-  const [questionTranscript, setQuestionTranscript] = useState('');
-  const [answerTranscript, setAnswerTranscript] = useState('');
-  const [interimTranscript, setInterimTranscript] = useState('');
-  const [manualPrompt, setManualPrompt] = useState('');
-  const [currentQuestion, setCurrentQuestion] = useState('');
-  const [currentCoaching, setCurrentCoaching] = useState('');
-  const [history, setHistory] = useState<InterviewTurn[]>([]);
-  const [statusText, setStatusText] = useState('Ready to listen');
-  const [resume, setResume] = useState<UploadedResume | null>(null);
-  const [isUploadingResume, setIsUploadingResume] = useState(false);
+  const [interimText, setInterimText] = useState('');
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const shouldListenRef = useRef(false);
+  const speechDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechAccumRef = useRef('');
+
+  // Resume
+  const [resume, setResume] = useState<ResumeInfo | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Setup drawer
+  const [setupOpen, setSetupOpen] = useState(false);
   const [targetRole, setTargetRole] = useState('');
   const [targetCompany, setTargetCompany] = useState('');
   const [jobDescription, setJobDescription] = useState('');
-  const [projectNotes, setProjectNotes] = useState('');
-  const [interviewPrompt, setInterviewPrompt] = useState('');
-  const [selectedStyle, setSelectedStyle] = useState('short');
-  const [interviewPlan, setInterviewPlan] = useState('');
-  const [activePlanTab, setActivePlanTab] = useState<typeof PLAN_TABS[number]['id']>('behavioral');
-  const [isPlanning, setIsPlanning] = useState(false);
-  const [isFocusMode, setIsFocusMode] = useState(false);
-  const [candidateMemories, setCandidateMemories] = useState<CandidateMemory[]>([]);
-  const [isLoadingMemories, setIsLoadingMemories] = useState(false);
-  const [companyPrep, setCompanyPrep] = useState('');
-  const [isPreparingCompany, setIsPreparingCompany] = useState(false);
-  const [projectDetailDraft, setProjectDetailDraft] = useState('');
-  const [interviewAccess, setInterviewAccess] = useState<InterviewAccess | null>({ allowed: true, reason: 'unlimited_access' });
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
-  const [activeProvider, setActiveProvider] = useState(() => getActiveProvider());
+  const [answerStyle, setAnswerStyle] = useState('confident');
+  // Master profile — user pastes ALL their data here once
+  const [masterProfile, setMasterProfile] = useState('');
 
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const shouldListenRef = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // API keys modal
+  const [keysOpen, setKeysOpen] = useState(false);
+  const [keyInputs, setKeyInputs] = useState({ groq: '', openai: '', gemini: '' });
+  const [activeProvider, setActiveProvider] = useState(getActiveProvider());
+
+  // Generating
+  const [isGenerating, setIsGenerating] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const isGeneratingRef = useRef(false);
-  const autoGeneratedQuestionRef = useRef('');
-  const answeredQuestionsRef = useRef<Set<string>>(new Set());
-  const interviewSessionRecordedRef = useRef(false);
-  const turnStateRef = useRef<TurnState>('waiting_for_question');
-  const currentQuestionRef = useRef('');
-  const questionTranscriptRef = useRef('');
-  const answerTranscriptRef = useRef('');
-  const captureTargetRef = useRef<CaptureTarget>('question');
-  const historyRef = useRef<InterviewTurn[]>([]);
-  const resumeRef = useRef<UploadedResume | null>(null);
-  const targetRoleRef = useRef('');
-  const targetCompanyRef = useRef('');
-  const projectNotesRef = useRef('');
-  const interviewPromptRef = useRef('');
-  const candidateMemoriesRef = useRef<CandidateMemory[]>([]);
-  const companyPrepRef = useRef('');
-  const selectedModelRef = useRef<ModelOption>(MODEL_OPTIONS[0]);
-  const selectedGoalIdRef = useRef('interview');
-  const selectedStyleRef = useRef('short');
 
-  const selectedModel = MODEL_OPTIONS.find((option) => option.id === selectedModelId) || MODEL_OPTIONS[0];
-  const liveQuestion = captureTarget === 'question' && interimTranscript ? `${questionTranscript} ${interimTranscript}`.trim() : questionTranscript;
-  const liveAnswer = captureTarget === 'answer' && interimTranscript ? `${answerTranscript} ${interimTranscript}`.trim() : answerTranscript;
-  const transcript = [liveQuestion, liveAnswer].filter(Boolean).join('\n').trim();
-  const canUseSpeech = micState !== 'unsupported';
-  const hasResumeContext = Boolean(resume?.id);
-  const hasCandidateProfile = Boolean(resume?.metadata?.candidate_profile || resume?.extraction?.candidate_profile_stored);
+  // Refs
+  const feedRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRef = useRef<ChatMessage[]>([]);
 
-  useEffect(() => {
-    const saved = localStorage.getItem('my_ai_selected_model_id');
-    if (saved && MODEL_OPTIONS.some((option) => option.id === saved)) {
-      setSelectedModelId(saved as ModelOption['id']);
+  // ── Scroll to bottom ──────────────────────────────────────
+  const scrollToBottom = useCallback(() => {
+    if (feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('my_ai_selected_model_id', selectedModelId);
-  }, [selectedModelId]);
+    historyRef.current = messages;
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
+  // ── Load persisted resume & settings ──────────────────────
   useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
-
-  useEffect(() => {
-    questionTranscriptRef.current = questionTranscript;
-  }, [questionTranscript]);
-
-  useEffect(() => {
-    answerTranscriptRef.current = answerTranscript;
-  }, [answerTranscript]);
-
-  useEffect(() => {
-    captureTargetRef.current = captureTarget;
-  }, [captureTarget]);
-
-  useEffect(() => {
-    historyRef.current = history;
-  }, [history]);
-
-  useEffect(() => {
-    resumeRef.current = resume;
-  }, [resume]);
-
-  useEffect(() => {
-    targetRoleRef.current = targetRole;
-  }, [targetRole]);
-
-  useEffect(() => {
-    targetCompanyRef.current = targetCompany;
-  }, [targetCompany]);
-
-  useEffect(() => {
-    projectNotesRef.current = projectNotes;
-  }, [projectNotes]);
-
-  useEffect(() => {
-    interviewPromptRef.current = interviewPrompt;
-  }, [interviewPrompt]);
-
-  useEffect(() => {
-    candidateMemoriesRef.current = candidateMemories;
-  }, [candidateMemories]);
-
-  useEffect(() => {
-    companyPrepRef.current = companyPrep;
-  }, [companyPrep]);
-
-  useEffect(() => {
-    selectedModelRef.current = selectedModel;
-  }, [selectedModel]);
-
-  useEffect(() => {
-    selectedStyleRef.current = selectedStyle;
-  }, [selectedStyle]);
-
-  useEffect(() => {
-    turnStateRef.current = turnState;
-  }, [turnState]);
-
-  useEffect(() => {
-    selectedGoalIdRef.current = selectedGoalId;
-  }, [selectedGoalId]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'h') {
-        event.preventDefault();
-        setIsFocusMode((current) => !current);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  useEffect(() => {
-    const fetchGoals = async () => {
-      try {
-        const data = await apiRequest('/api/v1/goals', { method: 'GET' });
-        if (Array.isArray(data)) setGoals(data);
-      } catch {
-        setGoals([]);
-      }
-    };
-    fetchGoals();
-  }, []);
-
-  const loadInterviewAccess = async () => {
-    try {
-      const data = await apiRequest('/api/v1/billing/interview-access');
-      setInterviewAccess(data);
-    } catch {
-      setInterviewAccess({ allowed: true, reason: 'billing_unavailable' });
+    const savedText = localStorage.getItem('interview_resume_text');
+    const savedName = localStorage.getItem('interview_resume_name');
+    if (savedText && savedName) {
+      setResume({ filename: savedName, text: savedText });
     }
-  };
+    const savedRole = localStorage.getItem('interview_target_role') || '';
+    const savedCompany = localStorage.getItem('interview_target_company') || '';
+    const savedStyle = localStorage.getItem('interview_answer_style') || 'confident';
+    const savedProfile = localStorage.getItem('interview_master_profile') || '';
+    setTargetRole(savedRole);
+    setTargetCompany(savedCompany);
+    setAnswerStyle(savedStyle);
+    setMasterProfile(savedProfile);
 
-  useEffect(() => {
-    loadInterviewAccess();
+    // Load stored keys into input fields
+    const keys = getStoredApiKeys();
+    setKeyInputs({ groq: keys.groq || '', openai: keys.openai || '', gemini: keys.gemini || '' });
   }, []);
 
+  // ── Persist settings ──────────────────────────────────────
+  useEffect(() => { localStorage.setItem('interview_target_role', targetRole); }, [targetRole]);
+  useEffect(() => { localStorage.setItem('interview_target_company', targetCompany); }, [targetCompany]);
+  useEffect(() => { localStorage.setItem('interview_answer_style', answerStyle); }, [answerStyle]);
+  useEffect(() => { localStorage.setItem('interview_master_profile', masterProfile); }, [masterProfile]);
+
+  // ── Speech recognition setup ──────────────────────────────
   useEffect(() => {
-    const SpeechRecognitionCtor =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognitionCtor) {
-      setMicState('unsupported');
-      setStatusText('Speech recognition is not supported in this browser. Use the manual transcript box.');
-      return;
-    }
+    const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!Ctor) { setMicState('unsupported'); return; }
 
-    const recognition: SpeechRecognitionLike = new SpeechRecognitionCtor();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.onresult = (event: any) => {
-      let finalChunk = '';
-      let interimChunk = '';
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = result[0]?.transcript || '';
-        if (result.isFinal) finalChunk += text;
-        else interimChunk += text;
-      }
+    const rec: SpeechRecognitionLike = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
 
-      if (finalChunk.trim()) {
-        if (captureTargetRef.current === 'question') {
-          setQuestionTranscript((current) => {
-            // ── Auto-reset: if the last turn was already answered/ready,
-            // treat any new speech as the START of a fresh question —
-            // never append new question speech onto the old answered question.
-            const isReadyForNext = (
-              turnStateRef.current === 'ready_for_next_question' ||
-              turnStateRef.current === 'waiting_for_question'
-            );
-            const base = isReadyForNext ? '' : current;
-            if (isReadyForNext) {
-              // Reset stale question state so the new question is treated fresh
-              questionTranscriptRef.current = '';
-              autoGeneratedQuestionRef.current = '';
-            }
-            const next = `${base} ${finalChunk}`.trim();
-            questionTranscriptRef.current = next;
-            if (debounceRef.current) clearTimeout(debounceRef.current);
-            debounceRef.current = setTimeout(() => {
-              const question = normalizeQuestion(questionTranscriptRef.current);
-              const questionFingerprint = fingerprintQuestion(question);
-              if (
-                question.length >= 8 &&
-                resumeRef.current?.id &&
-                captureTargetRef.current === 'question' &&
-                !isGeneratingRef.current &&
-                autoGeneratedQuestionRef.current !== question &&
-                !answeredQuestionsRef.current.has(questionFingerprint)
-              ) {
-                autoGeneratedQuestionRef.current = question;
-                setCurrentQuestion(question);
-                currentQuestionRef.current = question;
-                setTurnState('question_detected');
-                setStatusText('Answering now');
-                void refreshCandidateMemories(question);
-                void generateCoaching(question, '');
-              }
-            }, 450);
-            return next;
-          });
-        } else {
-          setAnswerTranscript((current) => {
-            const next = `${current} ${finalChunk}`.trim();
-            answerTranscriptRef.current = next;
-            return next;
-          });
-        }
+    rec.onresult = (e: any) => {
+      let final = '';
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0]?.transcript || '';
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
       }
-      setInterimTranscript(interimChunk.trim());
+      if (final.trim()) {
+        speechAccumRef.current = (speechAccumRef.current + ' ' + final).trim();
+        setInput(speechAccumRef.current);
+        // Fast auto-submit: 1.1s of silence for near-instant responsiveness
+        if (speechDebounceRef.current) clearTimeout(speechDebounceRef.current);
+        speechDebounceRef.current = setTimeout(() => {
+          const q = speechAccumRef.current.trim();
+          if (q.length >= 4 && !isGenerating) {
+            speechAccumRef.current = '';
+            setInput('');
+            setInterimText('');
+            handleSend(q);
+          }
+        }, 1100);
+      }
+      setInterimText(interim.trim());
     };
-    recognition.onerror = (event: any) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+
+    rec.onerror = (e: any) => {
+      const err = String(e.error || '');
+      if (err.includes('not-allowed') || err.includes('service-not-allowed')) {
         setMicState('permission-denied');
-        setStatusText('Microphone permission was denied.');
         shouldListenRef.current = false;
-      } else if (event.error === 'aborted') {
-        setMicState(shouldListenRef.current ? 'listening' : 'paused');
-        setStatusText(shouldListenRef.current ? 'Listening for interviewer question' : 'Paused');
-      } else {
-        setMicState('error');
-        setStatusText(`Speech recognition error: ${event.error || 'unknown error'}`);
+      } else if (!err.includes('aborted') && !err.includes('no-speech')) {
+        setMicState('idle');
+        shouldListenRef.current = false;
       }
     };
-    recognition.onend = () => {
-      if (shouldListenRef.current) {
-        try {
-          recognition.start();
-        } catch {
-          setMicState('error');
-          setStatusText('Could not restart listening.');
-        }
-      }
-    };
-    recognitionRef.current = recognition;
 
+    rec.onend = () => {
+      if (shouldListenRef.current) {
+        try { rec.start(); } catch { /* already running */ }
+      } else {
+        setMicState('idle');
+        setInterimText('');
+      }
+    };
+
+    recognitionRef.current = rec;
     return () => {
       shouldListenRef.current = false;
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      abortRef.current?.abort();
-      recognition.abort();
+      rec.abort();
     };
-    // finalTranscript is intentionally excluded; result handling uses state setters plus latest event text.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const normalizeQuestion = (value: string) => value.replace(/\s+/g, ' ').trim();
-
-  const fingerprintQuestion = (value: string) => {
-    const stopwords = new Set([
-      'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'can', 'could', 'for', 'from',
-      'hi', 'hello', 'i', 'in', 'is', 'it', 'me', 'my', 'of', 'okay', 'ok', 'on', 'or',
-      'please', 'so', 'tell', 'that', 'the', 'then', 'to', 'uh', 'um', 'what', 'with',
-      'would', 'you', 'your'
-    ]);
-    return Array.from(new Set(
-      value
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((word) => word.length > 1 && !stopwords.has(word))
-    )).sort().join('|');
-  };
-
-  const buildMemoryQuery = (question: string, candidateAnswer = '') => [
-    question,
-    candidateAnswer,
-    targetRoleRef.current,
-    targetCompanyRef.current,
-    projectNotesRef.current,
-    interviewPromptRef.current,
-    'interview resume project experience'
-  ].filter(Boolean).join(' ');
-
-  const refreshCandidateMemories = async (question: string, candidateAnswer = '') => {
-    const query = normalizeQuestion(buildMemoryQuery(question, candidateAnswer));
-    if (!query) return [];
-    setIsLoadingMemories(true);
+  // ── Upload resume ─────────────────────────────────────────
+  const uploadResume = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setIsUploading(true);
+    addSystemMsg('📄 Reading your resume…');
     try {
-      const results = await apiRequest(`/api/v1/memories/search?query=${encodeURIComponent(query)}&limit=6`);
-      const memories = Array.isArray(results) ? results.slice(0, 6) : [];
-      setCandidateMemories(memories);
-      candidateMemoriesRef.current = memories;
-      return memories;
-    } catch {
-      setCandidateMemories([]);
-      candidateMemoriesRef.current = [];
-      return [];
-    } finally {
-      setIsLoadingMemories(false);
-    }
-  };
-
-  const prepareCompanyContext = async () => {
-    const company = normalizeQuestion(targetCompanyRef.current);
-    if (!company) {
-      setStatusText('Add a company name before preparing company context.');
-      return;
-    }
-    setIsPreparingCompany(true);
-    setCompanyPrep('');
-    setStatusText(`Preparing ${company} interview context`);
-
-    const prompt = [
-      'Prepare concise interview context for a candidate.',
-      `Company: ${company}`,
-      targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
-      'Use current web context if available. Include recent company focus areas, likely interview themes, commonly asked questions for this role/company, and what the candidate should emphasize from their resume.',
-      'Keep it compact and practical. Do not invent exact interview questions; label likely questions as likely/common.',
-    ].filter(Boolean).join('\n');
-
-    const controller = new AbortController();
-    try {
-      const prep = await streamInterviewAnswer(prompt, controller.signal, (content) => {
-        setCompanyPrep(content);
-        companyPrepRef.current = content;
-      });
-      setCompanyPrep(prep);
-      companyPrepRef.current = prep;
-      setStatusText('Company context prepared');
-    } catch (error) {
-      setCompanyPrep('');
-      companyPrepRef.current = '';
-      setStatusText(error instanceof Error ? error.message : 'Company preparation failed');
-    } finally {
-      setIsPreparingCompany(false);
-    }
-  };
-
-  const generateInterviewPlan = async () => {
-    setIsPlanning(true);
-    setInterviewPlan('');
-    setStatusText('Preparing interview plan');
-
-    try {
-      if (resumeRef.current?.id) {
-        const body = {
-          resume_id: resumeRef.current.id,
-          target_role: targetRoleRef.current || 'Software Engineer',
-          target_company: targetCompanyRef.current || '',
-          job_description: jobDescription,
-        };
-        const headers = await createApiHeadersAsync({
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-
-        const response = await fetch('/api/v1/interview/plan', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-        });
-        if (response.ok && response.body && !response.redirected) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let currentEvent = '';
-          let accumulated = '';
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed.startsWith('event:')) {
-                currentEvent = trimmed.slice(6).trim();
-              } else if (trimmed.startsWith('data:')) {
-                try {
-                  const payload = JSON.parse(trimmed.slice(5).trim());
-                  if (currentEvent === 'token') {
-                    accumulated += payload.token || '';
-                    setInterviewPlan(accumulated);
-                  }
-                } catch {
-                  continue;
-                }
-              }
-            }
-          }
-          if (accumulated.trim()) {
-            setStatusText('Interview plan ready');
-            return;
-          }
-        }
+      const text = await extractResumeText(file);
+      if (!text || text.length < 50) {
+        addSystemMsg('⚠️ Could not extract text from this file. Try saving as .txt for best results.');
+        setIsUploading(false);
+        return;
       }
-
-      // Fallback: Instant smart client plan
-      const plan = generateClientInterviewPlan(
-        targetRoleRef.current || 'Software Engineer',
-        targetCompanyRef.current || '',
-        jobDescription
-      );
-      setInterviewPlan(plan);
-      setStatusText('Interview plan ready');
+      const info: ResumeInfo = { filename: file.name, text };
+      setResume(info);
+      localStorage.setItem('interview_resume_text', text);
+      localStorage.setItem('interview_resume_name', file.name);
+      addSystemMsg(`✅ Resume loaded — ${Math.round(text.length / 4).toLocaleString()} words extracted from **${file.name}**. Every answer is now personalized to your background.`);
     } catch {
-      const plan = generateClientInterviewPlan(
-        targetRoleRef.current || 'Software Engineer',
-        targetCompanyRef.current || '',
-        jobDescription
-      );
-      setInterviewPlan(plan);
-      setStatusText('Interview plan ready');
-    } finally {
-      setIsPlanning(false);
+      addSystemMsg('❌ Resume read failed. Try a .txt or .docx version.');
     }
+    setIsUploading(false);
   };
 
-  const generateCoaching = async (question: string, candidateAnswer: string) => {
-    const normalized = normalizeQuestion(question);
-    const normalizedAnswer = normalizeQuestion(candidateAnswer);
-    const hasCandidateAnswer = normalizedAnswer.length >= 8;
-    if (normalized.length < 3) {
-      setStatusText('Capture or type the interviewer question first.');
-      return;
+  // ── Profile Backup & Restore ──────────────────────────────
+  const exportProfileBackup = () => {
+    const data = {
+      masterProfile,
+      targetRole,
+      targetCompany,
+      jobDescription,
+      answerStyle,
+      resume,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `interview_profile_${(targetCompany || 'google').toLowerCase()}_backup.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addSystemMsg('💾 Profile backup downloaded! You can import this anytime on any device.');
+  };
+
+  const importProfileBackup = (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const json = JSON.parse(e.target?.result as string);
+        if (json.masterProfile !== undefined) setMasterProfile(json.masterProfile);
+        if (json.targetRole !== undefined) setTargetRole(json.targetRole);
+        if (json.targetCompany !== undefined) setTargetCompany(json.targetCompany);
+        if (json.jobDescription !== undefined) setJobDescription(json.jobDescription);
+        if (json.answerStyle !== undefined) setAnswerStyle(json.answerStyle);
+        if (json.resume !== undefined) setResume(json.resume);
+        addSystemMsg('✅ Profile backup successfully restored!');
+      } catch (err) {
+        addSystemMsg('❌ Invalid backup JSON file.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // ── Add messages ──────────────────────────────────────────
+  const addSystemMsg = (text: string) => {
+    setMessages(prev => [...prev, { id: uid(), role: 'system', text, ts: Date.now() }]);
+  };
+
+  const addQuestionMsg = (text: string): string => {
+    const id = uid();
+    setMessages(prev => [...prev, { id, role: 'question', text, ts: Date.now() }]);
+    return id;
+  };
+
+  const addAnswerMsg = (): string => {
+    const id = uid();
+    setMessages(prev => [...prev, { id, role: 'answer', text: '', streaming: true, ts: Date.now() }]);
+    return id;
+  };
+
+  const updateAnswerMsg = (id: string, text: string, done = false) => {
+    setMessages(prev =>
+      prev.map(m => m.id === id ? { ...m, text, streaming: !done } : m)
+    );
+  };
+
+  // ── Build conversation history for LLM ───────────────────
+  const buildHistory = () => {
+    const msgs = historyRef.current;
+    const pairs: string[] = [];
+    let i = 0;
+    while (i < msgs.length) {
+      if (msgs[i].role === 'question') {
+        const q = msgs[i].text;
+        const a = msgs[i + 1]?.role === 'answer' ? msgs[i + 1].text : '';
+        if (q && a) pairs.push(`Q: ${q}\nA: ${a}`);
+        i += 2;
+      } else {
+        i++;
+      }
     }
-    const activeResume = resumeRef.current;
+    // Last 6 turns for context window efficiency
+    return pairs.slice(-6).join('\n\n---\n\n');
+  };
 
-    currentQuestionRef.current = normalized;
-    setCurrentQuestion(normalized);
-    setTurnState('generating_feedback');
-    setStatusText(hasCandidateAnswer ? 'Improving your answer' : 'Answering now');
+  // ── Core: send question → stream answer ───────────────────
+  const handleSend = useCallback(async (questionText?: string) => {
+    const rawQ = (questionText || input).trim();
+    if (!rawQ || isGenerating) return;
+    const q = autoCorrectInterviewInput(rawQ);
+    setInput('');
+    setInterimText('');
+    speechAccumRef.current = '';
+
+    addQuestionMsg(q);
+    const answerId = addAnswerMsg();
     setIsGenerating(true);
-    setCurrentCoaching('');
-    const relevantMemories = candidateMemoriesRef.current.slice(0, 6);
-    void refreshCandidateMemories(normalized, normalizedAnswer);
-
-    // Detect if this is a coding/technical concept question
-    const CODING_SIGNALS = [
-      'write', 'code', 'implement', 'function', 'program', 'algorithm', 'leetcode',
-      'reverse', 'sort', 'array', 'string', 'loop', 'recursion', 'complexity',
-      'data structure', 'linked list', 'tree', 'graph', 'dynamic programming',
-      'lambda', 'decorator', 'class', 'object', 'inheritance', 'polymorphism',
-      'sql', 'query', 'api', 'rest', 'http', 'async', 'promise', 'callback',
-      'debug', 'fix', 'error', 'exception', 'output', 'print', 'return',
-      'explain', 'what is', 'difference between', 'how does', 'define', 'shallow', 'deep copy'
-    ];
-    // Detect if the question explicitly asks about the candidate's experience / projects
-    const PROJECT_SIGNALS = [
-      'your project', 'tell me about yourself', 'your experience', 'have you worked',
-      'your background', 'your role', 'what did you do', 'you built', 'you developed',
-      'strengths', 'weaknesses', 'why should we hire', 'where do you see yourself',
-      'challenge you faced', 'conflict', 'achievement', 'internship', 'contribution',
-      'worked on', 'tell me about a time', 'describe a situation', 'your team',
-      'how did you handle', 'greatest', 'proudest', 'resume', 'career'
-    ];
-    const lowerQ = normalized.toLowerCase();
-    const isCodingQuestion = CODING_SIGNALS.some((sig) => lowerQ.includes(sig));
-    const isProjectQuestion = PROJECT_SIGNALS.some((sig) => lowerQ.includes(sig));
-
-    // Build the project/resume usage rule based on question type
-    const projectUsageRule = isProjectQuestion
-      ? 'This question explicitly asks about the candidate\'s background, experience, or projects. USE the uploaded resume, project notes, and saved memories as the PRIMARY source for the answer. Ground every claim in the resume.'
-      : isCodingQuestion
-        ? 'STRICT RULE: This is a pure concept or coding question. Answer it directly with knowledge — do NOT mention the resume, projects, or personal experience at all. No phrases like "In my project...", "I used this in...", or "In my experience...". Just answer the concept cleanly.'
-        : 'This is a general question. Use your knowledge to answer directly. Only bring in the resume or projects if the question clearly and directly references personal experience.';
-
-    const hiddenPrompt = [
-      'You are Autonomus AI in real interview coach mode.',
-      hasCandidateAnswer
-        ? 'The user has heard an interviewer question and then gave their own spoken answer.'
-        : 'The user has captured only the interviewer question. Answer as the candidate would naturally respond in the interview.',
-      projectUsageRule,
-      'Do not invent exact companies, metrics, technologies, or project details not present in the resume. If detail is missing, use safe wording.',
-      hasCandidateAnswer
-        ? 'Return markdown with exactly these sections: **Improved Answer**, **What Was Good**, **Missing Points To Add**, **Possible Follow-Up**.'
-        : isCodingQuestion
-          ? 'OUTPUT FORMAT FOR CODING QUESTION: 1) One short spoken sentence introducing your answer (no heading). 2) A clean markdown code block (```language\n...\n```) with the solution. 3) Two to three sentences explaining the logic, time complexity, and a use-case. No project references. No filler. Under 150 words plus the code block.'
-          : 'Return only the spoken answer in natural paragraphs. No headings, bullets, markdown sections, coaching notes, or commentary.',
-      hasCandidateAnswer
-        ? 'The improved answer must be first person, interview-ready, concise, and grounded in resume/projects.'
-        : isCodingQuestion
-          ? 'The spoken intro and explanation must be first-person and natural. The code block must be complete and runnable. Zero project references.'
-          : 'The answer must be first person, interview-ready, natural, and concise (45-80 words for HR/behavioral; up to 120 words for explanatory concept questions).',
-      'Use simple human language with natural contractions. Do not say "Here is", "I would say", "As an AI", "based on the resume".',
-      'CRITICAL: Never say "there has been a misunderstanding", "the question seems to be", or any meta-commentary. Extract the best-guess question from noise and answer it directly.',
-      'For behavioral questions, use compact STAR format in natural spoken language. For coding/concept questions, explain clearly and directly — no STAR, no project stories.',
-      targetRoleRef.current.trim() ? `Target role: ${targetRoleRef.current.trim()}` : '',
-      targetCompanyRef.current.trim() ? `Target company: ${targetCompanyRef.current.trim()}` : '',
-      isProjectQuestion && projectNotesRef.current.trim() ? `Additional project notes from candidate: ${projectNotesRef.current.trim()}` : '',
-      isProjectQuestion && interviewPromptRef.current.trim() ? `Interview instructions from candidate: ${interviewPromptRef.current.trim()}` : '',
-      isProjectQuestion && activeResume?.filename ? `Resume file in context: ${activeResume.filename}` : '',
-      isProjectQuestion && relevantMemories.length
-        ? `Relevant saved candidate memories:\n${relevantMemories.map((memory, index) => `${index + 1}. ${memory.content}`).join('\n')}`
-        : '',
-      companyPrepRef.current.trim() ? `Prepared company/interview context:\n${companyPrepRef.current.trim()}` : '',
-      historyRef.current.length
-        ? `Recent interview turns:\n${historyRef.current.slice(0, 5).map((turn, index) => `${index + 1}. Q: ${turn.question}\nCoach output: ${turn.coaching}`).join('\n\n')}`
-        : '',
-      '',
-      `Interviewer question: ${normalized}`,
-      hasCandidateAnswer ? `Candidate answer: ${normalizedAnswer}` : 'Candidate answer: Not provided yet. Generate the best answer based on the rules above.',
-    ].filter(Boolean).join('\n');
 
     const controller = new AbortController();
     abortRef.current = controller;
 
+    const conversationHistory = buildHistory();
+
+    // Master profile takes priority; falls back to uploaded resume text
+    const profileCtx = masterProfile.trim()
+      || resume?.text
+      || localStorage.getItem('interview_resume_text')
+      || '';
+
+    // Build rich prompt: history + question
+    const enrichedPrompt = [
+      conversationHistory ? `Previous conversation:\n${conversationHistory}` : '',
+      `Now answer this question: ${q}`,
+    ].filter(Boolean).join('\n\n');
+
     try {
-      const coaching = await streamInterviewAnswer(hiddenPrompt, controller.signal, (content) => {
-        if (currentQuestionRef.current === normalized) setCurrentCoaching(content);
+      let accumulated = '';
+      await streamUniversalAnswer({
+        question: enrichedPrompt,
+        resumeText: profileCtx,
+        targetRole: targetRole || undefined,
+        targetCompany: targetCompany || undefined,
+        jobDescription: jobDescription || undefined,
+        interviewStyle: answerStyle,
+        onToken: (_, acc) => {
+          accumulated = acc;
+          updateAnswerMsg(answerId, acc, false);
+          scrollToBottom();
+        },
+        signal: controller.signal,
       });
-      if (!controller.signal.aborted && currentQuestionRef.current === normalized) {
-        answeredQuestionsRef.current.add(fingerprintQuestion(normalized));
-        setHistory((items) => [
-          {
-            id: `${Date.now()}`,
-            question: normalized,
-            candidateAnswer: hasCandidateAnswer ? normalizedAnswer : '(Suggested answer generated before candidate answer)',
-            coaching,
-            createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            resumeFilename: activeResume?.filename || 'Generic Context',
-          },
-          ...items,
-        ].slice(0, 8));
-        setTurnState('ready_for_next_question');
-        setStatusText('Coaching ready');
-      }
-    } catch (error) {
+      updateAnswerMsg(answerId, accumulated, true);
+    } catch (err: any) {
       if (!controller.signal.aborted) {
-        setCurrentCoaching(`Error: ${error instanceof Error ? error.message : 'Could not generate answer.'}`);
-        setStatusText('Answer generation failed');
-      }
-    } finally {
-      if (!controller.signal.aborted) {
-        setIsGenerating(false);
+        updateAnswerMsg(answerId, '⚠️ Something went wrong. Please try again.', true);
       }
     }
-  };
 
-  const streamInterviewAnswer = async (
-    prompt: string,
-    signal: AbortSignal,
-    onToken: (content: string) => void,
-  ) => {
-    const res = await streamUniversalAnswer({
-      question: currentQuestionRef.current || prompt,
-      resumeText: resumeRef.current?.filename ? `Resume: ${resumeRef.current.filename}` : '',
-      targetRole: targetRoleRef.current,
-      targetCompany: targetCompanyRef.current,
-      projectNotes: projectNotesRef.current,
-      interviewPrompt: interviewPromptRef.current,
-      interviewStyle: selectedStyleRef.current,
-      onToken: (token, accumulated) => {
-        onToken(accumulated);
-      },
-      signal,
-    });
-    return res.text;
-  };
+    setIsGenerating(false);
+    abortRef.current = null;
+    scrollToBottom();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, isGenerating, resume, masterProfile, targetRole, targetCompany, jobDescription, answerStyle]);
 
-  const startListening = () => {
-    if (!recognitionRef.current) {
-      setMicState('unsupported');
-      setStatusText('Speech recognition is not supported in this browser. Type in the question box below.');
-      return;
-    }
-    shouldListenRef.current = true;
-    setMicState('listening');
-    setCaptureTarget('question');
-    captureTargetRef.current = 'question';
-    setTurnState('waiting_for_question');
-    setStatusText('Listening for interviewer question');
-    try {
-      recognitionRef.current.start();
-    } catch {
-      setStatusText('Listening is already active');
+  // ── Mic controls ──────────────────────────────────────────
+  const toggleMic = () => {
+    if (!recognitionRef.current || micState === 'unsupported' || micState === 'permission-denied') return;
+    if (micState === 'listening') {
+      shouldListenRef.current = false;
+      recognitionRef.current.stop();
+      setMicState('idle');
+      setInterimText('');
+      if (speechDebounceRef.current) clearTimeout(speechDebounceRef.current);
+    } else {
+      shouldListenRef.current = true;
+      speechAccumRef.current = '';
+      setMicState('listening');
+      try { recognitionRef.current.start(); } catch { /* already running */ }
     }
   };
 
-  const pauseListening = () => {
-    shouldListenRef.current = false;
-    recognitionRef.current?.stop();
-    if (debounceRef.current) clearTimeout(debounceRef.current);
+  // ── Save API keys ─────────────────────────────────────────
+  const saveKeys = () => {
+    saveApiKey('groq', keyInputs.groq);
+    saveApiKey('openai', keyInputs.openai);
+    saveApiKey('gemini', keyInputs.gemini);
+    setActiveProvider(getActiveProvider());
+    setKeysOpen(false);
+    addSystemMsg(`🔑 API keys saved. Using ${getActiveProvider().provider.toUpperCase()} for answers now.`);
+  };
+
+  // ── Auto-resize textarea ──────────────────────────────────
+  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    e.target.style.height = 'auto';
+    e.target.style.height = Math.min(e.target.scrollHeight, 140) + 'px';
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  // ── Clear chat ────────────────────────────────────────────
+  const clearChat = () => {
     abortRef.current?.abort();
     setIsGenerating(false);
-    setMicState('paused');
-    setStatusText('Paused');
+    setMessages([{
+      id: uid(), role: 'system',
+      text: '🗑️ Chat cleared. Ready for a fresh session!',
+      ts: Date.now(),
+    }]);
   };
 
-  const clearSession = () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    abortRef.current?.abort();
-    setQuestionTranscript('');
-    setAnswerTranscript('');
-    setInterimTranscript('');
-    setManualPrompt('');
-    setCurrentQuestion('');
-    setCurrentCoaching('');
-    setHistory([]);
-    currentQuestionRef.current = '';
-    questionTranscriptRef.current = '';
-    answerTranscriptRef.current = '';
-    autoGeneratedQuestionRef.current = '';
-    answeredQuestionsRef.current.clear();
-    setIsGenerating(false);
-    setCaptureTarget('question');
-    captureTargetRef.current = 'question';
-    setTurnState('waiting_for_question');
-    setStatusText(shouldListenRef.current ? 'Listening for interviewer question' : 'Ready to listen');
+  // ── Copy answer ───────────────────────────────────────────
+  const copyMessage = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
   };
 
-  const submitManualPrompt = () => {
-    const value = normalizeQuestion(manualPrompt);
-    if (!value) return;
-    if (!hasResumeContext) {
-      setStatusText('Upload your resume before generating answers.');
-      return;
-    }
-    const next = `${questionTranscriptRef.current} ${value}`.trim();
-    const nextFingerprint = fingerprintQuestion(next);
-    setQuestionTranscript(next);
-    questionTranscriptRef.current = next;
-    setCurrentQuestion(next);
-    currentQuestionRef.current = next;
-    setInterimTranscript('');
-    setTurnState('question_detected');
-    setStatusText('Answering now');
-    if (
-      !isGeneratingRef.current &&
-      autoGeneratedQuestionRef.current !== next &&
-      !answeredQuestionsRef.current.has(nextFingerprint)
-    ) {
-      autoGeneratedQuestionRef.current = next;
-      void refreshCandidateMemories(next);
-      void generateCoaching(next, '');
-    }
-    setManualPrompt('');
-  };
-
-  const markAsQuestion = () => {
-    const question = normalizeQuestion(liveQuestion);
-    if (!question) {
-      setStatusText('Capture or type the interviewer question first.');
-      return;
-    }
-    setQuestionTranscript(question);
-    questionTranscriptRef.current = question;
-    setCurrentQuestion(question);
-    currentQuestionRef.current = question;
-    setInterimTranscript('');
-    setTurnState('question_detected');
-    setStatusText('Question captured. Start your answer when ready.');
-    void refreshCandidateMemories(question);
-  };
-
-  const startMyAnswer = () => {
-    if (!normalizeQuestion(questionTranscriptRef.current || liveQuestion)) {
-      setStatusText('Mark the interviewer question before answering.');
-      return;
-    }
-    setCaptureTarget('answer');
-    captureTargetRef.current = 'answer';
-    setInterimTranscript('');
-    setTurnState('listening_to_candidate_answer');
-    setStatusText('Listening to your answer');
-  };
-
-  const finishMyAnswer = () => {
-    const answer = normalizeQuestion(liveAnswer);
-    if (!answer) {
-      setStatusText('Capture your answer before generating coaching.');
-      return;
-    }
-    setAnswerTranscript(answer);
-    answerTranscriptRef.current = answer;
-    setInterimTranscript('');
-    setTurnState('ready_for_next_question');
-    setStatusText('Answer captured. Generate coaching when ready.');
-    void refreshCandidateMemories(questionTranscriptRef.current || liveQuestion, answer);
-  };
-
-  const generateCurrentCoaching = () => {
-    const question = normalizeQuestion(questionTranscriptRef.current || liveQuestion);
-    const answer = normalizeQuestion(answerTranscriptRef.current || liveAnswer);
-    void generateCoaching(question, answer);
-  };
-
-  const nextQuestion = () => {
-    abortRef.current?.abort();
-    setQuestionTranscript('');
-    setAnswerTranscript('');
-    setInterimTranscript('');
-    setManualPrompt('');
-    setCurrentQuestion('');
-    setCurrentCoaching('');
-    currentQuestionRef.current = '';
-    questionTranscriptRef.current = '';
-    answerTranscriptRef.current = '';
-    autoGeneratedQuestionRef.current = '';
-    answeredQuestionsRef.current.clear();
-    setIsGenerating(false);
-    setCaptureTarget('question');
-    captureTargetRef.current = 'question';
-    setTurnState('waiting_for_question');
-    setStatusText(shouldListenRef.current ? 'Listening for next interviewer question' : 'Ready for next question');
-  };
-
-  const uploadResume = async (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file) return;
-    setIsUploadingResume(true);
-    setStatusText('Uploading and extracting resume');
-    try {
-      const formData = new FormData();
-      formData.append('upload', file);
-      const result = await apiRequest('/api/v1/files', {
-        method: 'POST',
-        body: formData,
-      });
-      resumeRef.current = result;
-      setResume(result);
-      setStatusText(result?.metadata?.candidate_profile ? 'Candidate profile stored' : 'Resume context active');
-    } catch (error) {
-      setStatusText(error instanceof Error ? error.message : 'Resume upload failed');
-    } finally {
-      setIsUploadingResume(false);
-    }
-  };
-
-  const removeResume = () => {
-    pauseListening();
-    resumeRef.current = null;
-    setResume(null);
-    setStatusText('Resume removed. Upload a resume to continue.');
-  };
-
-  const copyAnswer = async () => {
-    if (!currentCoaching.trim()) return;
-    await navigator.clipboard.writeText(currentCoaching);
-    setStatusText('Answer copied');
-  };
-
-  const saveAnswer = async () => {
-    if (!currentQuestion.trim() || !currentCoaching.trim()) return;
-    await apiRequest('/api/v1/memories', {
-      method: 'POST',
-      body: JSON.stringify({
-        content: `Interview question: ${currentQuestion}\nMy answer: ${answerTranscript}\nCoach output: ${currentCoaching}`,
-        type: 'fact',
-        memory_type: 'interview_note',
-        importance: 5,
-        tags: ['interview', 'coach', resume?.filename || 'resume'],
-      }),
-    });
-    setStatusText('Saved to memory');
-    await refreshCandidateMemories(currentQuestion, answerTranscript);
-  };
-
-  const rememberProjectDetail = async () => {
-    const detail = normalizeQuestion(projectDetailDraft);
-    if (!detail) return;
-    await apiRequest('/api/v1/memories', {
-      method: 'POST',
-      body: JSON.stringify({
-        content: detail,
-        type: 'fact',
-        memory_type: 'interview_project_detail',
-        importance: 7,
-        tags: ['interview', 'project', resume?.filename || 'resume'],
-      }),
-    });
-    setProjectDetailDraft('');
-    setStatusText('Project detail saved to interview memory');
-    await refreshCandidateMemories(currentQuestion || questionTranscript, answerTranscript);
-  };
-
-  const sendToChat = () => {
-    const payload = [
-      'Continue helping me with this interview question.',
-      '',
-      `Question: ${currentQuestion || transcript}`,
-      answerTranscript ? `My answer: ${answerTranscript}` : '',
-      currentCoaching ? `Coach output: ${currentCoaching}` : '',
-      history.length ? `Recent turns:\n${history.slice(0, 5).map((turn, index) => `${index + 1}. Q: ${turn.question}\nA: ${turn.candidateAnswer}\nAnswer: ${turn.coaching}`).join('\n\n')}` : '',
-      resume?.filename ? `Resume context: ${resume.filename}` : '',
-    ].filter(Boolean).join('\n');
-    sessionStorage.setItem('interview_to_chat_prompt', payload);
-    if (resume) {
-      sessionStorage.setItem('interview_to_chat_files', JSON.stringify([resume]));
-    }
-    router.push('/chat');
-  };
-
-  const statusClass = [
-    styles.statusPill,
-    micState === 'listening' ? styles.statusListening : '',
-    isGenerating ? styles.statusGenerating : '',
-    micState === 'permission-denied' || micState === 'error' || micState === 'unsupported' ? styles.statusError : '',
-  ].filter(Boolean).join(' ');
-
-  if (interviewAccess && !interviewAccess.allowed) {
-    const isStarterLocked = interviewAccess.reason === 'plan_locked';
-    return (
-      <AppShell>
-        <div className={styles.page}>
-          <section style={{
-            minHeight: 'calc(100vh - 160px)',
-            display: 'grid',
-            placeItems: 'center',
-            background: 'linear-gradient(135deg, rgba(79, 142, 247, 0.12), rgba(155, 93, 229, 0.08))',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '32px',
-          }}>
-            <div style={{ maxWidth: '620px', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center' }}>
-              <span style={{ color: 'var(--color-accent-primary)', fontSize: 'var(--text-xs)', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                Pro Feature
-              </span>
-              <h1 className={styles.title}>Unlock unlimited Interview Assist</h1>
-              <p className={styles.subtitle}>
-                {isStarterLocked
-                  ? 'Interview Assist is intentionally reserved for Pro and Enterprise plans.'
-                  : `You used ${interviewAccess.used ?? 2} of ${interviewAccess.limit ?? 2} free interview sessions.`}
-                {' '}Upgrade to Pro for unlimited resume-aware live answers, voice coaching, and interview practice.
-              </p>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                <button
-                  className={styles.primaryButton}
-                  type="button"
-                  onClick={() => router.push('/settings')}
-                >
-                  Upgrade to Pro
-                </button>
-                <button className={styles.button} type="button" onClick={() => router.push('/chat')}>
-                  Continue in Chat
-                </button>
-              </div>
-              <span style={{ color: 'var(--color-text-tertiary)', fontSize: 'var(--text-xs)' }}>
-                Cancel anytime. Your resume and interview history stay private.
-              </span>
-            </div>
-          </section>
-        </div>
-      </AppShell>
-    );
-  }
+  const hasKeys = Boolean(activeProvider.key);
+  const canUseMic = micState !== 'unsupported' && micState !== 'permission-denied';
+  const isListening = micState === 'listening';
 
   return (
     <AppShell>
-      <div className={`${styles.page} ${isFocusMode ? styles.focusMode : ''}`}>
-        <header className={styles.header}>
-          <div className={styles.titleBlock}>
-            <h1 className={styles.title}>Interview Assist</h1>
-            <p className={styles.subtitle}>Private live interview answers with continuous listening and fast streaming text.</p>
-          </div>
-          <div className={styles.controls}>
-            <span className={statusClass}>
-              <span className={styles.statusDot} />
-              {isGenerating ? 'Answering' : statusText}
-            </span>
-            {micState === 'listening' ? (
-              <button className={styles.dangerButton} type="button" onClick={pauseListening}>
-                <Pause size={15} />
-                Pause
-              </button>
-            ) : (
-              <button className={styles.primaryButton} type="button" onClick={startListening} disabled={!canUseSpeech || !hasResumeContext}>
-                <Mic size={15} />
-                Start Listening
-              </button>
-            )}
-            <button
-              className={styles.primaryButton}
-              type="button"
-              onClick={() => setIsApiKeyModalOpen(true)}
-              style={{
-                background: activeProvider.key ? 'rgba(16, 185, 129, 0.18)' : 'rgba(99, 91, 255, 0.18)',
-                border: activeProvider.key ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid rgba(99, 91, 255, 0.45)',
-                color: activeProvider.key ? '#6ee7b7' : '#c7d2fe',
-              }}
-            >
-              <Key size={14} />
-              {activeProvider.key ? `${activeProvider.provider.toUpperCase()} Key Active` : 'Custom API Keys'}
-            </button>
-            <button className={styles.button} type="button" onClick={clearSession}>
-              <Eraser size={15} />
-              Clear
-            </button>
-            <button className={styles.button} type="button" onClick={() => setIsFocusMode((current) => !current)}>
-              {isFocusMode ? 'Full View' : 'Focus'}
-            </button>
-          </div>
-        </header>
+      <div className={styles.shell}>
 
-        <div className={styles.settingsRow}>
-          <label className={styles.selector}>
-            <span>Model</span>
-            <select className={styles.select} value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value as ModelOption['id'])}>
-              {MODEL_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className={styles.selector}>
-            <span>Engine</span>
-            <span
-              style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                background: activeProvider.key ? 'rgba(16, 185, 129, 0.12)' : 'rgba(99, 91, 255, 0.12)',
-                border: activeProvider.key ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(99, 91, 255, 0.3)',
-                color: activeProvider.key ? '#34d399' : '#a5b4fc',
-                fontSize: '11px',
-                fontWeight: 700,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <Sparkles size={13} />
-              {activeProvider.key ? `Direct ${activeProvider.provider.toUpperCase()} Stream` : 'Smart Instant AI (Login-Free)'}
-            </span>
-          </label>
-          <label className={styles.selector}>
-            <span>Answer Style</span>
-            <select className={styles.select} value={selectedStyle} onChange={(event) => setSelectedStyle(event.target.value)}>
-              <option value="short">Short Interview Answer</option>
-              <option value="confident">Confident but Natural</option>
-              <option value="technical">Technical Explanation</option>
-              <option value="star">HR/Behavioral STAR</option>
-              <option value="fresher">Fresher Friendly</option>
-            </select>
-          </label>
+        {/* ── Top bar ── */}
+        <div className={styles.topBar}>
+          <div className={styles.botAvatar}>🤖</div>
+          <div className={styles.botInfo}>
+            <div className={styles.botName}>Interview AI Coach</div>
+            <div className={`${styles.botStatus} ${isGenerating ? styles.thinking : styles.online}`}>
+              {isGenerating ? 'Thinking…' : isListening ? '🎙 Listening…' : 'Online'}
+            </div>
+          </div>
+          <div className={styles.topBarActions}>
+            {/* Resume indicator */}
+            {resume && (
+              <div className={styles.iconBtn} title={resume.filename} style={{ color: '#4ade80', borderColor: 'rgba(74,222,128,0.3)', background: 'rgba(74,222,128,0.08)', fontSize: '10px', padding: '0 8px', width: 'auto', gap: '4px' }}>
+                📄 {resume.filename.length > 12 ? resume.filename.slice(0, 12) + '…' : resume.filename}
+              </div>
+            )}
+            {/* Settings */}
+            <button className={`${styles.iconBtn} ${setupOpen ? styles.active : ''}`} onClick={() => setSetupOpen(o => !o)} title="Setup">
+              <Settings size={15} />
+            </button>
+            {/* API Keys */}
+            <button className={`${styles.iconBtn} ${hasKeys ? styles.active : ''}`} onClick={() => setKeysOpen(true)} title="API Keys">
+              <Key size={15} />
+            </button>
+            {/* Clear */}
+            <button className={`${styles.iconBtn} ${styles.danger}`} onClick={clearChat} title="Clear chat">
+              <Trash2 size={15} />
+            </button>
+          </div>
         </div>
 
-        <section className={styles.setupPanel}>
-          <div className={styles.setupHeader}>
-            <div>
-              <h2 className={styles.setupTitle}>Resume context (Optional)</h2>
-              <p className={styles.setupSubtitle}>Upload your resume to personalize answers with your projects, or start practicing immediately.</p>
-            </div>
-            <input
-              id="interview-resume-upload"
-              hidden
-              type="file"
-              accept=".pdf,.docx,.txt,.md"
-              onChange={(event) => uploadResume(event.target.files)}
-            />
-            <button
-              className={styles.primaryButton}
-              type="button"
-              onClick={() => document.getElementById('interview-resume-upload')?.click()}
-              disabled={isUploadingResume}
-            >
-              <Upload size={15} />
-              {isUploadingResume ? 'Uploading...' : 'Upload Resume'}
-            </button>
-          </div>
+        {/* ── Setup Drawer ── */}
+        <div className={`${styles.setupDrawer} ${setupOpen ? styles.open : styles.closed}`}>
+          <div className={styles.setupInner}>
+            <div className={styles.setupTitle}>⚙️ Interview Setup</div>
 
-          {resume && (
-            <div className={styles.resumeChip}>
-              <FileText size={16} />
-              <span className={styles.resumeName}>{resume.filename}</span>
-              <span className={styles.resumeMeta}>
-                {hasCandidateProfile
-                  ? 'Candidate profile stored'
-                  : resume.extraction?.token_count
-                    ? `${resume.extraction.token_count.toLocaleString()} tokens`
-                    : 'Extracted'}
-              </span>
-              <button className={styles.iconOnlyButton} type="button" onClick={removeResume} aria-label="Remove resume">
-                <X size={14} />
-              </button>
-            </div>
-          )}
+            {/* No key banner */}
+            {!hasKeys && (
+              <div className={styles.apiKeyBanner}>
+                <Sparkles size={14} style={{ flexShrink: 0 }} />
+                <span>For real AI answers personalized to your data, add a free API key (Groq is free — 100 req/day).</span>
+                <span className={styles.apiKeyBannerLink} onClick={() => { setKeysOpen(true); setSetupOpen(false); }}>Add Key →</span>
+              </div>
+            )}
 
-          <div className={styles.profileGrid}>
-            <label className={styles.fieldLabel}>
-              <span>Target role</span>
-              <input className={styles.textField} value={targetRole} onChange={(event) => setTargetRole(event.target.value)} placeholder="Frontend Engineer, Data Analyst..." />
-            </label>
-            <label className={styles.fieldLabel}>
-              <span>Company</span>
-              <input className={styles.textField} value={targetCompany} onChange={(event) => setTargetCompany(event.target.value)} placeholder="Optional company name" />
-            </label>
-            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
-              <span>Job description</span>
-              <textarea className={styles.notesField} value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} placeholder="Optional: paste the role description, requirements, or interview email here." />
-            </label>
-            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
-              <span>Extra project notes</span>
-              <textarea className={styles.notesField} value={projectNotes} onChange={(event) => setProjectNotes(event.target.value)} placeholder="Optional: add project details, metrics, tech stack, or stories not present in the resume." />
-            </label>
-            <label className={`${styles.fieldLabel} ${styles.wideField}`}>
-              <span>Interview instructions</span>
-              <textarea className={styles.notesField} value={interviewPrompt} onChange={(event) => setInterviewPrompt(event.target.value)} placeholder="Optional: answer like a fresher frontend developer, keep under 60 seconds, use React examples when possible." />
-            </label>
-          </div>
-          <div className={styles.setupActions}>
-            <button className={styles.primaryButton} type="button" onClick={generateInterviewPlan} disabled={isPlanning}>
-              {isPlanning ? 'Planning...' : 'Generate Interview Plan'}
-            </button>
-            <button className={styles.button} type="button" onClick={prepareCompanyContext} disabled={!targetCompany.trim() || isPreparingCompany}>
-              {isPreparingCompany ? 'Preparing...' : 'Prepare Company Questions'}
-            </button>
-            <span className={styles.helperText}>Fetch likely company/role themes once, then reuse them for faster answers.</span>
-          </div>
-          {interviewPlan && (
-            <div className={styles.planPanel}>
-              <div className={styles.planTabs}>
-                {PLAN_TABS.map((tab) => (
-                  <button
-                    className={activePlanTab === tab.id ? styles.planTabActive : styles.planTab}
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setActivePlanTab(tab.id)}
-                  >
-                    {tab.label}
+            {/* ── MASTER PROFILE ── the main "give all data" section */}
+            <div className={styles.setupField} style={{ gridColumn: '1/-1' }}>
+              <label className={styles.setupLabel}>
+                📋 Your Full Profile <span style={{ color: '#4ade80', fontWeight: 700 }}>(paste everything here — resume, projects, skills, achievements, education, goals)</span>
+              </label>
+              <textarea
+                className={styles.setupTextarea}
+                style={{ minHeight: 160, fontSize: 12, lineHeight: 1.6, fontFamily: 'inherit' }}
+                value={masterProfile}
+                onChange={e => setMasterProfile(e.target.value)}
+                placeholder={`Paste ALL your information here. Example:
+
+Name: Amar Reddy
+Role applying for: Software Engineer Apprentice at Google
+
+SKILLS: Python, JavaScript, React, Node.js, SQL, Git, REST APIs
+
+EXPERIENCE:
+- Built a full-stack task management app (React + FastAPI) with 500+ users
+- Automated data pipelines reducing processing time by 40%
+- Led a team of 3 on a college project that won 1st place at hackathon
+
+EDUCATION: B.Tech Computer Science, graduating 2025, CGPA 8.2
+
+PROJECTS:
+- AI chatbot using OpenAI API (2000 daily users)
+- E-commerce site with payment integration (Stripe)
+
+ACHIEVEMENTS: Google CodeJam participant, Microsoft Azure certified
+
+ABOUT ME: I'm passionate about building products that matter...`}
+              />
+              {masterProfile.trim() && (
+                <div style={{ fontSize: 10, color: '#4ade80', fontWeight: 700, marginTop: 4 }}>
+                  ✅ {Math.round(masterProfile.trim().length / 5).toLocaleString()} words stored — bot will use this for every answer
+                </div>
+              )}
+            </div>
+
+            {/* Resume upload (optional when profile is filled) */}
+            <div className={styles.resumeRow}>
+              <div className={styles.setupLabel} style={{ marginBottom: 0 }}>
+                Or upload resume file {masterProfile.trim() ? <span style={{ color: '#64748b', fontWeight: 400 }}>(optional — profile above takes priority)</span> : ''}
+              </div>
+              {resume ? (
+                <div className={styles.resumeChip}>
+                  <span className={styles.resumeChipName}>{resume.filename}</span>
+                  <span style={{ fontSize: '10px', color: '#86efac', fontWeight: 700 }}>
+                    ~{Math.round(resume.text.length / 4).toLocaleString()} words
+                  </span>
+                  <button className={styles.removeBtn} onClick={() => {
+                    setResume(null);
+                    localStorage.removeItem('interview_resume_text');
+                    localStorage.removeItem('interview_resume_name');
+                    addSystemMsg('📄 Resume removed.');
+                  }}>
+                    <X size={12} />
                   </button>
-                ))}
+                </div>
+              ) : (
+                <label className={styles.uploadBtn} style={{ opacity: isUploading ? 0.6 : 1 }}>
+                  <Paperclip size={13} />
+                  {isUploading ? 'Reading…' : 'Upload (.pdf .txt .docx)'}
+                  <input
+                    type="file"
+                    hidden
+                    accept=".pdf,.txt,.md,.docx"
+                    disabled={isUploading}
+                    onChange={e => uploadResume(e.target.files)}
+                  />
+                </label>
+              )}
+            </div>
+
+            <div className={styles.setupGrid}>
+              <div className={styles.setupField}>
+                <label className={styles.setupLabel}>Target Role</label>
+                <input
+                  className={styles.setupInput}
+                  value={targetRole}
+                  onChange={e => setTargetRole(e.target.value)}
+                  placeholder="Software Engineer Apprentice"
+                />
               </div>
-              <div className={styles.planContent}>
-                <MarkdownRenderer content={extractPlanSection(interviewPlan, PLAN_TABS.find((tab) => tab.id === activePlanTab)?.heading || PLAN_TABS[0].heading)} />
+              <div className={styles.setupField}>
+                <label className={styles.setupLabel}>Company</label>
+                <input
+                  className={styles.setupInput}
+                  value={targetCompany}
+                  onChange={e => setTargetCompany(e.target.value)}
+                  placeholder="Google"
+                />
+              </div>
+              <div className={`${styles.setupField} ${styles.wideField}`}>
+                <label className={styles.setupLabel}>Job Description (paste here for best results)</label>
+                <textarea
+                  className={styles.setupTextarea}
+                  value={jobDescription}
+                  onChange={e => setJobDescription(e.target.value)}
+                  placeholder="Paste the job description, requirements, or interview email…"
+                />
+              </div>
+              <div className={styles.setupField}>
+                <label className={styles.setupLabel}>Answer Style</label>
+                <select
+                  className={styles.setupInput}
+                  value={answerStyle}
+                  onChange={e => setAnswerStyle(e.target.value)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <option value="confident">Confident & Natural</option>
+                  <option value="star">STAR Method</option>
+                  <option value="technical">Deep Technical</option>
+                  <option value="fresher">Fresher Friendly</option>
+                  <option value="short">Short & Punchy</option>
+                </select>
+              </div>
+
+              {/* ── Backup & Sync across devices ── */}
+              <div className={`${styles.setupField} ${styles.wideField}`} style={{ marginTop: 8, display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  className={styles.setupInput}
+                  style={{ width: 'auto', padding: '6px 12px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'rgba(255,255,255,0.06)' }}
+                  onClick={exportProfileBackup}
+                  title="Export full profile & settings as JSON backup"
+                >
+                  <Download size={13} />
+                  Export Profile JSON
+                </button>
+
+                <label
+                  className={styles.setupInput}
+                  style={{ width: 'auto', padding: '6px 12px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'rgba(255,255,255,0.06)', marginBottom: 0 }}
+                  title="Import profile backup from JSON file"
+                >
+                  <UploadCloud size={13} />
+                  Restore Profile JSON
+                  <input
+                    type="file"
+                    hidden
+                    accept=".json"
+                    onChange={e => importProfileBackup(e.target.files)}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Chat Feed ── */}
+        <div className={styles.chatFeed} ref={feedRef}>
+          <div className={styles.dateSep}>Today</div>
+
+          {messages.map((msg) => (
+            <div key={msg.id} className={`${styles.msg} ${styles[msg.role]}`}>
+              {msg.role !== 'system' && (
+                <div className={styles.msgLabel}>
+                  {msg.role === 'question' ? '🎙 Interviewer' : '🤖 AI Coach'}
+                </div>
+              )}
+              <div className={styles.bubble}>
+                {msg.streaming && msg.text === '' ? (
+                  <div className={styles.typing}>
+                    <div className={styles.dot} />
+                    <div className={styles.dot} />
+                    <div className={styles.dot} />
+                  </div>
+                ) : (
+                  <>
+                    <MarkdownRenderer content={msg.text} />
+                    {msg.streaming && <span className={styles.cursor} />}
+                  </>
+                )}
+              </div>
+              <div className={styles.msgMeta} style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: msg.role === 'answer' ? 'flex-end' : 'flex-start' }}>
+                <span>{formatTime(msg.ts)}</span>
+                {msg.role === 'answer' && !msg.streaming && msg.text && (
+                  <button
+                    onClick={() => copyMessage(msg.text)}
+                    style={{ background: 'none', border: 'none', color: '#3f4554', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0 }}
+                    title="Copy answer"
+                  >
+                    <Copy size={11} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Interim speech text preview */}
+          {interimText && (
+            <div className={`${styles.msg} ${styles.question}`}>
+              <div className={styles.msgLabel}>🎙 Listening…</div>
+              <div className={styles.bubble} style={{ opacity: 0.6, fontStyle: 'italic' }}>
+                {interimText}
               </div>
             </div>
           )}
-        </section>
 
-        {micState === 'unsupported' && (
-          <div className={styles.notice}>
-            This browser does not support live speech recognition. Chrome or Edge desktop is recommended. You can still paste or type the interviewer prompt below.
-          </div>
-        )}
-
-        <main className={styles.grid}>
-          <section className={styles.panel}>
-            <div className={styles.panelHeader}>
-              <span>Conversation Capture</span>
-              <MicOff size={16} />
-            </div>
-            <div className={styles.panelBody}>
-              <div className={styles.turnStateBar}>
-                <span className={styles.eyebrow}>Turn state</span>
-                <span className={styles.turnStateValue}>{turnState === 'generating_feedback' ? 'answering' : turnState.replaceAll('_', ' ')}</span>
-              </div>
-
-              <div className={styles.questionCard}>
-                <span className={styles.eyebrow}>Interviewer Question</span>
-                <div className={styles.transcriptBox}>
-                  {liveQuestion ? (
-                    <>
-                      <span className={styles.finalText}>{questionTranscript}</span>
-                      {captureTarget === 'question' && interimTranscript && <span className={styles.interimText}> {interimTranscript}</span>}
-                    </>
-                  ) : (
-                    <span className={styles.placeholder}>Listen to or type the interviewer question here.</span>
-                  )}
-                </div>
-              </div>
-
-              <div className={styles.turnControls}>
-                <button className={styles.button} type="button" onClick={nextQuestion}>
-                  Next Question
-                </button>
-              </div>
-
-              <div className={styles.questionCard}>
-                <span className={styles.eyebrow}>Manual fallback</span>
-                <textarea
-                  className={styles.manualInput}
-                  value={manualPrompt}
-                  onChange={(event) => setManualPrompt(event.target.value)}
-                  placeholder="Paste or type the interviewer question here..."
-                />
-                <button className={styles.button} type="button" onClick={submitManualPrompt} disabled={!manualPrompt.trim()}>
-                  <Send size={14} />
-                  Generate From Question
-                </button>
-              </div>
-
-              <div className={styles.questionCard}>
-                <span className={styles.eyebrow}>Context Used</span>
-                <div className={styles.contextList}>
-                  <div className={styles.contextRow}>
-                    <span>Resume</span>
-                    <strong>{resume?.filename || 'Not uploaded'}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Stored profile</span>
-                    <strong>{hasCandidateProfile ? 'Ready' : resume ? 'Building from resume' : 'Not ready'}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Saved memories</span>
-                    <strong>{isLoadingMemories ? 'Loading...' : `${candidateMemories.length} loaded`}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Recent Q&A</span>
-                    <strong>{history.length} turns</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Project notes</span>
-                    <strong>{projectNotes.trim() ? 'Included' : 'Empty'}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Job description</span>
-                    <strong>{jobDescription.trim() ? 'Included' : 'Empty'}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Instructions</span>
-                    <strong>{interviewPrompt.trim() ? 'Included' : 'Empty'}</strong>
-                  </div>
-                  <div className={styles.contextRow}>
-                    <span>Company prep</span>
-                    <strong>{companyPrep.trim() ? 'Ready' : targetCompany.trim() ? 'Not prepared' : 'No company'}</strong>
-                  </div>
-                </div>
-                {candidateMemories.length > 0 && (
-                  <div className={styles.memoryList}>
-                    {candidateMemories.slice(0, 3).map((memory, index) => (
-                      <div className={styles.memoryItem} key={memory.id || `${index}-${memory.content}`}>
-                        {memory.content}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {companyPrep && (
-                  <div className={styles.companyPrepBox}>
-                    <MarkdownRenderer content={companyPrep} />
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className={styles.panel}>
-            <div className={styles.panelHeader}>
-              <span>Live Answer</span>
-              {hasResumeContext && <span className={styles.contextActive}>Resume context active</span>}
-              <div className={styles.answerActions}>
-                <button className={styles.button} type="button" onClick={copyAnswer} disabled={!currentCoaching.trim()}>
-                  <Copy size={14} />
-                  Copy
-                </button>
-                <button className={styles.button} type="button" onClick={saveAnswer} disabled={!currentCoaching.trim()}>
-                  <Save size={14} />
-                  Save
-                </button>
-                <button className={styles.button} type="button" onClick={sendToChat} disabled={!currentQuestion.trim() && !transcript.trim()}>
-                  <Clipboard size={14} />
-                  Chat
-                </button>
-              </div>
-            </div>
-            <div className={styles.panelBody}>
-              <div className={styles.answerBox}>
-                {currentCoaching ? (
-                  <MarkdownRenderer content={currentCoaching} />
-                ) : (
-                  <span className={styles.placeholder}>Your answer will appear here as soon as the interviewer question is captured.</span>
-                )}
-              </div>
-
-              <div className={styles.questionCard}>
-                <span className={styles.eyebrow}>Recent Q&A</span>
-                <div className={styles.historyList}>
-                  {history.length === 0 && <span className={styles.placeholder}>No interview turns yet.</span>}
-                  {history.map((turn) => (
-                    <div key={turn.id} className={styles.historyItem}>
-                      <div className={styles.historyQuestion}>
-                        <Bot size={13} /> {turn.question}
-                      </div>
-                      {turn.resumeFilename && <div className={styles.historyMeta}>Resume: {turn.resumeFilename}</div>}
-                      <div className={styles.historyAnswer}>My answer: {turn.candidateAnswer}</div>
-                      <div className={styles.historyAnswer}>Answer: {turn.coaching}</div>
-                    </div>
+          {/* Sample question chips — show only if few messages */}
+          {messages.length <= 2 && !isGenerating && (
+            <div className={`${styles.msg} ${styles.system}`}>
+              <div className={styles.bubble}>
+                <div style={{ marginBottom: 8, fontSize: 12, color: '#64748b' }}>Try a sample question:</div>
+                <div className={styles.chips}>
+                  {SAMPLE_QUESTIONS.map(q => (
+                    <button key={q} className={styles.chip} onClick={() => handleSend(q)}>
+                      {q}
+                    </button>
                   ))}
                 </div>
               </div>
-
-              <div className={styles.questionCard}>
-                <span className={styles.eyebrow}>Remember project detail</span>
-                <textarea
-                  className={styles.manualInput}
-                  value={projectDetailDraft}
-                  onChange={(event) => setProjectDetailDraft(event.target.value)}
-                  placeholder="Add a correction, metric, tech stack detail, or project story Autonomus AI should reuse later."
-                />
-                <button className={styles.button} type="button" onClick={rememberProjectDetail} disabled={!projectDetailDraft.trim()}>
-                  Save Project Detail
-                </button>
-              </div>
             </div>
-          </section>
-        </main>
+          )}
+        </div>
+
+        {/* ── Input Bar ── */}
+        <div className={styles.inputBar}>
+          <div className={styles.inputRow}>
+            {/* Mic button */}
+            <button
+              className={`${styles.micBtn} ${isListening ? styles.listening : ''}`}
+              onClick={toggleMic}
+              disabled={!canUseMic}
+              title={isListening ? 'Stop listening' : 'Start voice capture'}
+            >
+              {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+
+            {/* Text input */}
+            <div className={styles.inputWrap}>
+              <textarea
+                ref={inputRef}
+                className={styles.inputField}
+                rows={1}
+                value={input}
+                onChange={handleInput}
+                onKeyDown={handleKeyDown}
+                placeholder={isListening ? 'Listening… (speak the interviewer question)' : 'Type an interview question or paste from JD…'}
+              />
+            </div>
+
+            {/* Send / Stop button */}
+            {isGenerating ? (
+              <button
+                className={styles.sendBtn}
+                onClick={() => { abortRef.current?.abort(); setIsGenerating(false); }}
+                style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)' }}
+                title="Stop generating"
+              >
+                <X size={18} />
+              </button>
+            ) : (
+              <button
+                className={styles.sendBtn}
+                onClick={() => handleSend()}
+                disabled={!input.trim()}
+                title="Send"
+              >
+                <Send size={18} />
+              </button>
+            )}
+          </div>
+          <div className={styles.inputHint}>
+            {isListening
+              ? '🔴 Listening — speak the interviewer question. Pauses for 2.5s → auto-sends'
+              : !resume
+              ? '💡 Upload your resume in Settings (⚙️) for personalized answers'
+              : !hasKeys
+              ? '💡 Add a free Groq API key in 🔑 for real AI answers'
+              : `✓ Resume loaded · ${targetCompany || 'Set company'} · ${answerStyle} mode`}
+          </div>
+        </div>
+
       </div>
 
-      <ApiKeyModal
-        isOpen={isApiKeyModalOpen}
-        onClose={() => setIsApiKeyModalOpen(false)}
-        onKeysUpdated={() => setActiveProvider(getActiveProvider())}
-      />
+      {/* ── API Keys Modal ── */}
+      {keysOpen && (
+        <div className={styles.modalOverlay} onClick={() => setKeysOpen(false)}>
+          <div className={styles.modal} onClick={e => e.stopPropagation()}>
+            <div className={styles.modalTitle}>🔑 Add Your API Keys</div>
+            <div className={styles.modalSubtitle}>
+              Keys are stored only in your browser (localStorage). Never sent anywhere except directly to the AI provider.
+              <br /><br />
+              <strong>Groq is free</strong> — get a key in 60 seconds at{' '}
+              <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8' }}>
+                console.groq.com
+              </a>
+            </div>
+
+            {[
+              { key: 'groq', label: 'Groq (FREE · Llama 3.3 70B · Recommended)', placeholder: 'gsk_...' },
+              { key: 'openai', label: 'OpenAI (GPT-4o mini)', placeholder: 'sk-...' },
+              { key: 'gemini', label: 'Google Gemini (1.5 Flash)', placeholder: 'AIza...' },
+            ].map(({ key, label, placeholder }) => (
+              <div key={key} className={styles.modalField}>
+                <label className={styles.modalLabel}>{label}</label>
+                <input
+                  className={styles.modalInput}
+                  type="password"
+                  placeholder={placeholder}
+                  value={keyInputs[key as keyof typeof keyInputs]}
+                  onChange={e => setKeyInputs(prev => ({ ...prev, [key]: e.target.value }))}
+                />
+              </div>
+            ))}
+
+            <div className={styles.modalActions}>
+              <button className={styles.modalCancel} onClick={() => setKeysOpen(false)}>Cancel</button>
+              <button className={styles.modalSave} onClick={saveKeys}>Save Keys</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </AppShell>
   );
 }

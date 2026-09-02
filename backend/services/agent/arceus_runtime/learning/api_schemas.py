@@ -133,6 +133,8 @@ class AgentSelectionResponse(BaseModel):
 
 
 class ModelPerformanceResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     task_type: str
     model_key: str
     score: float

@@ -52,6 +52,7 @@ def sanitize_tool_output(text: str, max_chars: int = 12000) -> str:
     Sanitizes tool/web/file output before it can be reintroduced to the LLM.
     """
     sanitized = sanitize_user_input(text or "")
+    sanitized = sanitized.replace("</tool_output>", "&lt;/tool_output&gt;").replace("<tool_output>", "&lt;tool_output&gt;")
     if len(sanitized) > max_chars:
         sanitized = sanitized[:max_chars] + "\n[TRUNCATED_TOOL_OUTPUT]"
     return f"{UNTRUSTED_TOOL_BANNER}\n<tool_output>\n{sanitized}\n</tool_output>"
@@ -61,6 +62,7 @@ def wrap_input_xml(text: str) -> str:
     Wraps user input inside structural XML tags to separate instructions from untrusted data.
     """
     sanitized = sanitize_user_input(text)
+    sanitized = sanitized.replace("</user_input>", "&lt;/user_input&gt;").replace("<user_input>", "&lt;user_input&gt;")
     return f"<user_input>\n{sanitized}\n</user_input>"
 
 # Regex list for sensitive credentials in log lines

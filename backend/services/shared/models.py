@@ -1,9 +1,75 @@
+import os
 import uuid
 from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, JSON, Boolean, Text, Table, Numeric, Index, CheckConstraint, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+
+# Conditionally import PostgreSQL-specific types. When running under SQLite for
+# tests, fall back to generic SQLAlchemy types so the schema can be created.
+_using_sqlite = os.getenv("DATABASE_URL", "").startswith("sqlite") or (
+    bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TEST_DATABASE_URL"))
+    and not os.getenv("DATABASE_URL")
+)
+
+from sqlalchemy.types import TypeDecorator, CHAR, JSON as _JSON
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID/UUID type for SQLite and PostgreSQL."""
+    impl = CHAR(36)
+    cache_ok = True
+
+    def __init__(self, as_uuid=True, **kwargs):
+        super().__init__(**kwargs)
+        self.as_uuid = as_uuid
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except (ValueError, TypeError):
+            return value
+
+class VectorType(TypeDecorator):
+    """Platform-independent Vector type that stores float lists in SQLite."""
+    impl = _JSON
+    cache_ok = True
+
+    def __init__(self, dim=1536, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            return [float(x) for x in value]
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [float(x) for x in value]
+        return value
+
+if _using_sqlite:
+    UUID = GUID  # type: ignore[assignment]
+    Vector = VectorType  # type: ignore[assignment]
+else:
+    from sqlalchemy.dialects.postgresql import UUID  # type: ignore[assignment]
+    try:
+        from pgvector.sqlalchemy import Vector  # type: ignore[assignment]
+    except ImportError:
+        Vector = VectorType  # type: ignore[assignment]
+
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, relationship as orm_relationship
-from pgvector.sqlalchemy import Vector
 from .database import Base
 
 class User(Base):
@@ -936,6 +1002,18 @@ class AuditLog(Base):
     user_agent = Column(Text, nullable=True)
     checksum = Column(String(255), nullable=True)
     occurred_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+from sqlalchemy import event
+from sqlalchemy.exc import DBAPIError
+
+@event.listens_for(AuditLog, "before_update")
+def _audit_log_prevent_update(mapper, connection, target):
+    raise DBAPIError("UPDATE audit_logs ...", {}, Exception("Audit logs are append-only and cannot be modified"))
+
+@event.listens_for(AuditLog, "before_delete")
+def _audit_log_prevent_delete(mapper, connection, target):
+    raise DBAPIError("DELETE FROM audit_logs ...", {}, Exception("Audit logs are append-only and cannot be deleted"))
 
 
 UserSession.__table__.append_constraint(UniqueConstraint(UserSession.token_hash, name="uq_user_sessions_token_hash"))

@@ -4,14 +4,14 @@ from uuid import uuid4
 
 import pytest
 
-from backend.services.agent.arceus_runtime.billing.api_schemas import (
+from services.agent.arceus_runtime.billing.api_schemas import (
     BudgetEnforcementRequest,
     InvoiceDraftRequest,
     InvoiceLineInput,
     LedgerEntryInput,
     LedgerPostingRequest,
 )
-from backend.services.agent.arceus_runtime.billing.service import (
+from services.agent.arceus_runtime.billing.service import (
     builtin_plans,
     draft_invoice,
     evaluate_budget,

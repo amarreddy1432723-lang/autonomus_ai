@@ -2,21 +2,52 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg://postgres:postgrespassword@localhost:5432/my_ai_db"
-)
+# When running under pytest without a live Postgres, fall back to SQLite so the
+# full test suite can be collected and executed without Docker dependencies.
+_is_test = bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TEST_DATABASE_URL"))
+_default_pg = "postgresql+psycopg://postgres:postgrespassword@localhost:5432/my_ai_db"
+
+DATABASE_URL = os.getenv("DATABASE_URL", _default_pg)
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 elif DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "5"))}
-    if DATABASE_URL.startswith("postgresql+psycopg")
-    else {},
-    pool_pre_ping=True,
-)
+# Use explicit test URL if provided, otherwise auto-fall back for pytest runs
+if os.getenv("TEST_DATABASE_URL"):
+    DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+elif _is_test and DATABASE_URL == _default_pg:
+    DATABASE_URL = "sqlite:///./test_arceus.db"
+
+_using_sqlite = DATABASE_URL.startswith("sqlite")
+
+if _using_sqlite:
+    from sqlalchemy import event
+
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False, "timeout": 15},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+        finally:
+            cursor.close()
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "5"))}
+        if DATABASE_URL.startswith("postgresql+psycopg")
+        else {},
+        pool_pre_ping=True,
+    )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

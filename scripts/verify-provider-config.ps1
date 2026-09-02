@@ -46,6 +46,7 @@ $live = $normalizedEnvironment -in @("staging", "production")
 Add-Check "runtime" "Live environment flags" @("APP_ENV", "JWT_SECRET", "APP_ENCRYPTION_KEY", "DATABASE_URL", "REDIS_URL") -Severity "blocker"
 Add-Check "auth" "Arceus backend auth" @("JWT_SECRET", "APP_ENCRYPTION_KEY") -Severity "blocker" -Action "Configure first-party JWT auth and encrypted session storage."
 Add-Check "auth" "Arceus frontend auth" @("NEXT_PUBLIC_REQUIRE_AUTH") -Severity "warning" -Action "Set NEXT_PUBLIC_REQUIRE_AUTH=true when the hosted frontend should require sign-in."
+Add-Check "auth" "Clerk auth bridge" @("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "CLERK_JWKS_URL") -Severity "warning" -Action "Optional: Configure Clerk keys if using external Clerk identity bridge."
 Add-Check "billing" "Stripe checkout and webhooks" @("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET") -Severity "blocker"
 Add-Check "billing" "Stripe price IDs" @("STRIPE_PRICE_STARTER_MONTHLY", "STRIPE_PRICE_STARTER_ANNUAL", "STRIPE_PRICE_PRO_MONTHLY", "STRIPE_PRICE_PRO_ANNUAL", "STRIPE_PRICE_ENTERPRISE_MONTHLY", "STRIPE_PRICE_ENTERPRISE_ANNUAL") -Severity "blocker"
 Add-Check "github" "GitHub App" @("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_NAME", "GITHUB_APP_SLUG", "GITHUB_APP_WEBHOOK_SECRET") -Severity "blocker"

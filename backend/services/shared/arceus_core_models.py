@@ -1,5 +1,6 @@
 import uuid
 
+import os
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -16,7 +17,47 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+
+_using_sqlite = os.getenv("DATABASE_URL", "").startswith("sqlite") or (
+    bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TEST_DATABASE_URL"))
+    and not os.getenv("DATABASE_URL")
+)
+
+from sqlalchemy.types import TypeDecorator, CHAR, JSON as _JSON
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID/UUID type for SQLite and PostgreSQL."""
+    impl = CHAR(36)
+    cache_ok = True
+
+    def __init__(self, as_uuid=True, **kwargs):
+        super().__init__(**kwargs)
+        self.as_uuid = as_uuid
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except (ValueError, TypeError):
+            return value
+
+if _using_sqlite:
+    UUID = GUID  # type: ignore[assignment]
+    def _ARRAY(item_type=None, **kwargs):  # noqa: N802
+        return _JSON
+    ARRAY = _ARRAY  # type: ignore[assignment]
+else:
+    from sqlalchemy.dialects.postgresql import ARRAY, UUID  # type: ignore[assignment]
+
+
 from sqlalchemy.sql import func
 
 from .database import Base

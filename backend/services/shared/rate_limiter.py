@@ -7,20 +7,49 @@ from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Configure Redis connection
+# Configure Redis connection with short socket timeout to prevent blocking when Redis is offline
+_is_test_mode = bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TEST_DATABASE_URL"))
+_socket_timeout = float(os.getenv("REDIS_TIMEOUT_SECONDS", "0.1" if _is_test_mode else "0.5"))
+
 try:
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
-        redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        redis_client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=_socket_timeout,
+            socket_timeout=_socket_timeout,
+        )
     else:
         redis_client = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
             port=int(os.getenv("REDIS_PORT", "6379")),
             db=0,
             decode_responses=True,
+            socket_connect_timeout=_socket_timeout,
+            socket_timeout=_socket_timeout,
         )
 except Exception:
     redis_client = None
+
+# Cache Redis liveness for 3 seconds to avoid blocking ping on every HTTP request
+_last_ping_check: float = 0.0
+_redis_alive: bool = False
+
+def is_redis_available() -> bool:
+    global _last_ping_check, _redis_alive
+    if redis_client is None:
+        return False
+    now = time.time()
+    if now - _last_ping_check < 3.0:
+        return _redis_alive
+    _last_ping_check = now
+    try:
+        redis_client.ping()
+        _redis_alive = True
+    except Exception:
+        _redis_alive = False
+    return _redis_alive
 
 LUA_RATE_LIMITER = """
 local key = KEYS[1]
@@ -66,14 +95,8 @@ class RateLimiter:
 
     async def __call__(self, request: Request):
         # Allow disabling rate limiter if Redis is unavailable or during certain environments
-        if redis_client is None:
+        if not is_redis_available():
             return
-            
-        try:
-            # Ping to verify connection
-            redis_client.ping()
-        except Exception:
-            return # Fail-open if Redis is down
             
         # Get identifier (X-User-Id header or IP)
         user_id = request.headers.get("x-user-id") or request.headers.get("X-User-Id")
@@ -143,14 +166,8 @@ ROUTE_LIMIT_EXAMPLES = {
 
 
 def rate_limit_policy_report() -> dict:
-    redis_ok = False
-    redis_error = None
-    if redis_client is not None:
-        try:
-            redis_client.ping()
-            redis_ok = True
-        except Exception as exc:  # pragma: no cover - runtime dependency
-            redis_error = str(exc)
+    redis_ok = is_redis_available()
+    redis_error = None if redis_ok else "Redis not reachable"
     enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"}
     fail_closed = os.getenv("RATE_LIMIT_FAIL_CLOSED", "false").lower() in {"1", "true", "yes"}
     return {
@@ -219,9 +236,8 @@ def request_identifier(request: Request) -> str:
 
 class RateLimitHeaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"} and redis_client is not None:
+        if os.getenv("RATE_LIMIT_ENABLED", "true").lower() not in {"0", "false", "no"} and is_redis_available():
             try:
-                redis_client.ping()
                 profile = route_limit_profile(request.url.path)
                 key = f"rate_limit:{profile.name}:{request_identifier(request)}"
                 now = time.time()

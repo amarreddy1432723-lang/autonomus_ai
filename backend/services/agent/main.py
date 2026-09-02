@@ -93,12 +93,13 @@ app.include_router(intelligence_router)
 install_arceus_runtime(app)
 
 class ChatMessage(BaseModel):
-    role: str # "user", "assistant"
+    role: str  # "user", "assistant"
     content: str
 
 class ChatRequest(BaseModel):
-    user_id: str
-    messages: List[ChatMessage]
+    user_id: Optional[str] = "00000000-0000-0000-0000-000000000000"
+    messages: List[ChatMessage] = Field(default_factory=list)
+    message: Optional[str] = None
     session_id: Optional[str] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
@@ -163,7 +164,6 @@ class CodeProjectCreate(BaseModel):
     description: str = ""
     repo_url: str = ""
     file_ids: List[str] = Field(default_factory=list)
-
 class CodeProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -713,6 +713,9 @@ async def chat_endpoint(
     db: Session = Depends(get_db),
 ):
     from .billing import check_entitlement
+
+    if not request.messages and request.message:
+        request.messages = [ChatMessage(role="user", content=request.message)]
 
     if not request.messages:
         raise HTTPException(status_code=400, detail="Messages list cannot be empty")

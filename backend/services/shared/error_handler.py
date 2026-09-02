@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -33,7 +33,7 @@ def register_error_handlers(app: FastAPI):
                 "detail": str(exc.detail),
                 "instance": request.url.path,
                 "request_id": request_id,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             }
         )
 
@@ -53,7 +53,7 @@ def register_error_handlers(app: FastAPI):
                 "detail": detail_msg,
                 "instance": request.url.path,
                 "request_id": request_id,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             }
         )
 
@@ -70,6 +70,6 @@ def register_error_handlers(app: FastAPI):
                 "detail": "An unexpected error occurred. Please contact support.",
                 "instance": request.url.path,
                 "request_id": request_id,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             }
         )
